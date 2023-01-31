@@ -10,6 +10,10 @@
 #include "serialization.hh"
 #include "utils/base64.hh"
 #include "conditions.hh"
+
+#define SKIP_FOLLOW_SETS
+#define ANTLR3_INLINE_INPUT_8BIT
+
 #include "alternator/expressionsLexer.hpp"
 #include "alternator/expressionsParser.hpp"
 #include "utils/overloaded_functor.hh"

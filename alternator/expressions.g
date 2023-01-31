@@ -33,6 +33,10 @@ options {
     language = Cpp;
 }
 
+// Disables stack based tracking of exact place where parsing failed. We don't use this
+// information. This yields a small saving of ~2% parsing instructions for a simple input.
+@lexer::preincludes{#define SKIP_FOLLOW_SETS}
+
 @parser::namespace{alternator}
 @lexer::namespace{alternator}
 

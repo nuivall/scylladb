@@ -355,8 +355,9 @@ def test_batch_write_item_large(test_table_sn):
         test_table_sn.name: [{'PutRequest': {'Item': {'p': p, 'c': i, 'content': long_content}}} for i in range(25)],
     })
     assert 'UnprocessedItems' in write_reply and write_reply['UnprocessedItems'] == dict()
-    assert full_query(test_table_sn, KeyConditionExpression='p=:p', ExpressionAttributeValues={':p': p}
-        ) == [{'p': p, 'c': i, 'content': long_content} for i in range(25)]
+    for x in range(1000):
+        assert full_query(test_table_sn, KeyConditionExpression='p=:p', ExpressionAttributeValues={':p': p}
+            ) == [{'p': p, 'c': i, 'content': long_content} for i in range(25)]
 
 # DynamoDB limits the number of items written by a BatchWriteItem operation
 # to 25, even if they are small. Exceeding this limit results in a
