@@ -34,13 +34,14 @@ namespace alternator {
 
 template <typename Func, typename Result = std::result_of_t<Func(expressionsParser&)>>
 Result do_with_parser(std::string_view input, Func&& f) {
-    expressionsLexer::InputStreamType input_stream{
-        reinterpret_cast<const ANTLR_UINT8*>(input.data()),
-        ANTLR_ENC_UTF8,
-        static_cast<ANTLR_UINT32>(input.size()),
-        nullptr };
-    expressionsLexer lexer(&input_stream);
-    expressionsParser::TokenStreamType tstream(ANTLR_SIZE_HINT, lexer.get_tokSource());
+    // expressionsLexer::InputStreamType input_stream{
+    //     reinterpret_cast<const ANTLR_UINT8*>(input.data()),
+    //     ANTLR_ENC_UTF8,
+    //     static_cast<ANTLR_UINT32>(input.size()),
+    //     nullptr };
+    // expressionsLexer lexer(&input_stream);
+
+    expressionsParser::TokenStreamType tstream(0, input);
     expressionsParser parser(&tstream);
 
     auto result = f(parser);

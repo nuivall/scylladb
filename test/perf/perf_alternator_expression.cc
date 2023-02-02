@@ -20,13 +20,14 @@ PERF_TEST_F(exp_test, condition_simple) {
 }
 
 PERF_TEST_F(exp_test, condition_and_in) {
+    auto x = alternator::parse_condition_expression("p = :pv AND q IN ( :a , :b , fefe )");
     perf_tests::do_not_optimize(
-        alternator::parse_condition_expression("p = :pv AND q in (:a, :b, fefe)")
+        x
     );
 }
 
 PERF_TEST_F(exp_test, perf_in_query_exp_2) {
     perf_tests::do_not_optimize(
-        alternator::parse_condition_expression("p = :pv AND q in (:a, :b, :c, :d, :e, :f, :g, :h, :i, :j, :k, :l, :m, :n, :o, :p, :q, :r, :s, :t, :u, :v, :w, :x, :y, :z)")
+        alternator::parse_condition_expression("p = :pv AND q IN ( :a , :b , :c , :d , :e , :f , :g , :h , :i , :j , :k , :l , :m , :n , :o , :p , :q , :r , :s , :t , :u , :v , :w , :x , :y , :z )")
     );
 }

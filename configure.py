@@ -247,8 +247,11 @@ class Antlr3Grammar(Source):
 
     def generated(self, gen_dir):
         basename = os.path.splitext(self.source)[0]
+        fileSuffixes = ['Lexer.cpp', 'Lexer.hpp', 'Parser.cpp', 'Parser.hpp']
+        if basename == 'alternator/expressions':
+            fileSuffixes = fileSuffixes[1:]
         files = [basename + ext
-                 for ext in ['Lexer.cpp', 'Lexer.hpp', 'Parser.cpp', 'Parser.hpp']]
+                 for ext in fileSuffixes]
         return [os.path.join(gen_dir, file) for file in files]
 
 class Json2Code(Source):

@@ -24,9 +24,9 @@ class  expressionsLexer : public antlr4::Lexer {
 public:
   enum {
     T__0 = 1, T__1 = 2, T__2 = 3, T__3 = 4, T__4 = 5, T__5 = 6, T__6 = 7, 
-    T__7 = 8, T__8 = 9, T__9 = 10, T__10 = 11, WHITESPACE = 12, SET = 13, 
-    REMOVE = 14, ADD = 15, DELETE = 16, AND = 17, OR = 18, NOT = 19, BETWEEN = 20, 
-    IN = 21, INTEGER = 22, NAME = 23, NAMEREF = 24, VALREF = 25
+    WHITESPACE = 8, SET = 9, REMOVE = 10, ADD = 11, DELETE = 12, AND = 13, 
+    OR = 14, NOT = 15, BETWEEN = 16, IN = 17, INTEGER = 18, NAME = 19, NAMEREF = 20, 
+    VALREF = 21, OPEN_BRACKET = 22, CLOSE_BRACKET = 23, COMMA = 24, EQ = 25
   };
 
   explicit expressionsLexer(antlr4::CharStream *input);
