@@ -1,0 +1,20 @@
+digraph lexer {
+	rankdir=LR;
+	node [ shape = point ];
+	ENTRY;
+	en_2;
+	node [ shape = circle, height = 0.2 ];
+	node [ fixedsize = true, height = 0.65, shape = doublecircle ];
+	2;
+	node [ shape = circle ];
+	1 -> 2 [ label = "48..57 / last2, initts" ];
+	1 -> 2 [ label = "65..90 / last2, initts" ];
+	1 -> 2 [ label = "95 / last2, initts" ];
+	1 -> 2 [ label = "97..122 / last2, initts" ];
+	2 -> 2 [ label = "ts / 9..13 / last1, initts" ];
+	2 -> 2 [ label = "ts / 32 / last1, initts" ];
+	2 -> 1 [ label = "ts / 65..90" ];
+	2 -> 1 [ label = "ts / 97..122" ];
+	ENTRY -> 2 [ label = "IN" ];
+	en_2 -> 2 [ label = "main" ];
+}

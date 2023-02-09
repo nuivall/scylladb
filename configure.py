@@ -1096,6 +1096,7 @@ alternator = [
        'alternator/serialization.cc',
        'alternator/expressions.cc',
        Antlr3Grammar('alternator/expressions.g'),
+       'alternator/expressions_lexer.rl',
        'alternator/conditions.cc',
        'alternator/auth.cc',
        'alternator/streams.cc',

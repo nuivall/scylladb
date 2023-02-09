@@ -229,6 +229,10 @@ public:
     bool empty() const {
         return _op == type::UNDEFINED;
     }
+
+    primitive_condition() {
+        _values.reserve(16);
+    }
 };
 
 class condition_expression {
