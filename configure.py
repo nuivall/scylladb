@@ -538,6 +538,7 @@ scylla_tests = set([
 ])
 
 perf_tests = set([
+    'test/perf/perf_alternator_workloads',
     'test/perf/perf_mutation_readers',
     'test/perf/perf_checksum',
     'test/perf/perf_mutation_fragment',
@@ -1294,6 +1295,7 @@ deps['test/boost/log_heap_test'] = ['test/boost/log_heap_test.cc']
 deps['test/boost/estimated_histogram_test'] = ['test/boost/estimated_histogram_test.cc']
 deps['test/boost/summary_test'] = ['test/boost/summary_test.cc']
 deps['test/boost/anchorless_list_test'] = ['test/boost/anchorless_list_test.cc']
+deps['test/perf/perf_alternator_workloads'] += alternator
 deps['test/perf/perf_commitlog'] += ['test/perf/perf.cc', 'seastar/tests/perf/linux_perf_event.cc']
 deps['test/perf/perf_row_cache_reads'] += ['test/perf/perf.cc', 'seastar/tests/perf/linux_perf_event.cc']
 deps['test/boost/reusable_buffer_test'] = [
