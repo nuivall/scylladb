@@ -442,6 +442,8 @@ sharded<gms::gossiper> *the_gossiper;
 sharded<locator::snitch_ptr> *the_snitch;
 }
 
+std::function<void()> after_init_func;
+
 static int scylla_main(int ac, char** av) {
     // Allow core dumps. The would be disabled by default if
     // CAP_SYS_NICE was added to the binary, as is suggested by the
@@ -1721,6 +1723,9 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             });
 
             startlog.info("Scylla version {} initialization completed.", scylla_version());
+            if(after_init_func) {
+                after_init_func();
+            }
             stop_signal.wait().get();
             startlog.info("Signal received; shutting down");
 	    // At this point, all objects destructors and all shutdown hooks registered with defer() are executed
@@ -1770,7 +1775,7 @@ int main(int ac, char** av) {
         {"perf-row-cache-update", perf::scylla_row_cache_update_main, "run performance tests by updating row cache on this server"},
         {"perf-simple-query", perf::scylla_simple_query_main, "run performance tests by sending simple queries to this server"},
         {"perf-sstable", perf::scylla_sstable_main, "run performance tests by exercising sstable related operations on this server"},
-        {"perf-alternator-workloads", perf::alternator_workloads(scylla_main), "run performance tests on full alternator stack"}
+        {"perf-alternator-workloads", perf::alternator_workloads(scylla_main, &after_init_func), "run performance tests on full alternator stack"}
     };
 
     main_func_type main_func;
