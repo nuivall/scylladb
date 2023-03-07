@@ -5,6 +5,7 @@ add_subdirectory(lib)
 add_library(test-perf STATIC)
 target_sources(test-perf
   PRIVATE
+    perf/perf_alternator_workloads.cc
     perf/perf_fast_forward.cc
     perf/perf_row_cache_update.cc
     perf/perf_simple_query.cc
