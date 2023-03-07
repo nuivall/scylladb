@@ -8,12 +8,14 @@
 
 #include <functional>
 
+#include "db/config.hh"
+
 namespace perf {
 
 int scylla_fast_forward_main(int argc, char** argv);
 int scylla_row_cache_update_main(int argc, char**argv);
 int scylla_simple_query_main(int argc, char** argv);
 int scylla_sstable_main(int argc, char** argv);
-std::function<int(int, char**)> alternator_workloads(std::function<int(int, char**)> scylla_main);
+std::function<int(int, char**)> alternator_workloads(std::function<int(int, char**)> scylla_main, std::function<void(lw_shared_ptr<db::config> cfg)>* after_init_func);
 
 } // namespace tools

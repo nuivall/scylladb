@@ -6,23 +6,50 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
+#include <signal.h>
 #include <seastar/core/thread.hh>
 #include <seastar/core/app-template.hh>
+#include <seastar/core/sleep.hh>
+
+#include "db/config.hh"
+
 
 namespace perf {
 
 using namespace seastar;
+using namespace std::chrono_literals;
 
-std::function<int(int, char**)> alternator_workloads(std::function<int(int, char**)> scylla_main) {
-    return [=](int argc, char** argv) -> int {
-        app_template app;
-        return app.run(argc, argv, [scylla_main, argc, argv] {
-             // start scylla in the background
-            return seastar::async([=] {
-                (void)scylla_main(argc, argv);
-                 std::cout << "testing..." << std::endl;
+struct test_config {
+     std::string workload;
+     int port;
+};
+
+std::function<int(int, char**)> alternator_workloads(std::function<int(int, char**)> scylla_main, std::function<void(lw_shared_ptr<db::config> cfg)>* after_init_func) {
+    return [=](int ac, char** av) -> int {
+        test_config c;
+        for (int i = 1 ; i < ac - 1; i++) {
+            if (std::string(av[i]) == "--workload") {
+                c.workload = std::string(av[i+1]);
+                std::shift_left(av + i, av + ac, 2);
+                ac -= 2;
+                break;
+            }
+        }
+        if (c.workload.empty()) {
+            std::cerr << "Missing --workload command-line value!" << std::endl;
+            return 1;
+        }
+        *after_init_func = [c = std::move(c)] (lw_shared_ptr<db::config> cfg) mutable {
+            c.port = cfg->alternator_port();
+            (void)seastar::async([c = std::move(c)] {
+                std::cout << "Testing... " << c.workload << " on port " << c.port << std::endl;
+                seastar::sleep(5s).get();
+                std::cout << "Do sigint" << std::endl;
+                raise(SIGINT);
+                std::cout << "After sigint" << std::endl;
             });
-        });
+        };
+        return scylla_main(ac, av);
     };
 }
 

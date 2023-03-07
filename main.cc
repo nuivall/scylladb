@@ -442,7 +442,7 @@ sharded<gms::gossiper> *the_gossiper;
 sharded<locator::snitch_ptr> *the_snitch;
 }
 
-std::function<void()> after_init_func;
+std::function<void(lw_shared_ptr<db::config>)> after_init_func;
 
 static int scylla_main(int ac, char** av) {
     // Allow core dumps. The would be disabled by default if
@@ -510,9 +510,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
 
     // If --version is requested, print it out and exit immediately to avoid
     // Seastar-specific warnings that may occur when running the app
-    bpo::variables_map vm;
     auto parsed_opts = bpo::command_line_parser(ac, av).options(app.get_options_description()).allow_unregistered().run();
-    bpo::store(parsed_opts, vm);
     print_starting_message(ac, av, parsed_opts);
 
     sharded<locator::shared_token_metadata> token_metadata;
@@ -1724,7 +1722,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
 
             startlog.info("Scylla version {} initialization completed.", scylla_version());
             if(after_init_func) {
-                after_init_func();
+                after_init_func(cfg);
             }
             stop_signal.wait().get();
             startlog.info("Signal received; shutting down");
