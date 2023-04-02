@@ -8,11 +8,17 @@
 
 #define BOOST_TEST_MODULE alternator
 #include <boost/test/included/unit_test.hpp>
+#include <boost/test/data/test_case.hpp>
 
 #include <seastar/util/defer.hh>
 #include <seastar/core/memory.hh>
+#include <vector>
+
+#include "alternator/expressions_parser.hh"
 #include "utils/base64.hh"
 #include "utils/rjson.hh"
+
+namespace bdata = boost::unit_test::data;
 
 static bytes_view to_bytes_view(const std::string& s) {
     return bytes_view(reinterpret_cast<const signed char*>(s.c_str()), s.size());
@@ -85,4 +91,51 @@ BOOST_AUTO_TEST_CASE(test_allocator_fail_gracefully) {
     // and also be destroyed gracefully later
     rapidjson::internal::Stack stack(&allocator, 0);
     BOOST_REQUIRE_THROW(stack.Push<char>(too_large_alloc_size), rjson::error);
+}
+
+using p = alternator::parsed::path;
+using v = std::vector<p>;
+using op = p::operator_t;
+
+BOOST_DATA_TEST_CASE(test_expressions_projections_valid, bdata::make({
+    std::make_tuple("x1", v{p("x1")}),
+    std::make_tuple("#0placeholder", v{p("#0placeholder")}),
+    std::make_tuple("x1, x2", v{p("x1"), p("x2")}),
+    std::make_tuple("y[0]", v{p("y", std::vector{op(0u)})}),
+    std::make_tuple("y[0][2]", v{p("y", std::vector{op(0u), op(2u)})}),
+    std::make_tuple("y.zzz.h", v{p("y", std::vector{op("zzz"), op("h")})}),
+    // complex example:
+    std::make_tuple("y.zz, gge, x,y,x, h[0].a.b.c.d[123123].eee, h123_AX", v{
+        p("y", std::vector{op("zz")}),
+        p("gge"),
+        p("x"),
+        p("y"),
+        p("x"),
+        p("h", std::vector{op(0u), op("a"), op("b"), op("c"), op("d"), op(123123u), op("eee")}),
+        p("h123_AX"),
+    }),
+}), input, expected_obj)
+{
+    auto got_obj = alternator::parse_projection_expression(input);
+    BOOST_REQUIRE_EQUAL(got_obj, expected_obj);
+}
+
+BOOST_DATA_TEST_CASE(test_expressions_projections_invalid, bdata::make({
+    "",
+    "x,",
+    "1y",
+    "#",
+    "x#f",
+    "[1]",
+    ".f",
+    "v$@%",
+    "x[-1]",
+    "g, [0]",
+    "g, 123",
+    "h[0.xxx]",
+    "fun(x)",
+}), input)
+{
+    BOOST_REQUIRE_THROW(alternator::parse_projection_expression(input),
+        alternator::expressions_syntax_error);
 }

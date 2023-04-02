@@ -545,6 +545,7 @@ perf_tests = set([
     'test/perf/perf_idl',
     'test/perf/perf_vint',
     'test/perf/perf_big_decimal',
+    'test/perf/perf_alternator_expression',
 ])
 
 raft_tests = set([
@@ -1096,6 +1097,7 @@ alternator = [
        'alternator/serialization.cc',
        'alternator/expressions.cc',
        Antlr3Grammar('alternator/expressions.g'),
+       'alternator/expressions_parser.rl',
        'alternator/conditions.cc',
        'alternator/auth.cc',
        'alternator/streams.cc',
@@ -1282,6 +1284,7 @@ for t in sorted(perf_tests):
     deps[t] = [t + '.cc'] + scylla_tests_dependencies + perf_tests_seastar_deps
     deps[t] += ['test/perf/perf.cc', 'seastar/tests/perf/linux_perf_event.cc']
 
+deps['test/boost/alternator_unit_test'] += alternator
 deps['test/boost/mutation_reader_test'] += ['test/lib/dummy_sharder.cc' ]
 deps['test/boost/multishard_combining_reader_as_mutation_source_test'] += ['test/lib/dummy_sharder.cc' ]
 
@@ -1301,6 +1304,7 @@ deps['test/boost/log_heap_test'] = ['test/boost/log_heap_test.cc']
 deps['test/boost/estimated_histogram_test'] = ['test/boost/estimated_histogram_test.cc']
 deps['test/boost/summary_test'] = ['test/boost/summary_test.cc']
 deps['test/boost/anchorless_list_test'] = ['test/boost/anchorless_list_test.cc']
+deps['test/perf/perf_alternator_expression'] += alternator
 deps['test/perf/perf_commitlog'] += ['test/perf/perf.cc', 'seastar/tests/perf/linux_perf_event.cc']
 deps['test/perf/perf_row_cache_reads'] += ['test/perf/perf.cc', 'seastar/tests/perf/linux_perf_event.cc']
 deps['test/boost/reusable_buffer_test'] = [

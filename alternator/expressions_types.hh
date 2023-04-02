@@ -31,11 +31,14 @@ namespace parsed {
 
 // "path" is an attribute's path in a document, e.g., a.b[3].c.
 class path {
+public:
+   using operator_t = std::variant<std::string, unsigned>;
+private:
     // All paths have a "root", a top-level attribute, and any number of
     // "dereference operators" - each either an index (e.g., "[2]") or a
     // dot (e.g., ".xyz").
     std::string _root;
-    std::vector<std::variant<std::string, unsigned>> _operators;
+    std::vector<operator_t> _operators;
     // It is useful to limit the depth of a user-specified path, because is
     // allows us to use recursive algorithms without worrying about recursion
     // depth. DynamoDB officially limits the length of paths to 32 components
@@ -43,6 +46,12 @@ class path {
     static constexpr unsigned depth_limit = 32;
     void check_depth_limit();
 public:
+    path() = default;
+    path(std::string root) : _root(std::move(root)) {}
+    // used only for tests
+    path(std::string root, std::vector<operator_t> operators) :
+        _root(std::move(root)), _operators(std::move(operators)) {}
+
     void set_root(std::string root) {
         _root = std::move(root);
     }
@@ -67,6 +76,11 @@ public:
         return _operators;
     }
     friend std::ostream& operator<<(std::ostream&, const path&);
+
+    bool operator==(const path& other) const {
+        return _root == other._root &&
+            _operators == other._operators;
+    }
 };
 
 // When an expression is first parsed, all constants are references, like

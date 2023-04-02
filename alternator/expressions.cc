@@ -12,6 +12,7 @@
 #include "conditions.hh"
 #include "alternator/expressionsLexer.hpp"
 #include "alternator/expressionsParser.hpp"
+#include "alternator/expressions_parser.hh"
 #include "utils/overloaded_functor.hh"
 #include "error.hh"
 
@@ -59,6 +60,12 @@ parse_projection_expression(std::string_view query) {
     } catch (...) {
         throw expressions_syntax_error(format("Failed parsing ProjectionExpression '{}': {}", query, std::current_exception()));
     }
+}
+
+std::vector<parsed::path>
+parse_projection_expression2(std::string_view query) {
+    static thread_local auto p = projection_parser();
+    return p.parse(query);
 }
 
 parsed::condition_expression
