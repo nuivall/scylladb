@@ -6,6 +6,8 @@ action observe_path_dot { observe_path_dot(); }
 action observe_path_index { observe_path_index(); }
 
 
+# This start action is needed because value is a recursive type (can contain other values).
+# It will be used to handle stack growth and has to be executed on start rather than end transition.
 action observe_value_start { observe_value_start(); }
 action observe_value_valref { observe_value_valref(); }
 action observe_value_path { observe_value_path(); }
@@ -30,14 +32,15 @@ path = path_component %observe_path_root (
 value = space* (
     valref %observe_value_valref
     | path %observe_value_path
-    | name %observe_value_func_name '(' @{ fcall value_after_parenthesis; } %observe_value_func_call
+    | name %observe_value_func_name '(' @{ fcall value_after_parenthesis; }
 ) >observe_value_start space*;
 value_after_parenthesis := (
     value %observe_value_func_param
-    (',' value %observe_value_func_param)* 
+    (',' value %observe_value_func_param)*
     ')' @{ fret; }
 );
 
+# Called on internal stack growth, we use static size as we want to limit it anyway.
 prepush {
     if (_fsm_top >= _nesting_limit - 1) {
         throw expressions_syntax_error("Too many nesting levels found when parsing expression");
