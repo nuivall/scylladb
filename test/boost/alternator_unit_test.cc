@@ -105,7 +105,7 @@ BOOST_DATA_TEST_CASE(test_expressions_projections_valid, bdata::make({
     std::make_tuple("y[0][2]", v{p("y", std::vector{op(0u), op(2u)})}),
     std::make_tuple("y.zzz.h", v{p("y", std::vector{op("zzz"), op("h")})}),
     // complex example:
-    std::make_tuple("y.zz, gge, x,y,x, h[0].a.b.c.d[123123].eee, h123_AX", v{
+    std::make_tuple("y.zz, gge, x,y,x, h[0].a.b.c.d[123123].eee,   h123_AX", v{
         p("y", std::vector{op("zz")}),
         p("gge"),
         p("x"),
@@ -138,4 +138,14 @@ BOOST_DATA_TEST_CASE(test_expressions_projections_invalid, bdata::make({
 {
     BOOST_REQUIRE_THROW(alternator::parse_projection_expression(input),
         alternator::expressions_syntax_error);
+}
+
+BOOST_DATA_TEST_CASE(test_expressions_experiment, bdata::make({
+    //"fun(fe,#xe,:valref,fun2(:valref2))",
+    //"f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(#ref))))))))))))))))))))))))))))))))))))))"
+    "fun( xe, fe    ,     deeee)"
+}), input)
+{
+    auto v = alternator::parse_value_exp(input);
+    std::cout << "end";
 }

@@ -62,9 +62,8 @@ parse_projection_expression(std::string_view query) {
     }
 }
 
-std::vector<parsed::path>
-parse_projection_expression2(std::string_view query) {
-    static thread_local auto p = projection_parser();
+parsed::value parse_value_exp(std::string_view query) {
+    static thread_local auto p = value_parser();
     return p.parse(query);
 }
 
