@@ -63,8 +63,9 @@ parse_projection_expression(std::string_view query) {
 }
 
 parsed::value parse_value_exp(std::string_view query) {
-    static thread_local auto p = value_parser();
-    return p.parse(query);
+    // static thread_local auto p = value_parser();
+    // return p.parse(query);
+    return parsed::value();
 }
 
 parsed::condition_expression
