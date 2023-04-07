@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "alternator/expressions_parser.hh"
+#include "alternator/expressions.hh"
 #include "utils/base64.hh"
 #include "utils/rjson.hh"
 
@@ -140,12 +141,33 @@ BOOST_DATA_TEST_CASE(test_expressions_projections_invalid, bdata::make({
         alternator::expressions_syntax_error);
 }
 
-BOOST_DATA_TEST_CASE(test_expressions_experiment, bdata::make({
-    //"fun(fe,#xe,:valref,fun2(:valref2))",
-    //"f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(#ref))))))))))))))))))))))))))))))))))))))"
-    "fun( xe, fe    ,     deeee)"
+using a = alternator::parsed::action;
+using u = alternator::parsed::update_expression;
+u make_u(std::vector<a> as) {
+    auto ret = u();
+    for (auto& ac : as) {
+        ret.add(std::move(ac));
+    }
+    return ret;
+}
+
+BOOST_DATA_TEST_CASE(test_expressions_update_valid, bdata::make({
+    std::make_tuple("REMOVE xyz", make_u(std::vector{a::make_remove(p("xyz"))})),
+}), input, expected_obj)
+{
+    std::cout << input << std::endl;
+    auto got_obj = alternator::parse_update_expression(input);
+    BOOST_REQUIRE_EQUAL(got_obj, expected_obj);
+}
+
+BOOST_DATA_TEST_CASE(test_expressions_update_invalid, bdata::make({
+    "",
+    // Too much nesting
+    "f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(#ref))))))))))))))))))))))))))))))))))))))",
+    "ADD fefe", // Not valref
+
 }), input)
 {
-    auto v = alternator::parse_value_exp(input);
-    std::cout << "end";
+    BOOST_REQUIRE_THROW(alternator::parse_update_expression(input),
+        alternator::expressions_syntax_error);
 }

@@ -171,16 +171,16 @@ update_expression_set_rhs returns [parsed::set_rhs rhs]:
     )?
     ;
 
-update_expression_set_action returns [parsed::update_expression::action a]:
+update_expression_set_action returns [parsed::action a]:
     path '=' rhs=update_expression_set_rhs { $a.assign_set($path.p, $rhs.rhs); };
 
-update_expression_remove_action returns [parsed::update_expression::action a]:
+update_expression_remove_action returns [parsed::action a]:
     path { $a.assign_remove($path.p); };
 
-update_expression_add_action returns [parsed::update_expression::action a]:
+update_expression_add_action returns [parsed::action a]:
     path VALREF { $a.assign_add($path.p, $VALREF.text); };
 
-update_expression_delete_action returns [parsed::update_expression::action a]:
+update_expression_delete_action returns [parsed::action a]:
     path VALREF { $a.assign_del($path.p, $VALREF.text); };
 
 update_expression_clause returns [parsed::update_expression e]:

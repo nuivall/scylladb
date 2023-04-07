@@ -5,7 +5,6 @@
 
 #include "alternator/expressions_types.hh"
 #include "alternator/expressions.hh"
-
 #include "alternator/expressions_base.hh"
 
 /*
@@ -29,6 +28,8 @@
  * reducing the amount of boiler-plate code.
  */
 
+namespace alternator {
+
 %%{
 machine projection_parser;
 include base "expressions_base.rl";
@@ -45,11 +46,25 @@ machine update_parser;
 include base "expressions_base.rl";
 access _fsm_;
 
-set_rhs = value (space* ('+'|'-') space* value)* ;
-set_action = space* path space* '=' space* set_rhs space* ;
-remove_action = space* path space* ;
-add_action = space* path space valref space* ;
-delete_action = space* path space valref space* ;
+action observe_set_rhs_value { observe_set_rhs_value(); }
+action observe_set_rhs_plus_value { observe_set_rhs_plus_value(); }
+action observe_set_rhs_minus_value { observe_set_rhs_minus_value(); }
+action observe_set_action { observe_set_action(); }
+action observe_set_action_path { observe_set_action_path(); }
+action observe_remove_action { observe_remove_action(); }
+action observe_add_action { observe_add_action(); }
+action observe_delete_action { observe_delete_action(); }
+
+set_rhs = value %observe_set_rhs_value space*
+    (
+          '+' space* value %observe_set_rhs_plus_value
+        | '-' space* value %observe_set_rhs_minus_value
+    )? ;
+set_action = space* path %observe_set_action_path space*
+    '=' space* set_rhs %observe_set_action space* ;
+remove_action = space* path %observe_remove_action space* ;
+add_action = space* (path space valref) %observe_add_action space* ;
+delete_action = space* (path space valref) %observe_delete_action space* ;
 
 expression_clause =
       (/SET/i set_action (',' set_action)*)
@@ -61,8 +76,6 @@ expression_clause =
 update_expression = expression_clause (space expression_clause)* ;
 main := update_expression ;
 }%%
-
-namespace alternator {
 
 class parser_base {
 protected:
@@ -111,10 +124,12 @@ protected:
 
     void throw_on_error(int first_final_state) {
         if (_fsm_cs < first_final_state) {
+            std::cout << "throw_on_error:" << _fsm_cs << " ffin " << first_final_state << std::endl;
             throw expressions_syntax_error(format("Parse error after position {}", eof - _cur_start));
         }
         if (p < pe) {
             // ended in final state but some data left to read
+            std::cout << "throw_on_error(p<pe):" << p << " < " << pe << std::endl;
             throw expressions_syntax_error(format("Parse error after position {}", eof - _cur_start));
         }
     }
@@ -135,11 +150,11 @@ protected:
 };
 
 class parser_path_handler : private virtual parser_base {
-protected:
     parsed::path _cur_path;
-
+protected:
     [[gnu::always_inline]]
     void observe_path_root() {
+        std::cout << "observe_path_root" << std::endl;
         _cur_path.set_root(str());
     }
 
@@ -150,17 +165,23 @@ protected:
 
     [[gnu::always_inline]]
     void observe_path_index() {
-       _cur_path.add_index(std::stoi(str()));
+        _cur_path.add_index(std::stoi(str()));
+    }
+
+    [[gnu::always_inline]]
+    parsed::path move_cur_path() {
+        std::cout << "move_cur_path" << std::endl;
+        return std::exchange(_cur_path, parsed::path());
     }
 };
 
 class parser_value_handler : 
     private virtual parser_base,
     private virtual parser_path_handler {
-protected:
+
     std::vector<parsed::value> _value_stack;
     parsed::value* _cur_value; // Points to top element from the stack.
-
+protected:
     [[gnu::always_inline]]
     void observe_value_start() {
         _cur_value = &_value_stack.emplace_back();
@@ -168,8 +189,7 @@ protected:
 
     [[gnu::always_inline]]
     void observe_value_path() {
-        _cur_value->set_path(std::move(_cur_path));
-        _cur_path = parsed::path();
+        _cur_value->set_path(move_cur_path());
     }
 
     [[gnu::always_inline]]
@@ -190,6 +210,14 @@ protected:
         _cur_value->add_func_parameter(std::move(_value_stack.back()));
         _value_stack.pop_back();
     }
+
+    [[gnu::always_inline]]
+    parsed::value move_cur_value() {
+        assert(_value_stack.size() == 1);
+        auto v = std::move(_value_stack[0]);
+        _value_stack.clear();
+        return v;
+    }
 };
 
 class projection_parser : 
@@ -197,7 +225,7 @@ class projection_parser :
     private virtual parser_path_handler 
 {
     %% machine projection_parser;
-    %% write data noerror nofinal noprefix;
+    %% write data;
     std::vector<parsed::path> _res;
 public:
     std::vector<parsed::path> parse(std::string_view buf) {
@@ -211,34 +239,91 @@ public:
 private:
     [[gnu::always_inline]]
     void observe_path() {
-        _res.push_back(std::move(_cur_path));
-        _cur_path = parsed::path();
+        _res.push_back(move_cur_path());
     }
 };
 
-class update_parser : 
+class update_parser :
 private virtual parser_base,
     private virtual parser_path_handler,
-    private virtual parser_value_handler 
+    private virtual parser_value_handler
 {
-    %% machine projection_parser;
-    %% write data noerror nofinal noprefix;
+    %% machine update_parser;
+    %% write data;
     parsed::update_expression _res;
+    // Used only for SET action, other can be constructed directly in _res.
+    parsed::action _cur_action; 
+    parsed::set_rhs _cur_rhs;
 public:
     parsed::update_expression parse(std::string_view buf) {
         %% write init;
         init(buf);
+        _res.clear();
         _res = parsed::update_expression();
         %% write exec;
+        //std::cout << "!!!" <<  update_parser_name_error << std::endl;
         throw_on_error(%%{ write first_final; }%%);
         return _res;
     }
 private:
-    // [[gnu::always_inline]]
-    // void observe_path() {
-    //     _res.push_back(std::move(_cur_path));
-    //     _cur_path = parsed::path();
-    // }
+    [[gnu::always_inline]]
+    void observe_set_rhs_value() {
+        _cur_rhs.set_value(move_cur_value());
+    }
+
+    [[gnu::always_inline]]
+    void observe_set_rhs_plus_value() {
+        _cur_rhs.set_plus(move_cur_value());
+    }
+
+    [[gnu::always_inline]]
+    void observe_set_rhs_minus_value() {
+        _cur_rhs.set_minus(move_cur_value());
+    }
+
+    [[gnu::always_inline]]
+    void observe_set_action_path() {
+       _cur_action.assign_set(move_cur_path());
+    }
+    
+    [[gnu::always_inline]]
+    parsed::action move_cur_action() {
+        return std::exchange(_cur_action, parsed::action());
+    }
+
+    [[gnu::always_inline]]
+    parsed::set_rhs move_cur_rhs() {
+        return std::exchange(_cur_rhs, parsed::set_rhs());
+    }
+
+    [[gnu::always_inline]]
+    void observe_set_action() {
+        auto a = move_cur_action();
+        a.assign_set_rhs(move_cur_rhs());
+        _res.add(std::move(a));
+    }
+    
+    [[gnu::always_inline]]
+    void observe_remove_action() {
+        std::cout << "observe_remove_action" << std::endl;
+        parsed::action a;
+        a.assign_remove(move_cur_path());
+        _res.add(std::move(a));
+    }
+    
+    [[gnu::always_inline]]
+    void observe_add_action() {
+        parsed::action a;
+        a.assign_add(move_cur_path(), str());
+        _res.add(std::move(a));
+    }
+    
+    [[gnu::always_inline]]
+    void observe_delete_action() {
+        parsed::action a;
+        a.assign_del(move_cur_path(), str());
+        _res.add(std::move(a));
+    }
 };
 
 } // namespace alternator

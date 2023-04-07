@@ -7,6 +7,7 @@
  */
 
 #include "expressions.hh"
+#include "alternator/expressions_types.hh"
 #include "serialization.hh"
 #include "utils/base64.hh"
 #include "conditions.hh"
@@ -44,8 +45,14 @@ Result do_with_parser(std::string_view input, Func&& f) {
     return result;
 }
 
+parsed::update_expression parse_update_expression2(std::string_view query) {
+    static thread_local auto p = update_parser();
+    return p.parse(query);
+}
+
 parsed::update_expression
 parse_update_expression(std::string_view query) {
+    return parse_update_expression2(query);
     try {
         return do_with_parser(query,  std::mem_fn(&expressionsParser::update_expression));
     } catch (...) {
@@ -54,18 +61,19 @@ parse_update_expression(std::string_view query) {
 }
 
 std::vector<parsed::path>
+parse_projection_expression2(std::string_view query) {
+    static thread_local auto p = projection_parser();
+    return p.parse(query);
+}
+
+std::vector<parsed::path>
 parse_projection_expression(std::string_view query) {
+    return parse_projection_expression2(query);
     try {
         return do_with_parser(query,  std::mem_fn(&expressionsParser::projection_expression));
     } catch (...) {
         throw expressions_syntax_error(format("Failed parsing ProjectionExpression '{}': {}", query, std::current_exception()));
     }
-}
-
-parsed::value parse_value_exp(std::string_view query) {
-    // static thread_local auto p = value_parser();
-    // return p.parse(query);
-    return parsed::value();
 }
 
 parsed::condition_expression
@@ -79,12 +87,18 @@ parse_condition_expression(std::string_view query) {
 
 namespace parsed {
 
-void update_expression::add(update_expression::action a) {
+void update_expression::add(action a) {
+    auto mark = [](bool& b) {
+        if (b) {
+            throw expressions_syntax_error("Each of SET, REMOVE, ADD, DELETE may only appear once in UpdateExpression");
+        }
+        b = true;
+    };
     std::visit(overloaded_functor {
-        [&] (action::set&)    { seen_set = true; },
-        [&] (action::remove&) { seen_remove = true; },
-        [&] (action::add&)    { seen_add = true; },
-        [&] (action::del&)    { seen_del = true; }
+        [&] (action::set&)    { mark(seen_set); },
+        [&] (action::remove&) { mark(seen_remove); },
+        [&] (action::add&)    { mark(seen_add); },
+        [&] (action::del&)    { mark(seen_del); }
     }, a._action);
     _actions.push_back(std::move(a));
 }
@@ -143,6 +157,10 @@ std::ostream& operator<<(std::ostream& os, const path& p) {
         }, op);
     }
     return os;
+}
+
+std::ostream& operator<<(std::ostream& os , const update_expression& up) {
+  return os << "[update_expression]";
 }
 
 } // namespace parsed
@@ -275,20 +293,20 @@ void resolve_update_expression(parsed::update_expression& ue,
         const rjson::value* expression_attribute_values,
         std::unordered_set<std::string>& used_attribute_names,
         std::unordered_set<std::string>& used_attribute_values) {
-    for (parsed::update_expression::action& action : ue.actions()) {
+    for (parsed::action& action : ue.actions()) {
         resolve_path(action._path, expression_attribute_names, used_attribute_names);
         std::visit(overloaded_functor {
-            [&] (parsed::update_expression::action::set& a) {
+            [&] (parsed::action::set& a) {
                 resolve_set_rhs(a._rhs, expression_attribute_names, expression_attribute_values,
                         used_attribute_names, used_attribute_values);
             },
-            [&] (parsed::update_expression::action::remove& a) {
+            [&] (parsed::action::remove& a) {
                 // nothing to do
             },
-            [&] (parsed::update_expression::action::add& a) {
+            [&] (parsed::action::add& a) {
                 resolve_constant(a._valref, expression_attribute_values, used_attribute_values);
             },
-            [&] (parsed::update_expression::action::del& a) {
+            [&] (parsed::action::del& a) {
                 resolve_constant(a._valref, expression_attribute_values, used_attribute_values);
             }
         }, action._action);

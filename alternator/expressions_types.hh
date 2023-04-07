@@ -48,7 +48,7 @@ private:
 public:
     path() = default;
     path(std::string root) : _root(std::move(root)) {}
-    // used only for tests
+    // Used only for tests.
     path(std::string root, std::vector<operator_t> operators) :
         _root(std::move(root)), _operators(std::move(operators)) {}
 
@@ -98,6 +98,10 @@ struct constant {
     void set(std::string& s) {
         _value = s;
     }
+
+    bool operator==(const constant& other) const {
+        return _value == other._value;
+    }
 };
 
 // "value" is is a value used in the right hand side of an assignment
@@ -111,6 +115,10 @@ struct value {
     struct function_call {
         std::string _function_name;
         std::vector<value> _parameters;
+
+        bool operator==(const function_call& other) const {
+        return _function_name == other._function_name && _parameters == other._parameters;
+        }
     };
     std::variant<constant, path, function_call> _value;
     void set_constant(constant c) {
@@ -137,6 +145,10 @@ struct value {
     bool is_func() const {
         return std::holds_alternative<function_call>(_value);
     }
+
+    bool operator==(const value& other) const {
+        return _value == other._value;
+    }
 };
 
 // The right-hand-side of a SET in an update expression can be either a
@@ -158,43 +170,77 @@ public:
         _op = '-';
         _v2 = std::move(v2);
     }
+
+    bool operator==(const set_rhs& other) const {
+        return _op == other._op && _v1 == other._v1 && _v2 == other._v2;
+    }
+};
+
+struct action {
+    path _path;
+    struct set {
+        set_rhs _rhs;
+        bool operator==(const set& other) const { return _rhs == other._rhs; }
+    };
+    struct remove {
+        bool operator==(const remove& other) const { return true; }
+    };
+    struct add {
+        constant _valref;
+        bool operator==(const add& other) const { return _valref == other._valref; }
+    };
+    struct del {
+        constant _valref;
+        bool operator==(const del& other) const { return _valref == other._valref; }
+    };
+    using action_t = std::variant<remove, set, add, del>;
+    action_t _action;
+
+    void assign_set(path p, set_rhs rhs) {
+        _path = std::move(p);
+        _action = set { std::move(rhs) };
+    }
+    void assign_set(path p) {
+            _path = std::move(p);
+    }
+    void assign_set_rhs(set_rhs rhs) {
+        _action = set { std::move(rhs) };
+    }
+    void assign_remove(path p) {
+        _path = std::move(p);
+        _action = remove { };
+    }
+    void assign_add(path p, std::string v) {
+        _path = std::move(p);
+        _action = add { constant { std::move(v) } };
+    }
+    void assign_del(path p, std::string v) {
+        _path = std::move(p);
+        _action = del { constant { std::move(v) } };
+    }
+
+    action() = default;
+    action(path p, action_t a = action_t()) : _path(std::move(p)), _action(std::move(a)) {}
+
+    static action make_set(path p, set_rhs rhs = set_rhs()) {
+        return action(std::move(p), set { std::move(rhs) });
+    }
+    static action make_remove(path p) {
+        return action(std::move(p), remove { });
+    }
+    static action make_add(path p, std::string v) {
+        return action(std::move(p), add { constant { std::move(v) } });
+    }
+    static action make_del(path p, std::string v) {
+        return action(std::move(p), del { constant { std::move(v) } });
+    }
+
+    bool operator==(const action& other) const {
+        return _path == other._path && set{} == set{} && _action == other._action;
+    }
 };
 
 class update_expression {
-public:
-    struct action {
-        path _path;
-        struct set {
-            set_rhs _rhs;
-        };
-        struct remove {
-        };
-        struct add {
-            constant _valref;
-        };
-        struct del {
-            constant _valref;
-        };
-        std::variant<set, remove, add, del> _action;
-
-        void assign_set(path p, set_rhs rhs) {
-            _path = std::move(p);
-            _action = set { std::move(rhs) };
-        }
-        void assign_remove(path p) {
-            _path = std::move(p);
-            _action = remove { };
-        }
-        void assign_add(path p, std::string v) {
-            _path = std::move(p);
-            _action = add { constant { std::move(v) } };
-        }
-        void assign_del(path p, std::string v) {
-            _path = std::move(p);
-            _action = del { constant { std::move(v) } };
-        }
-    };
-private:
     std::vector<action> _actions;
     bool seen_set = false;
     bool seen_remove = false;
@@ -212,6 +258,24 @@ public:
     std::vector<action>& actions() {
         return _actions;
     }
+    void clear() {
+        _actions.clear();
+        seen_set = seen_remove = seen_add = seen_del = false;
+    }
+
+    bool operator==(const update_expression& other) const {
+        if (_actions.size() != other._actions.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < _actions.size(); i++) {
+            if (_actions[i] != other._actions[i]) {
+                return false;
+            }
+        }
+        return true; 
+    }
+    
+    friend std::ostream& operator<<(std::ostream&, const update_expression&);
 };
 
 // A primitive_condition is a condition expression involving one condition,

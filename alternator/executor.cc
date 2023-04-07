@@ -2404,7 +2404,7 @@ static bool check_needs_read_before_write(const parsed::value& v) {
     }, v._value);
 }
 
-static bool check_needs_read_before_write(const attribute_path_map<parsed::update_expression::action>& update_expression) {
+static bool check_needs_read_before_write(const attribute_path_map<parsed::action>& update_expression) {
     return boost::algorithm::any_of(update_expression, [](const auto& p) {
         if (!p.second.has_value()) {
             // If the action is not on the top-level attribute, we need to
@@ -2415,16 +2415,16 @@ static bool check_needs_read_before_write(const attribute_path_map<parsed::updat
         // Otherwise, the action p.second.get_value() is just on top-level
         // attribute. Check if it needs read-before-write:
         return std::visit(overloaded_functor {
-            [&] (const parsed::update_expression::action::set& a) -> bool {
+            [&] (const parsed::action::set& a) -> bool {
                 return check_needs_read_before_write(a._rhs._v1) || (a._rhs._op != 'v' && check_needs_read_before_write(a._rhs._v2));
             },
-            [&] (const parsed::update_expression::action::remove& a) -> bool {
+            [&] (const parsed::action::remove& a) -> bool {
                 return false;
             },
-            [&] (const parsed::update_expression::action::add& a) -> bool {
+            [&] (const parsed::action::add& a) -> bool {
                 return true;
             },
-            [&] (const parsed::update_expression::action::del& a) -> bool {
+            [&] (const parsed::action::del& a) -> bool {
                 return true;
             }
         }, p.second.get_value()._action);
@@ -2439,7 +2439,7 @@ public:
     // Instead of keeping a parsed::update_expression with an unsorted list
     // list of actions, we keep them in an attribute_path_map which groups
     // them by top-level attribute, and detects forbidden overlaps/conflicts.
-    attribute_path_map<parsed::update_expression::action> _update_expression;
+    attribute_path_map<parsed::action> _update_expression;
 
     parsed::condition_expression _condition_expression;
 
@@ -2560,16 +2560,16 @@ update_item_operation::needs_read_before_write() const {
 // below) will either write this JSON as the content of a column, or
 // use it as a piece in a bigger top-level attribute.
 static std::optional<rjson::value> action_result(
-        const parsed::update_expression::action& action,
+        const parsed::action& action,
         const rjson::value* previous_item) {
     return std::visit(overloaded_functor {
-        [&] (const parsed::update_expression::action::set& a) -> std::optional<rjson::value> {
+        [&] (const parsed::action::set& a) -> std::optional<rjson::value> {
             return calculate_value(a._rhs, previous_item);
         },
-        [&] (const parsed::update_expression::action::remove& a) -> std::optional<rjson::value> {
+        [&] (const parsed::action::remove& a) -> std::optional<rjson::value> {
             return std::nullopt;
         },
-        [&] (const parsed::update_expression::action::add& a) -> std::optional<rjson::value> {
+        [&] (const parsed::action::add& a) -> std::optional<rjson::value> {
             parsed::value base;
             parsed::value addition;
             base.set_path(action._path);
@@ -2604,7 +2604,7 @@ static std::optional<rjson::value> action_result(
             }
             return result;
         },
-        [&] (const parsed::update_expression::action::del& a) -> std::optional<rjson::value> {
+        [&] (const parsed::action::del& a) -> std::optional<rjson::value> {
             parsed::value base;
             parsed::value subset;
             base.set_path(action._path);
@@ -2625,7 +2625,7 @@ static std::optional<rjson::value> action_result(
 }
 
 // Print an attribute_path_map_node<action> as the list of paths it contains:
-static std::ostream& operator<<(std::ostream& out, const attribute_path_map_node<parsed::update_expression::action>& h) {
+static std::ostream& operator<<(std::ostream& out, const attribute_path_map_node<parsed::action>& h) {
     if (h.has_value()) {
         out << " " << h.get_value()._path;
     } else if (h.has_members()) {
@@ -2646,7 +2646,7 @@ static std::ostream& operator<<(std::ostream& out, const attribute_path_map_node
 // actions. Modifies obj in-place or returns false if it is to be removed.
 static bool hierarchy_actions(
         rjson::value& obj,
-        const attribute_path_map_node<parsed::update_expression::action>& h,
+        const attribute_path_map_node<parsed::action>& h,
         const rjson::value* previous_item)
 {
     if (!obj.IsObject() || obj.MemberCount() != 1) {
@@ -2672,7 +2672,7 @@ static bool hierarchy_actions(
         }
         for (const auto& member : h.get_members()) {
             std::string attr = member.first;
-            const attribute_path_map_node<parsed::update_expression::action>& subh = *member.second;
+            const attribute_path_map_node<parsed::action>& subh = *member.second;
             rjson::value *subobj = rjson::find(v, attr);
             if (subobj) {
                 if (!hierarchy_actions(*subobj, subh, previous_item)) {
@@ -2704,7 +2704,7 @@ static bool hierarchy_actions(
         unsigned nremoved = 0;
         for (const auto& index : h.get_indexes()) {
             unsigned i = index.first - nremoved;
-            const attribute_path_map_node<parsed::update_expression::action>& subh = *index.second;
+            const attribute_path_map_node<parsed::action>& subh = *index.second;
             if (i < v.Size()) {
                 if (!hierarchy_actions(v[i], subh, previous_item)) {
                     v.Erase(v.Begin() + i);
@@ -2752,7 +2752,7 @@ update_item_operation::apply(std::unique_ptr<rjson::value> previous_item, api::t
     attribute_collector attrs_collector;
     bool any_updates = false;
     auto do_update = [&] (bytes&& column_name, const rjson::value& json_value,
-                          const attribute_path_map_node<parsed::update_expression::action>* h = nullptr) {
+                          const attribute_path_map_node<parsed::action>* h = nullptr) {
         any_updates = true;
         if (_returnvalues == returnvalues::ALL_NEW) {
             rjson::replace_with_string_name(_return_attributes,

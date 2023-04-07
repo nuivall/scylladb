@@ -28,7 +28,7 @@ public:
 
 parsed::update_expression parse_update_expression(std::string_view query);
 std::vector<parsed::path> parse_projection_expression(std::string_view query);
-parsed::value parse_value_exp(std::string_view query);
+parsed::update_expression parse_value_exp(std::string_view query);
 parsed::condition_expression parse_condition_expression(std::string_view query);
 
 void resolve_update_expression(parsed::update_expression& ue,
