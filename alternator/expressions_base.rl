@@ -28,14 +28,14 @@ path = path_component %observe_path_root (
     | ('[' integer ']') %observe_path_index
 )* %observe_path;
 
-value = space* (
+value = (
     valref %observe_value_valref
     | path %observe_value_path
     | name %observe_value_func_name '(' @{ fcall value_after_parenthesis; }
-) >observe_value_start space*;
+) >observe_value_start ;
 value_after_parenthesis := (
-    value %observe_value_func_param
-    (',' value %observe_value_func_param)*
+    space* value %observe_value_func_param space*
+    (',' space* value %observe_value_func_param space*)*
     ')' @{ fret; }
 );
 

@@ -88,17 +88,11 @@ parse_condition_expression(std::string_view query) {
 namespace parsed {
 
 void update_expression::add(action a) {
-    auto mark = [](bool& b) {
-        if (b) {
-            throw expressions_syntax_error("Each of SET, REMOVE, ADD, DELETE may only appear once in UpdateExpression");
-        }
-        b = true;
-    };
     std::visit(overloaded_functor {
-        [&] (action::set&)    { mark(seen_set); },
-        [&] (action::remove&) { mark(seen_remove); },
-        [&] (action::add&)    { mark(seen_add); },
-        [&] (action::del&)    { mark(seen_del); }
+        [&] (action::set&)    { seen_set = true; },
+        [&] (action::remove&) { seen_remove = true; },
+        [&] (action::add&)    { seen_add = true; },
+        [&] (action::del&)    { seen_del = true; }
     }, a._action);
     _actions.push_back(std::move(a));
 }
@@ -160,7 +154,7 @@ std::ostream& operator<<(std::ostream& os, const path& p) {
 }
 
 std::ostream& operator<<(std::ostream& os , const update_expression& up) {
-  return os << "[update_expression]";
+  return os << "[update_expression" << " size=" << up.actions().size() << " path[0]=" << up.actions()[0]._path  << "]";
 }
 
 } // namespace parsed

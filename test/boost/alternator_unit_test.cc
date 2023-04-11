@@ -101,6 +101,7 @@ using op = p::operator_t;
 BOOST_DATA_TEST_CASE(test_expressions_projections_valid, bdata::make({
     std::make_tuple("x1", v{p("x1")}),
     std::make_tuple("#0placeholder", v{p("#0placeholder")}),
+    std::make_tuple("#0placeholder.#1placeholder", v{p("#0placeholder",std::vector{op("#1placeholder")})}),
     std::make_tuple("x1, x2", v{p("x1"), p("x2")}),
     std::make_tuple("y[0]", v{p("y", std::vector{op(0u)})}),
     std::make_tuple("y[0][2]", v{p("y", std::vector{op(0u), op(2u)})}),
@@ -151,21 +152,130 @@ u make_u(std::vector<a> as) {
     return ret;
 }
 
+using val = alternator::parsed::value;
+using rhs = alternator::parsed::set_rhs;
+
+rhs rhs_valref(std::string name) {
+    rhs r;
+    val v;
+    v.set_valref(name);
+    r.set_value(std::move(v));
+    return r;
+}
+
+rhs rhs_valref_plus_path(std::string name, p path) {
+    rhs r;
+    val v, v2;
+    v.set_valref(name);
+    v2.set_path(path);
+    r.set_value(std::move(v));
+    r.set_plus(std::move(v2));
+    return r;
+}
+
+rhs rhs_path_minus_func(p path, val fun) {
+    rhs r;
+    val v;
+    v.set_path(path);
+    r.set_value(std::move(v));
+    r.set_minus(std::move(fun));
+    return r;
+}
+
+rhs rhs_val(val v) {
+    rhs r;
+    r.set_value(std::move(v));
+    return r;
+}
+
 BOOST_DATA_TEST_CASE(test_expressions_update_valid, bdata::make({
     std::make_tuple("REMOVE xyz", make_u(std::vector{a::make_remove(p("xyz"))})),
+    std::make_tuple("REMOVE #y", make_u(std::vector{a::make_remove(p("#y"))})),
+    std::make_tuple("ReMoVe x.y[1]", make_u(std::vector{a::make_remove(p("x", std::vector{op("y"), op(1u)}))})),
+    std::make_tuple("REMOVE a,bb,  ccc", make_u(std::vector{
+        a::make_remove(p("a")), 
+        a::make_remove(p("bb")), 
+        a::make_remove(p("ccc"))})),
+    std::make_tuple("ADD v1 :val, v[2] :val2", make_u(std::vector{
+        a::make_add(p("v1"), ":val"), 
+        a::make_add(p("v", std::vector{op(2u)}),":val2")})),
+    std::make_tuple("DELETE x.y :val", make_u(std::vector{
+        a::make_del(p("x", std::vector{op("y")}),":val")})),
+    std::make_tuple("SET path = :val, path2=:val2", make_u(std::vector{
+        a::make_set(p("path"), rhs_valref(":val")),
+        a::make_set(p("path2"), rhs_valref(":val2"))})),
+    std::make_tuple("SET path = :val + path2", make_u(std::vector{
+        a::make_set(p("path"), rhs_valref_plus_path(":val", p("path2")))})),
+    std::make_tuple("SET path = path2 - fun(#nameref, :valref, path)", make_u(std::vector{
+        a::make_set(p("path"), rhs_path_minus_func(p("path2"), []() {
+            val v, v2, v3, v4;
+            v.set_func_name("fun");
+            v2.set_path(p("#nameref"));
+            v3.set_valref(":valref");
+            v4.set_path(p("path"));
+            v.add_func_parameter(v2);
+            v.add_func_parameter(v3);
+            v.add_func_parameter(v4);
+            return v;
+        }()))
+    })),
+    std::make_tuple("SET path = funA(path,funB(funC(:valref),   funD(funE(:valref2)) ) ), #pathref = funF( #pathref)", make_u(std::vector{
+        a::make_set(p("path"), rhs_val([]() {
+            val fA, fB, fC, fD, fE;
+            fA.set_func_name("funA");
+            fB.set_func_name("funB");
+            fC.set_func_name("funC");
+            fD.set_func_name("funD");
+            fE.set_func_name("funE");
+
+            val valref, valref2, path;
+            valref.set_valref(":valref");
+            valref2.set_valref(":valref2");
+            path.set_path(p("path"));
+
+            fC.add_func_parameter(valref);
+            fE.add_func_parameter(valref2);
+
+            fD.add_func_parameter(fE);
+            fB.add_func_parameter(fC);
+            fB.add_func_parameter(fD);
+
+            fA.add_func_parameter(path);
+            fA.add_func_parameter(fB);
+            return fA;
+        }())),
+        a::make_set(p("#pathref"), rhs_val([]() {
+            val fF;
+            fF.set_func_name("funF");
+            val pathref;
+            pathref.set_path(p("#pathref"));
+            fF.add_func_parameter(pathref);
+            return fF;
+        }()))
+    })),
 }), input, expected_obj)
 {
-    std::cout << input << std::endl;
     auto got_obj = alternator::parse_update_expression(input);
     BOOST_REQUIRE_EQUAL(got_obj, expected_obj);
 }
 
 BOOST_DATA_TEST_CASE(test_expressions_update_invalid, bdata::make({
     "",
-    // Too much nesting
+    "REMOVE  ",
+    "REMOVE a REMOVE b",
+    "ADD  ",
+    // Too much nesting.
     "f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(#ref))))))))))))))))))))))))))))))))))))))",
-    "ADD fefe", // Not valref
-
+    // 12 is not valref.
+    "ADD Fefe 12",
+    "DELETE Fefe 12",
+    "ADD fefe, ",
+    "SET :valref = :valref2",
+    "SET path = fun(",
+    "SET path = fun()",
+    "SET path = fun())",
+    "SET path = :val,",
+    "SET path = :valfun()",
 }), input)
 {
     BOOST_REQUIRE_THROW(alternator::parse_update_expression(input),

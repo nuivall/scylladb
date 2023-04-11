@@ -43,3 +43,9 @@ PERF_TEST_F(exp_test, perf_projection_exp_2) {
         alternator::parse_projection_expression("xexe, fofo23, ghe.fege, gree[43].dff[222].ggg")
     );
 }
+
+PERF_TEST_F(exp_test, perf_update_exp_1) {
+    perf_tests::do_not_optimize(
+        alternator::parse_update_expression("SET fefe = :val")
+    );
+}
