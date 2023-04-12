@@ -163,6 +163,14 @@ rhs rhs_valref(std::string name) {
     return r;
 }
 
+rhs rhs_path(p path) {
+    rhs r;
+    val v;
+    v.set_path(path);
+    r.set_value(std::move(v));
+    return r;
+}
+
 rhs rhs_valref_plus_path(std::string name, p path) {
     rhs r;
     val v, v2;
@@ -196,11 +204,16 @@ BOOST_DATA_TEST_CASE(test_expressions_update_valid, bdata::make({
         a::make_remove(p("a")), 
         a::make_remove(p("bb")), 
         a::make_remove(p("ccc"))})),
-    std::make_tuple("ADD v1 :val, v[2] :val2", make_u(std::vector{
+    std::make_tuple("ADD v1   :val, v[2] :val2", make_u(std::vector{
         a::make_add(p("v1"), ":val"), 
         a::make_add(p("v", std::vector{op(2u)}),":val2")})),
     std::make_tuple("DELETE x.y :val", make_u(std::vector{
         a::make_del(p("x", std::vector{op("y")}),":val")})),
+    std::make_tuple("SET a = b REMOVE b, c", make_u(std::vector{
+        a::make_set(p("b"), rhs_path(p("a"))),
+        a::make_remove(p("b")),
+        a::make_remove(p("c")),
+    })),
     std::make_tuple("SET path = :val, path2=:val2", make_u(std::vector{
         a::make_set(p("path"), rhs_valref(":val")),
         a::make_set(p("path2"), rhs_valref(":val2"))})),
@@ -265,7 +278,7 @@ BOOST_DATA_TEST_CASE(test_expressions_update_invalid, bdata::make({
     "REMOVE a REMOVE b",
     "ADD  ",
     // Too much nesting.
-    "f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(#ref))))))))))))))))))))))))))))))))))))))",
+    "SET path = f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(f(#ref))))))))))))))))))))))))))))))))))))))",
     // 12 is not valref.
     "ADD Fefe 12",
     "DELETE Fefe 12",

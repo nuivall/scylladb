@@ -30,7 +30,7 @@
 
 /*
 RAGEL DEBUGGING TIPS:
-- add action ${std::cout << "! state " << fcurs << " char " << fc << std::endl;} to main block, it will print every state transition
+- add action ${std::cout << "! state " << fcurs << " char " << fc << " next_state " << ftargs << std::endl;} to main block, it will print every state transition
 - generate FSM graph with "ragel -Vp -S "update_parser" alternator/expressions_parser.rl -o out.dot && dot out.dot -Tsvg -o out.svg"
 - now you can observe and understand how FSM advances
 */
@@ -67,26 +67,46 @@ action observe_expression_clause { observe_expression_clause(); }
 
 set_rhs = value %observe_set_rhs_value space*
     (
-          ('+' space** value) %observe_set_rhs_plus_value
-        | ('-' space** value) %observe_set_rhs_minus_value
+          ('+' space* value) %observe_set_rhs_plus_value
+        | ('-' space* value) %observe_set_rhs_minus_value
     )? space* ;
 set_action = space* path %observe_set_action_path space*
     '=' space* set_rhs %observe_set_action;
 remove_action = space* path %observe_remove_action space* ;
-add_action = space* (path space valref) %observe_add_action space* ;
-delete_action = space* (path space valref) %observe_delete_action space* ;
+add_action = space* (path space+ valref) %observe_add_action space* ;
+delete_action = space* (path space+ valref) %observe_delete_action space* ;
 
 expression_clause = (
       (/SET/i set_action (',' set_action)*)
     | (/ADD/i add_action (',' add_action)*)
     | (/REMOVE/i remove_action (',' remove_action)*)
-    | (/DELETE/i delete_action (',' delete_action)*) 
+    | (/DELETE/i delete_action (',' delete_action)*)
 ) %observe_expression_clause ;
 
-update_expression = expression_clause <: (space expression_clause)* ;
-main := update_expression ${std::cout << "! state " << fcurs << " char " << fc << " next_state " << ftargs << std::endl;} ;
-# main := set_rhs ;
+update_expression = expression_clause <: expression_clause* ;
+main := update_expression ;
 }%%
+
+%%{
+machine condition_parser;
+include base "expressions_base.rl";
+access _fsm_;
+
+main := 'T' ;
+}%%
+
+/*
+comparison = '=' | ('<' '>') | '<' | ('<' '=') | '>' | ('>' '=') ;
+
+primitive_condition = value (
+      (comparison space* value)
+    | (/BETWEEN/i space+ value /AND/i space+ value)
+    | (/IN/i space* '(' value space* (',' space* value)* space* ')')
+)? ;
+
+boolean_expression_1 = 'T' ;
+boolean_expression = boolean_expression_1 /OR/i boolean_expression_1 ;
+*/
 
 class parser_base {
 protected:
@@ -103,17 +123,17 @@ protected:
     const char* _cur_start;
     const char* _cur_end;
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void mark_start(const char* p) {
         _cur_start = p;
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void mark_end(const char* p) {
         _cur_end = p;
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     std::string str() {
         // We do copy here to simplify memory management outside the parser
         // but if input's string_view data is guarnteed to outlive any usage of
@@ -126,7 +146,7 @@ protected:
     const char* pe;
     const char* eof;
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void init(std::string_view& buf) {
         p = buf.data();
         pe = p + buf.size();
@@ -134,7 +154,7 @@ protected:
         _cur_start = _cur_end = p;
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void throw_on_error(int first_final_state) {
         if (_fsm_cs < first_final_state) {
             throw expressions_syntax_error(format("Parse error after position {}", eof - _cur_start));
@@ -163,27 +183,27 @@ protected:
 class parser_path_handler : private virtual parser_base {
     parsed::path _cur_path;
 protected:
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_path_root() {
         _cur_path.set_root(str());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_path_dot() {
         _cur_path.add_dot(str());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_path_index() {
         _cur_path.add_index(std::stoi(str()));
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     parsed::path move_cur_path() {
         return std::exchange(_cur_path, parsed::path());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void init() {
         _cur_path = parsed::path();
     }
@@ -196,27 +216,27 @@ class parser_value_handler :
     std::vector<parsed::value> _value_stack;
     parsed::value* _cur_value; // Points to top element from the stack.
 protected:
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_value_start() {
         _cur_value = &_value_stack.emplace_back();
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_value_path() {
         _cur_value->set_path(move_cur_path());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_value_valref() {
         _cur_value->set_valref(str());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_value_func_name() {
         _cur_value->set_func_name(str());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_value_func_param() {
         auto si = _value_stack.size();
         assert(si >= 2);
@@ -225,7 +245,7 @@ protected:
         _value_stack.pop_back();
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     parsed::value move_cur_value() {
         std::cout << _value_stack.size() << std::endl;
         assert(_value_stack.size() == 1);
@@ -234,7 +254,7 @@ protected:
         return v;
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void init() {
         _value_stack.clear();
         _cur_value = nullptr;
@@ -259,7 +279,7 @@ public:
         return _res;
     }
 private:
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_path() {
         _res.push_back(move_cur_path());
     }
@@ -274,7 +294,7 @@ private virtual parser_base,
     %% write data;
     parsed::update_expression _res;
     parsed::update_expression _cur_exp;
-    // Used only for SET action, other can be constructed directly in _cur_exp.
+    // Used only for SET action, others can be constructed directly in _cur_exp.
     parsed::action _cur_action; 
     parsed::set_rhs _cur_rhs;
 public:
@@ -289,40 +309,40 @@ public:
         return _res;
     }
 private:
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_set_rhs_value() {
         std::cout << "observe_set_rhs_value" << std::endl;
         _cur_rhs.set_value(move_cur_value());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_set_rhs_plus_value() {
         std::cout << "observe_set_rhs_plus_value" << std::endl;
         _cur_rhs.set_plus(move_cur_value());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_set_rhs_minus_value() {
         std::cout << "observe_set_rhs_minus_value" << std::endl;
         _cur_rhs.set_minus(move_cur_value());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_set_action_path() {
        _cur_action.assign_set(move_cur_path());
     }
     
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     parsed::action move_cur_action() {
         return std::exchange(_cur_action, parsed::action());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     parsed::set_rhs move_cur_rhs() {
         return std::exchange(_cur_rhs, parsed::set_rhs());
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_set_action() {
         std::cout << "observe_set_action" << std::endl;
         auto a = move_cur_action();
@@ -330,35 +350,35 @@ private:
         _cur_exp.add(std::move(a));
     }
     
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_remove_action() {
         parsed::action a;
         a.assign_remove(move_cur_path());
         _cur_exp.add(std::move(a));
     }
     
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_add_action() {
         parsed::action a;
         a.assign_add(move_cur_path(), str());
         _cur_exp.add(std::move(a));
     }
     
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_delete_action() {
         parsed::action a;
         a.assign_del(move_cur_path(), str());
         _cur_exp.add(std::move(a));
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void observe_expression_clause() {
         std::cout << "observe_expression_clause" << std::endl;
         _res.append(std::move(_cur_exp));
         _cur_exp = parsed::update_expression();
     }
 
-    [[gnu::always_inline]]
+    //[[gnu::always_inline]]
     void init() {
         _res = parsed::update_expression();
         _cur_exp = parsed::update_expression();
@@ -366,5 +386,39 @@ private:
         _cur_rhs = parsed::set_rhs();
     }
 };
+
+class condition_parser :
+private virtual parser_base,
+    private virtual parser_path_handler,
+    private virtual parser_value_handler
+{
+    %% machine condition_parser;
+    %% write data;
+    parsed::condition_expression _res;
+    //parsed::condition__expression _cur_exp;
+public:
+    parsed::condition_expression parse(std::string_view buf) {
+        %% write init;
+        parser_base::init(buf);
+        parser_path_handler::init();
+        parser_value_handler::init();
+        condition_parser::init();
+        %% write exec;
+        throw_on_error(%%{ write first_final; }%%);
+        return _res;
+    }
+private:
+    // //[[gnu::always_inline]]
+    // void observe_set_rhs_value() {
+    //     std::cout << "observe_set_rhs_value" << std::endl;
+    //     _cur_rhs.set_value(move_cur_value());
+    // }
+
+    //[[gnu::always_inline]]
+    void init() {
+        _res = parsed::condition_expression();
+    }
+};
+
 
 } // namespace alternator
