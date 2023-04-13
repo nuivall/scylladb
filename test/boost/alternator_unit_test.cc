@@ -209,8 +209,8 @@ BOOST_DATA_TEST_CASE(test_expressions_update_valid, bdata::make({
         a::make_add(p("v", std::vector{op(2u)}),":val2")})),
     std::make_tuple("DELETE x.y :val", make_u(std::vector{
         a::make_del(p("x", std::vector{op("y")}),":val")})),
-    std::make_tuple("SET a = b REMOVE b, c", make_u(std::vector{
-        a::make_set(p("b"), rhs_path(p("a"))),
+    std::make_tuple("SET a = b   REMOVE b, c", make_u(std::vector{
+        a::make_set(p("a"), rhs_path(p("b"))),
         a::make_remove(p("b")),
         a::make_remove(p("c")),
     })),

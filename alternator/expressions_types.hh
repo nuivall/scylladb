@@ -27,6 +27,12 @@
  */
 
 namespace alternator {
+
+class expressions_syntax_error : public std::runtime_error {
+public:
+    using runtime_error::runtime_error;
+};
+
 namespace parsed {
 
 // "path" is an attribute's path in a document, e.g., a.b[3].c.
@@ -294,18 +300,18 @@ public:
 class primitive_condition {
 public:
     enum class type {
-        UNDEFINED, VALUE, EQ, NE, LT, LE, GT, GE, BETWEEN, IN
+        VALUE, EQ, NE, LT, LE, GT, GE, BETWEEN, IN
     };
-    type _op = type::UNDEFINED;
+    type _op = type::VALUE;
     std::vector<value> _values;
     void set_operator(type op) {
         _op = op;
     }
     void add_value(value&& v) {
+        if (_values.size() >= 100) {
+            throw expressions_syntax_error("IN operator list can contain up to 100 values");
+        }
         _values.push_back(std::move(v));
-    }
-    bool empty() const {
-        return _op == type::UNDEFINED;
     }
 };
 

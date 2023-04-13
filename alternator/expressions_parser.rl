@@ -83,8 +83,7 @@ expression_clause = (
     | (/DELETE/i delete_action (',' delete_action)*)
 ) %observe_expression_clause ;
 
-update_expression = expression_clause <: expression_clause* ;
-main := update_expression ;
+main := expression_clause <: expression_clause** ;
 }%%
 
 %%{
@@ -92,21 +91,32 @@ machine condition_parser;
 include base "expressions_base.rl";
 access _fsm_;
 
-main := 'T' ;
-}%%
+action observe_pr_cond_value { observe_pr_cond_value(); }
+action observe_pr_cond_between { observe_pr_cond_op(op_t::BETWEEN); }
+action observe_pr_cond_in { observe_pr_cond_op(op_t::IN); }
+action xxx { xxx(); }
 
-/*
-comparison = '=' | ('<' '>') | '<' | ('<' '=') | '>' | ('>' '=') ;
+comparison = (
+      '=' %{ observe_pr_cond_op(op_t::EQ) }
+    | ('<' '>') %{ observe_pr_cond_op(op_t::NE) }
+    | '<' %{ observe_pr_cond_op(op_t::LT) }
+    | ('<' '=') %{ observe_pr_cond_op(op_t::LE) }
+    | '>' %{ observe_pr_cond_op(op_t::GT) }
+    | ('>' '=') %{ observe_pr_cond_op(op_t::GE) }
+) >mark_start %mark_end ;
 
-primitive_condition = value (
-      (comparison space* value)
-    | (/BETWEEN/i space+ value /AND/i space+ value)
-    | (/IN/i space* '(' value space* (',' space* value)* space* ')')
+primitive_condition = value %observe_pr_cond_value (
+      (comparison space* value %observe_pr_cond_value)
+    | (/BETWEEN/i space+ value %observe_pr_cond_value
+           /AND/i space+ value %observe_pr_cond_value) %observe_pr_cond_between
+    | (/IN/i space* '(' value %observe_pr_cond_value space*
+            (',' space* value %observe_pr_cond_value)* space* ')') %observe_pr_cond_in
 )? ;
 
 boolean_expression_1 = 'T' ;
 boolean_expression = boolean_expression_1 /OR/i boolean_expression_1 ;
-*/
+main := boolean_expression ;
+}%%
 
 class parser_base {
 protected:
@@ -123,17 +133,17 @@ protected:
     const char* _cur_start;
     const char* _cur_end;
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void mark_start(const char* p) {
         _cur_start = p;
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void mark_end(const char* p) {
         _cur_end = p;
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     std::string str() {
         // We do copy here to simplify memory management outside the parser
         // but if input's string_view data is guarnteed to outlive any usage of
@@ -146,7 +156,7 @@ protected:
     const char* pe;
     const char* eof;
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void init(std::string_view& buf) {
         p = buf.data();
         pe = p + buf.size();
@@ -154,7 +164,7 @@ protected:
         _cur_start = _cur_end = p;
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void throw_on_error(int first_final_state) {
         if (_fsm_cs < first_final_state) {
             throw expressions_syntax_error(format("Parse error after position {}", eof - _cur_start));
@@ -183,27 +193,27 @@ protected:
 class parser_path_handler : private virtual parser_base {
     parsed::path _cur_path;
 protected:
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_path_root() {
         _cur_path.set_root(str());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_path_dot() {
         _cur_path.add_dot(str());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_path_index() {
         _cur_path.add_index(std::stoi(str()));
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     parsed::path move_cur_path() {
         return std::exchange(_cur_path, parsed::path());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void init() {
         _cur_path = parsed::path();
     }
@@ -216,27 +226,27 @@ class parser_value_handler :
     std::vector<parsed::value> _value_stack;
     parsed::value* _cur_value; // Points to top element from the stack.
 protected:
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_value_start() {
         _cur_value = &_value_stack.emplace_back();
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_value_path() {
         _cur_value->set_path(move_cur_path());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_value_valref() {
         _cur_value->set_valref(str());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_value_func_name() {
         _cur_value->set_func_name(str());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_value_func_param() {
         auto si = _value_stack.size();
         assert(si >= 2);
@@ -245,7 +255,7 @@ protected:
         _value_stack.pop_back();
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     parsed::value move_cur_value() {
         std::cout << _value_stack.size() << std::endl;
         assert(_value_stack.size() == 1);
@@ -254,7 +264,7 @@ protected:
         return v;
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void init() {
         _value_stack.clear();
         _cur_value = nullptr;
@@ -279,7 +289,7 @@ public:
         return _res;
     }
 private:
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_path() {
         _res.push_back(move_cur_path());
     }
@@ -309,40 +319,40 @@ public:
         return _res;
     }
 private:
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_set_rhs_value() {
         std::cout << "observe_set_rhs_value" << std::endl;
         _cur_rhs.set_value(move_cur_value());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_set_rhs_plus_value() {
         std::cout << "observe_set_rhs_plus_value" << std::endl;
         _cur_rhs.set_plus(move_cur_value());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_set_rhs_minus_value() {
         std::cout << "observe_set_rhs_minus_value" << std::endl;
         _cur_rhs.set_minus(move_cur_value());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_set_action_path() {
        _cur_action.assign_set(move_cur_path());
     }
     
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     parsed::action move_cur_action() {
         return std::exchange(_cur_action, parsed::action());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     parsed::set_rhs move_cur_rhs() {
         return std::exchange(_cur_rhs, parsed::set_rhs());
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_set_action() {
         std::cout << "observe_set_action" << std::endl;
         auto a = move_cur_action();
@@ -350,35 +360,35 @@ private:
         _cur_exp.add(std::move(a));
     }
     
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_remove_action() {
         parsed::action a;
         a.assign_remove(move_cur_path());
         _cur_exp.add(std::move(a));
     }
     
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_add_action() {
         parsed::action a;
         a.assign_add(move_cur_path(), str());
         _cur_exp.add(std::move(a));
     }
     
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_delete_action() {
         parsed::action a;
         a.assign_del(move_cur_path(), str());
         _cur_exp.add(std::move(a));
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void observe_expression_clause() {
         std::cout << "observe_expression_clause" << std::endl;
         _res.append(std::move(_cur_exp));
         _cur_exp = parsed::update_expression();
     }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
     void init() {
         _res = parsed::update_expression();
         _cur_exp = parsed::update_expression();
@@ -395,7 +405,10 @@ private virtual parser_base,
     %% machine condition_parser;
     %% write data;
     parsed::condition_expression _res;
-    //parsed::condition__expression _cur_exp;
+    parsed::condition_expression _cur_cond;
+    parsed::primitive_condition _cur_pr_cond;
+
+    using op_t = parsed::primitive_condition::type;
 public:
     parsed::condition_expression parse(std::string_view buf) {
         %% write init;
@@ -408,15 +421,31 @@ public:
         return _res;
     }
 private:
-    // //[[gnu::always_inline]]
+    // [[gnu::always_inline]]
     // void observe_set_rhs_value() {
     //     std::cout << "observe_set_rhs_value" << std::endl;
     //     _cur_rhs.set_value(move_cur_value());
     // }
 
-    //[[gnu::always_inline]]
+    [[gnu::always_inline]]
+    void observe_pr_cond_op(op_t op) {
+        _cur_pr_cond.set_operator(op);
+    }
+
+    [[gnu::always_inline]]
+    void observe_pr_cond_value() {
+        _cur_pr_cond.add_value(move_cur_value());
+    }
+
+    [[gnu::always_inline]]
+    parsed::primitive_condition move_cur_pr_cond() {
+        return std::exchange(_cur_pr_cond, parsed::primitive_condition());
+    }
+
+    [[gnu::always_inline]]
     void init() {
         _res = parsed::condition_expression();
+        // TODO!!!!!
     }
 };
 

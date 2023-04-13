@@ -21,11 +21,6 @@
 
 namespace alternator {
 
-class expressions_syntax_error : public std::runtime_error {
-public:
-    using runtime_error::runtime_error;
-};
-
 parsed::update_expression parse_update_expression(std::string_view query);
 std::vector<parsed::path> parse_projection_expression(std::string_view query);
 parsed::update_expression parse_value_exp(std::string_view query);
