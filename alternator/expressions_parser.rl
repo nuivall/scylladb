@@ -44,8 +44,8 @@ access _fsm_;
 
 # Embeding spaces directly inside path would have bad effect on matching
 # other states which embed path but not consider space as the beginning of path matching.
-spaced_path = space* path space* ;
-main := spaced_path (',' spaced_path)* ;
+spaced_path = space* path space*;
+main := spaced_path (',' spaced_path)*;
 }%%
 
 %%{
@@ -69,21 +69,25 @@ set_rhs = value %observe_set_rhs_value space*
     (
           ('+' space* value) %observe_set_rhs_plus_value
         | ('-' space* value) %observe_set_rhs_minus_value
-    )? space* ;
+    )? space*;
 set_action = space* path %observe_set_action_path space*
     '=' space* set_rhs %observe_set_action;
-remove_action = space* path %observe_remove_action space* ;
-add_action = space* (path space+ valref) %observe_add_action space* ;
-delete_action = space* (path space+ valref) %observe_delete_action space* ;
+remove_action = space* path %observe_remove_action space*;
+add_action = space* (path space+ valref) %observe_add_action space*;
+delete_action = space* (path space+ valref) %observe_delete_action space*;
 
 expression_clause = (
       (/SET/i set_action (',' set_action)*)
     | (/ADD/i add_action (',' add_action)*)
     | (/REMOVE/i remove_action (',' remove_action)*)
     | (/DELETE/i delete_action (',' delete_action)*)
-) %observe_expression_clause ;
+) %observe_expression_clause;
 
-main := expression_clause <: expression_clause** ;
+
+# Left-Guarded Concatenation used here because space after first value in set_rhs can also start
+# matching next expression_clause and as a result would cause nondeterminism leading to state
+# expansion bomb.
+main := expression_clause <: expression_clause**;
 }%%
 
 %%{
@@ -96,26 +100,50 @@ action observe_pr_cond_between { observe_pr_cond_op(op_t::BETWEEN); }
 action observe_pr_cond_in { observe_pr_cond_op(op_t::IN); }
 action xxx { xxx(); }
 
-comparison = (
-      '=' %{ observe_pr_cond_op(op_t::EQ) }
-    | ('<' '>') %{ observe_pr_cond_op(op_t::NE) }
-    | '<' %{ observe_pr_cond_op(op_t::LT) }
-    | ('<' '=') %{ observe_pr_cond_op(op_t::LE) }
-    | '>' %{ observe_pr_cond_op(op_t::GT) }
-    | ('>' '=') %{ observe_pr_cond_op(op_t::GE) }
-) >mark_start %mark_end ;
+# This start action is needed because condition_expression is a recursive type (can contain other conditions).
+# It will be used to handle stack growth and has to be executed on start rather than end transition.
+action observe_cond_start { observe_cond_start(); }
 
-primitive_condition = value %observe_pr_cond_value (
+comparison = (
+      '=' %{ observe_pr_cond_op(op_t::EQ); }
+    | ('<' '>') %{ observe_pr_cond_op(op_t::NE); }
+    | '<' %{ observe_pr_cond_op(op_t::LT); }
+    | ('<' '=') %{ observe_pr_cond_op(op_t::LE); }
+    | '>' %{ observe_pr_cond_op(op_t::GT); }
+    | ('>' '=') %{ observe_pr_cond_op(op_t::GE); }
+);
+
+primitive_condition = value %observe_pr_cond_value space* (
       (comparison space* value %observe_pr_cond_value)
     | (/BETWEEN/i space+ value %observe_pr_cond_value
            /AND/i space+ value %observe_pr_cond_value) %observe_pr_cond_between
-    | (/IN/i space* '(' value %observe_pr_cond_value space*
+    | (/IN/i space* '(' space* value %observe_pr_cond_value space*
             (',' space* value %observe_pr_cond_value)* space* ')') %observe_pr_cond_in
-)? ;
+)?;
 
-boolean_expression_1 = 'T' ;
-boolean_expression = boolean_expression_1 /OR/i boolean_expression_1 ;
-main := boolean_expression ;
+condition_expression_3a := primitive_condition;
+
+#condition_expression_3a := (
+#      primitive_condition
+#    | '(' @{ fcall condition_expression_3_after_parenthesis; }
+#);
+
+condition_expression_3 = 'FEXO';
+
+# Left-Guarded Concatenation used here because NOT can also match value name but NOT operator has precedence.
+condition_expression_2 = (/NOT/i space*)? <: condition_expression_3;
+
+# condition_expression_2 = 'FEFE';
+
+
+condition_expression_1 = condition_expression_2 space* (/AND/i space* condition_expression_2)*;
+condition_expression = condition_expression_1 space* (/OR/i space* condition_expression_1)*;
+
+condition_expression_3_after_parenthesis := (
+    space* condition_expression space* ')' @{ fret; }
+);
+
+main := condition_expression;
 }%%
 
 class parser_base {
@@ -175,7 +203,7 @@ protected:
         }
     }
 
-    // Ragel requires all action functions to be defined even if not "used" (no transition in FSM
+    // Ragel requires all action functions to be defined even if not used (no transition in FSM
     // which would trigger it). So we put empty implementation and overload if derived parser needs it.
 
     void observe_path() {}
@@ -404,11 +432,12 @@ private virtual parser_base,
 {
     %% machine condition_parser;
     %% write data;
-    parsed::condition_expression _res;
-    parsed::condition_expression _cur_cond;
-    parsed::primitive_condition _cur_pr_cond;
 
     using op_t = parsed::primitive_condition::type;
+    parsed::primitive_condition _cur_pr_cond;
+
+    std::vector<parsed::condition_expression> _cond_stack;
+    parsed::condition_expression* _cur_cond; // Points to top element from the stack.
 public:
     parsed::condition_expression parse(std::string_view buf) {
         %% write init;
@@ -421,12 +450,6 @@ public:
         return _res;
     }
 private:
-    // [[gnu::always_inline]]
-    // void observe_set_rhs_value() {
-    //     std::cout << "observe_set_rhs_value" << std::endl;
-    //     _cur_rhs.set_value(move_cur_value());
-    // }
-
     [[gnu::always_inline]]
     void observe_pr_cond_op(op_t op) {
         _cur_pr_cond.set_operator(op);
@@ -444,7 +467,7 @@ private:
 
     [[gnu::always_inline]]
     void init() {
-        _res = parsed::condition_expression();
+        //_res = parsed::condition_expression();
         // TODO!!!!!
     }
 };
