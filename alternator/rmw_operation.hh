@@ -54,6 +54,7 @@ public:
     static void set_default_write_isolation(std::string_view mode);
 
 protected:
+    executor& _executor;
     // The full request JSON
     rjson::value _request;
     // All RMW operations involve a single item with a specific partition
@@ -78,11 +79,12 @@ protected:
     // called more than once, if apply() will sometimes set this field it
     // must set it (even if just to the default empty value) every time.
     mutable rjson::value _return_attributes;
+    parsed::condition_expression get_parsed_condition_expression(rjson::value& request);
 public:
     // The constructor of a rmw_operation subclass should parse the request
     // and try to discover as many input errors as it can before really
     // attempting the read or write operations.
-    rmw_operation(service::storage_proxy& proxy, rjson::value&& request);
+    rmw_operation(executor& executor, rjson::value&& request);
     // rmw_operation subclasses (update_item_operation, put_item_operation
     // and delete_item_operation) shall implement an apply() function which
     // takes the previous value of the item (if it was read) and creates the

@@ -233,6 +233,17 @@ static std::string get_table_name(const rjson::value& request) {
     return *name;
 }
 
+executor::executor(gms::gossiper& gossiper,
+    service::storage_proxy& proxy,
+    service::migration_manager& mm,
+    db::system_distributed_keyspace& sdks,
+    cdc::metadata& cdc_metadata,
+    smp_service_group ssg,
+    utils::updateable_value<uint32_t> default_timeout_in_ms)
+        : _gossiper(gossiper), _proxy(proxy), _mm(mm), _sdks(sdks), _cdc_metadata(cdc_metadata), _ssg(ssg), _expression_cache(2048, 60min, elogger) {
+    s_default_timeout_in_ms = std::move(default_timeout_in_ms);
+}
+
 /** Extract table schema from a request.
  *  Many requests expect the table's name to be listed in a "TableName" field
  *  and need to look it up as an existing table. This convenience function
@@ -240,21 +251,21 @@ static std::string get_table_name(const rjson::value& request) {
  *  name is missing, invalid or the table doesn't exist. If everything is
  *  successful, it returns the table's schema.
  */
-schema_ptr executor::find_table(service::storage_proxy& proxy, const rjson::value& request) {
+schema_ptr executor::find_table(const rjson::value& request) {
     auto table_name = find_table_name(request);
     if (!table_name) {
         return nullptr;
     }
     try {
-        return proxy.data_dictionary().find_schema(sstring(executor::KEYSPACE_NAME_PREFIX) + sstring(*table_name), *table_name);
+        return _proxy.data_dictionary().find_schema(sstring(executor::KEYSPACE_NAME_PREFIX) + sstring(*table_name), *table_name);
     } catch(data_dictionary::no_such_column_family&) {
         throw api_error::resource_not_found(
                 format("Requested resource not found: Table: {} not found", *table_name));
     }
 }
 
-schema_ptr get_table(service::storage_proxy& proxy, const rjson::value& request) {
-    auto schema = executor::find_table(proxy, request);
+schema_ptr executor::get_table(const rjson::value& request) {
+    auto schema = find_table(request);
     if (!schema) {
         // if we get here then the name was missing, since syntax or missing actual CF 
         // checks throw. Slow path, but just call get_table_name to generate exception. 
@@ -527,7 +538,7 @@ future<executor::request_return_type> executor::describe_table(client_state& cli
     _stats.api_operations.describe_table++;
     elogger.trace("Describing table {}", request);
 
-    schema_ptr schema = get_table(_proxy, request);
+    schema_ptr schema = get_table(request);
 
     tracing::add_table_name(trace_state, schema->ks_name(), schema->cf_name());
 
@@ -547,7 +558,7 @@ future<executor::request_return_type> executor::delete_table(client_state& clien
     tracing::add_table_name(trace_state, keyspace_name, table_name);
     auto& p = _proxy.container();
 
-    schema_ptr schema = get_table(_proxy, request);
+    schema_ptr schema = get_table(request);
     rjson::value table_description = fill_table_description(schema, table_status::deleting, _proxy);
 
     co_await _mm.container().invoke_on(0, [&] (service::migration_manager& mm) -> future<> {
@@ -1134,13 +1145,13 @@ future<executor::request_return_type> executor::update_table(client_state& clien
         verify_billing_mode(request);
     }
 
-    co_return co_await _mm.container().invoke_on(0, [&p = _proxy.container(), request = std::move(request), gt = tracing::global_trace_state_ptr(std::move(trace_state))]
+    co_return co_await _mm.container().invoke_on(0, [&e = this->container(), request = std::move(request), gt = tracing::global_trace_state_ptr(std::move(trace_state))]
                                                 (service::migration_manager& mm) mutable -> future<executor::request_return_type> {
         // FIXME: the following needs to be in a loop. If mm.announce() below
         // fails, we need to retry the whole thing.
         auto group0_guard = co_await mm.start_group0_operation();
 
-        schema_ptr tab = get_table(p.local(), request);
+        schema_ptr tab = e.local().get_table(request);
 
         tracing::add_table_name(gt, tab->ks_name(), tab->cf_name());
 
@@ -1152,9 +1163,10 @@ future<executor::request_return_type> executor::update_table(client_state& clien
 
         schema_builder builder(tab);
 
+        auto& proxy = e.local()._proxy;
         rjson::value* stream_specification = rjson::find(request, "StreamSpecification");
         if (stream_specification && stream_specification->IsObject()) {
-            add_stream_options(*stream_specification, builder, p.local());
+            add_stream_options(*stream_specification, builder, proxy);
         }
 
         auto schema = builder.build();
@@ -1163,10 +1175,10 @@ future<executor::request_return_type> executor::update_table(client_state& clien
 
         co_await mm.announce(std::move(m), std::move(group0_guard));
 
-        co_await mm.wait_for_schema_agreement(p.local().local_db(), db::timeout_clock::now() + 10s, nullptr);
+        co_await mm.wait_for_schema_agreement(proxy.local_db(), db::timeout_clock::now() + 10s, nullptr);
 
         rjson::value status = rjson::empty_object();
-        supplement_table_info(request, *schema, p.local());
+        supplement_table_info(request, *schema, proxy);
         rjson::add(status, "TableDescription", std::move(request));
         co_return make_jsonable(std::move(status));
     });
@@ -1445,9 +1457,10 @@ rmw_operation::returnvalues rmw_operation::parse_returnvalues(const rjson::value
     }
 }
 
-rmw_operation::rmw_operation(service::storage_proxy& proxy, rjson::value&& request)
-    : _request(std::move(request))
-    , _schema(get_table(proxy, _request))
+rmw_operation::rmw_operation(executor& executor, rjson::value&& request)
+    : _executor(executor)
+    , _request(std::move(request))
+    , _schema(executor.get_table(_request))
     , _write_isolation(get_write_isolation_for_schema(_schema))
     , _returnvalues(parse_returnvalues(_request))
 {
@@ -1586,7 +1599,22 @@ future<executor::request_return_type> rmw_operation::execute(service::storage_pr
     });
 }
 
-static parsed::condition_expression get_parsed_condition_expression(rjson::value& request) {
+parsed::condition_expression
+executor::parse_condition_expression(std::string_view query) {
+    return parsed::parse_condition_expression(query);
+}
+
+parsed::update_expression
+executor::parse_update_expression(std::string_view query) {
+    return parsed::parse_update_expression(query);
+}
+
+parsed::projection_expression
+executor::parse_projection_expression(std::string_view query) {
+    return parsed::parse_projection_expression(query);
+}
+
+parsed::condition_expression rmw_operation::get_parsed_condition_expression(rjson::value& request) {
     rjson::value* condition_expression = rjson::find(request, "ConditionExpression");
     if (!condition_expression) {
         // Returning an empty() condition_expression means no condition.
@@ -1599,7 +1627,7 @@ static parsed::condition_expression get_parsed_condition_expression(rjson::value
         throw api_error::validation("ConditionExpression must not be empty");
     }
     try {
-        return parse_condition_expression(rjson::to_string_view(*condition_expression));
+        return _executor.parse_condition_expression(rjson::to_string_view(*condition_expression));
     } catch(expressions_syntax_error& e) {
         throw api_error::validation(e.what());
     }
@@ -1633,8 +1661,8 @@ private:
     put_or_delete_item _mutation_builder;
 public:
     parsed::condition_expression _condition_expression;
-    put_item_operation(service::storage_proxy& proxy, rjson::value&& request)
-        : rmw_operation(proxy, std::move(request))
+    put_item_operation(executor& executor, rjson::value&& request)
+        : rmw_operation(executor, std::move(request))
         , _mutation_builder(rjson::get(_request, "Item"), schema(), put_or_delete_item::put_item{}) {
         _pk = _mutation_builder.pk();
         _ck = _mutation_builder.ck();
@@ -1689,7 +1717,7 @@ future<executor::request_return_type> executor::put_item(client_state& client_st
     auto start_time = std::chrono::steady_clock::now();
     elogger.trace("put_item {}", request);
 
-    auto op = make_shared<put_item_operation>(_proxy, std::move(request));
+    auto op = make_shared<put_item_operation>(*this, std::move(request));
     tracing::add_table_name(trace_state, op->schema()->ks_name(), op->schema()->cf_name());
     const bool needs_read_before_write = op->needs_read_before_write();
     if (auto shard = op->shard_for_execute(needs_read_before_write); shard) {
@@ -1718,8 +1746,8 @@ private:
     put_or_delete_item _mutation_builder;
 public:
     parsed::condition_expression _condition_expression;
-    delete_item_operation(service::storage_proxy& proxy, rjson::value&& request)
-        : rmw_operation(proxy, std::move(request))
+    delete_item_operation(executor& executor, rjson::value&& request)
+        : rmw_operation(executor, std::move(request))
         , _mutation_builder(rjson::get(_request, "Key"), schema(), put_or_delete_item::delete_item{}) {
         _pk = _mutation_builder.pk();
         _ck = _mutation_builder.ck();
@@ -1774,7 +1802,7 @@ future<executor::request_return_type> executor::delete_item(client_state& client
     auto start_time = std::chrono::steady_clock::now();
     elogger.trace("delete_item {}", request);
 
-    auto op = make_shared<delete_item_operation>(_proxy, std::move(request));
+    auto op = make_shared<delete_item_operation>(*this, std::move(request));
     tracing::add_table_name(trace_state, op->schema()->ks_name(), op->schema()->cf_name());
     const bool needs_read_before_write = op->needs_read_before_write();
     if (auto shard = op->shard_for_execute(needs_read_before_write); shard) {
@@ -2192,7 +2220,6 @@ void attribute_path_map_add(const char* source, attribute_path_map<T>& map, cons
 // An ValidationException is thrown when recognizing an invalid combination
 // of options - such as ALL_PROJECTED_ATTRIBUTES for a base table, or
 // SPECIFIC_ATTRIBUTES without ProjectionExpression or AttributesToGet.
-enum class select_type { regular, count, projection };
 static select_type parse_select(const rjson::value& request, table_or_view_type table_type) {
     const rjson::value* select_value = rjson::find(request, "Select");
     if (!select_value) {
@@ -2246,8 +2273,7 @@ static select_type parse_select(const rjson::value& request, table_or_view_type 
 // that we will need to extract from that serialized JSON.
 // For example, if ProjectionExpression lists a.b and a.c[2], we
 // return one top-level attribute name, "a", with the value "{b, c[2]}".
-
-static std::optional<attrs_to_get> calculate_attrs_to_get(const rjson::value& req, std::unordered_set<std::string>& used_attribute_names, select_type select = select_type::regular) {
+std::optional<attrs_to_get> executor::calculate_attrs_to_get(const rjson::value& req, std::unordered_set<std::string>& used_attribute_names, select_type select) {
     if (select == select_type::count) {
         // An empty map asks to retrieve no attributes. Note that this is
         // different from a disengaged optional which means retrieve all.
@@ -2273,7 +2299,7 @@ static std::optional<attrs_to_get> calculate_attrs_to_get(const rjson::value& re
     } else if (has_projection_expression) {
         const rjson::value& projection_expression = req["ProjectionExpression"];
         const rjson::value* expression_attribute_names = rjson::find(req, "ExpressionAttributeNames");
-        std::vector<parsed::path> paths_to_get;
+        parsed::projection_expression paths_to_get;
         try {
             paths_to_get = parse_projection_expression(rjson::to_string_view(projection_expression));
         } catch(expressions_syntax_error& e) {
@@ -2452,14 +2478,14 @@ public:
 
     parsed::condition_expression _condition_expression;
 
-    update_item_operation(service::storage_proxy& proxy, rjson::value&& request);
+    update_item_operation(executor& executor, rjson::value&& request);
     virtual ~update_item_operation() = default;
     virtual std::optional<mutation> apply(std::unique_ptr<rjson::value> previous_item, api::timestamp_type ts) const override;
     bool needs_read_before_write() const;
 };
 
-update_item_operation::update_item_operation(service::storage_proxy& proxy, rjson::value&& update_info)
-    : rmw_operation(proxy, std::move(update_info))
+update_item_operation::update_item_operation(executor& executor, rjson::value&& update_info)
+    : rmw_operation(executor, std::move(update_info))
 {
     const rjson::value* key = rjson::find(_request, "Key");
     if (!key) {
@@ -2480,7 +2506,7 @@ update_item_operation::update_item_operation(service::storage_proxy& proxy, rjso
             throw api_error::validation("UpdateExpression must be a string");
         }
         try {
-            parsed::update_expression expr = parse_update_expression(rjson::to_string_view(*update_expression));
+            parsed::update_expression expr = _executor.parse_update_expression(rjson::to_string_view(*update_expression));
             resolve_update_expression(expr,
                     expression_attribute_names, expression_attribute_values,
                     used_attribute_names, used_attribute_values);
@@ -3021,7 +3047,7 @@ future<executor::request_return_type> executor::update_item(client_state& client
     auto start_time = std::chrono::steady_clock::now();
     elogger.trace("update_item {}", request);
 
-    auto op = make_shared<update_item_operation>(_proxy, std::move(request));
+    auto op = make_shared<update_item_operation>(*this, std::move(request));
     tracing::add_table_name(trace_state, op->schema()->ks_name(), op->schema()->cf_name());
     const bool needs_read_before_write = op->needs_read_before_write();
     if (auto shard = op->shard_for_execute(needs_read_before_write); shard) {
@@ -3088,7 +3114,7 @@ future<executor::request_return_type> executor::get_item(client_state& client_st
     auto start_time = std::chrono::steady_clock::now();
     elogger.trace("Getting item {}", request);
 
-    schema_ptr schema = get_table(_proxy, request);
+    schema_ptr schema = get_table(request);
 
     tracing::add_table_name(trace_state, schema->ks_name(), schema->cf_name());
 
@@ -3361,7 +3387,7 @@ public:
     enum class request_type { SCAN, QUERY };
     // Note that a filter does not store pointers to the query used to
     // construct it.
-    filter(const rjson::value& request, request_type rt,
+    filter(executor& executor, const rjson::value& request, request_type rt,
             std::unordered_set<std::string>& used_attribute_names,
             std::unordered_set<std::string>& used_attribute_values);
     bool check(const rjson::value& item) const;
@@ -3373,7 +3399,7 @@ public:
     operator bool() const { return bool(_imp); }
 };
 
-filter::filter(const rjson::value& request, request_type rt,
+filter::filter(executor& executor, const rjson::value& request, request_type rt,
         std::unordered_set<std::string>& used_attribute_names,
         std::unordered_set<std::string>& used_attribute_values) {
     const rjson::value* expression = rjson::find(request, "FilterExpression");
@@ -3401,7 +3427,7 @@ filter::filter(const rjson::value& request, request_type rt,
             throw api_error::validation("Cannot use both old-style and new-style parameters in same request: FilterExpression and AttributesToGet");
         }
         try {
-            auto parsed = parse_condition_expression(rjson::to_string_view(*expression));
+            auto parsed = executor.parse_condition_expression(rjson::to_string_view(*expression));
             const rjson::value* expression_attribute_names = rjson::find(request, "ExpressionAttributeNames");
             const rjson::value* expression_attribute_values = rjson::find(request, "ExpressionAttributeValues");
             resolve_condition_expression(parsed,
@@ -3798,7 +3824,7 @@ future<executor::request_return_type> executor::scan(client_state& client_state,
     }
     std::vector<query::clustering_range> ck_bounds{query::clustering_range::make_open_ended_both_sides()};
 
-    filter filter(request, filter::request_type::SCAN, used_attribute_names, used_attribute_values);
+    filter filter(*this, request, filter::request_type::SCAN, used_attribute_names, used_attribute_values);
     // Note: Unlike Query, Scan does allow a filter on the key attributes.
     // For some *specific* cases of key filtering, such an equality test on
     // partition key or comparison operator for the sort key, we could have
@@ -3880,8 +3906,8 @@ static query::clustering_range calculate_ck_bound(schema_ptr schema, const colum
 }
 
 // Calculates primary key bounds from KeyConditions
-static std::pair<dht::partition_range_vector, std::vector<query::clustering_range>>
-calculate_bounds_conditions(schema_ptr schema, const rjson::value& conditions) {
+std::pair<dht::partition_range_vector, std::vector<query::clustering_range>>
+executor::calculate_bounds_conditions(schema_ptr schema, const rjson::value& conditions) {
     dht::partition_range_vector partition_ranges;
     std::vector<query::clustering_range> ck_bounds;
 
@@ -4007,8 +4033,8 @@ static void condition_expression_and_list(
 }
 
 // Calculates primary key bounds from KeyConditionExpression
-static std::pair<dht::partition_range_vector, std::vector<query::clustering_range>>
-calculate_bounds_condition_expression(schema_ptr schema,
+std::pair<dht::partition_range_vector, std::vector<query::clustering_range>>
+executor::calculate_bounds_condition_expression(schema_ptr schema,
         const rjson::value& expression,
         const rjson::value* expression_attribute_values,
         std::unordered_set<std::string>& used_attribute_values,
@@ -4262,7 +4288,7 @@ future<executor::request_return_type> executor::query(client_state& client_state
                         expression_attribute_names,
                         used_attribute_names);
 
-    filter filter(request, filter::request_type::QUERY,
+    filter filter(*this, request, filter::request_type::QUERY,
             used_attribute_names, used_attribute_values);
 
     // A query is not allowed to filter on the partition key or the sort key.

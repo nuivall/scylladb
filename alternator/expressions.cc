@@ -10,6 +10,7 @@
 #include "serialization.hh"
 #include "utils/base64.hh"
 #include "conditions.hh"
+#include "alternator/executor.hh"
 #include "alternator/expressionsLexer.hpp"
 #include "alternator/expressionsParser.hpp"
 #include "utils/overloaded_functor.hh"
@@ -27,6 +28,7 @@
 #include <unordered_map>
 
 namespace alternator {
+namespace parsed {
 
 template <typename Func, typename Result = std::result_of_t<Func(expressionsParser&)>>
 Result do_with_parser(std::string_view input, Func&& f) {
@@ -43,7 +45,7 @@ Result do_with_parser(std::string_view input, Func&& f) {
     return result;
 }
 
-parsed::update_expression
+update_expression
 parse_update_expression(std::string_view query) {
     try {
         return do_with_parser(query,  std::mem_fn(&expressionsParser::update_expression));
@@ -52,7 +54,7 @@ parse_update_expression(std::string_view query) {
     }
 }
 
-std::vector<parsed::path>
+projection_expression
 parse_projection_expression(std::string_view query) {
     try {
         return do_with_parser(query,  std::mem_fn(&expressionsParser::projection_expression));
@@ -61,7 +63,7 @@ parse_projection_expression(std::string_view query) {
     }
 }
 
-parsed::condition_expression
+condition_expression
 parse_condition_expression(std::string_view query) {
     try {
         return do_with_parser(query,  std::mem_fn(&expressionsParser::condition_expression));
@@ -69,8 +71,6 @@ parse_condition_expression(std::string_view query) {
         throw expressions_syntax_error(format("Failed parsing ConditionExpression '{}': {}", query, std::current_exception()));
     }
 }
-
-namespace parsed {
 
 void update_expression::add(update_expression::action a) {
     std::visit(overloaded_functor {
@@ -322,7 +322,7 @@ void resolve_condition_expression(parsed::condition_expression& ce,
     }, ce._expression);
 }
 
-void resolve_projection_expression(std::vector<parsed::path>& pe,
+void resolve_projection_expression(parsed::projection_expression& pe,
         const rjson::value* expression_attribute_names,
         std::unordered_set<std::string>& used_attribute_names) {
     for (parsed::path& p : pe) {

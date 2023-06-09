@@ -10,6 +10,7 @@
 
 #include <seastar/core/future.hh>
 #include <seastar/http/httpd.hh>
+#include "alternator/expressions_types.hh"
 #include "seastarx.hh"
 #include <seastar/json/json_elements.hh>
 #include <seastar/core/sharded.hh>
@@ -54,6 +55,7 @@ class gossiper;
 namespace alternator {
 
 class rmw_operation;
+enum class select_type { regular, count, projection };
 
 struct make_jsonable : public json::jsonable {
     rjson::value _value;
@@ -82,7 +84,6 @@ namespace parsed {
 class path;
 };
 
-schema_ptr get_table(service::storage_proxy& proxy, const rjson::value& request);
 bool is_alternator_keyspace(const sstring& ks_name);
 // Wraps the db::get_tags_of_table and throws if the table is missing the tags extension.
 const std::map<sstring, sstring>& get_tags_of_table_or_throw(schema_ptr schema);
@@ -152,6 +153,9 @@ using attrs_to_get_node = attribute_path_map_node<std::monostate>;
 // optional means we should get all attributes, not specific ones.
 using attrs_to_get = attribute_path_map<std::monostate>;
 
+using expression_cache_t = utils::loading_cache<std::string,
+    std::variant<parsed::update_expression, parsed::projection_expression, parsed::condition_expression>,
+    1>;
 
 class executor : public peering_sharded_service<executor> {
     gms::gossiper& _gossiper;
@@ -162,7 +166,7 @@ class executor : public peering_sharded_service<executor> {
     // An smp_service_group to be used for limiting the concurrency when
     // forwarding Alternator request between shards - if necessary for LWT.
     smp_service_group _ssg;
-
+    expression_cache_t _expression_cache;
 public:
     using client_state = service::client_state;
     using request_return_type = std::variant<json::json_return_type, api_error>;
@@ -177,10 +181,7 @@ public:
              db::system_distributed_keyspace& sdks,
              cdc::metadata& cdc_metadata,
              smp_service_group ssg,
-             utils::updateable_value<uint32_t> default_timeout_in_ms)
-        : _gossiper(gossiper), _proxy(proxy), _mm(mm), _sdks(sdks), _cdc_metadata(cdc_metadata), _ssg(ssg) {
-        s_default_timeout_in_ms = std::move(default_timeout_in_ms);
-    }
+             utils::updateable_value<uint32_t> default_timeout_in_ms);
 
     future<request_return_type> create_table(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request);
     future<request_return_type> describe_table(client_state& client_state, tracing::trace_state_ptr trace_state, service_permit permit, rjson::value request);
@@ -214,18 +215,29 @@ public:
         return make_ready_future<>();
     }
 
+    parsed::update_expression parse_update_expression(std::string_view query);
+    parsed::projection_expression parse_projection_expression(std::string_view query);
+    parsed::condition_expression parse_condition_expression(std::string_view query);
+
     static sstring table_name(const schema&);
     static db::timeout_clock::time_point default_timeout();
 private:
     static thread_local utils::updateable_value<uint32_t> s_default_timeout_in_ms;
-public:
-    static schema_ptr find_table(service::storage_proxy&, const rjson::value& request);
-
-private:
     friend class rmw_operation;
 
+    schema_ptr find_table(const rjson::value& request);
+    schema_ptr get_table(const rjson::value& request);
+    std::pair<dht::partition_range_vector, std::vector<query::clustering_range>> calculate_bounds_conditions(schema_ptr schema, const rjson::value& conditions);
+    std::optional<attrs_to_get> calculate_attrs_to_get(const rjson::value& req, std::unordered_set<std::string>& used_attribute_names, select_type select = select_type::regular);
+    std::pair<dht::partition_range_vector, std::vector<query::clustering_range>> calculate_bounds_condition_expression(schema_ptr schema,
+        const rjson::value& expression,
+        const rjson::value* expression_attribute_values,
+        std::unordered_set<std::string>& used_attribute_values,
+        const rjson::value* expression_attribute_names,
+        std::unordered_set<std::string>& used_attribute_names);
+
     static void describe_key_schema(rjson::value& parent, const schema&, std::unordered_map<std::string,std::string> * = nullptr);
-    
+
 public:
     static void describe_key_schema(rjson::value& parent, const schema& schema, std::unordered_map<std::string,std::string>&);
 
