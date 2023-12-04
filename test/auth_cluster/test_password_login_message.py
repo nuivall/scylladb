@@ -25,8 +25,6 @@ async def test_login_message_after_half_of_the_cluster_is_down(manager: ManagerC
     """Tests the error message after half of the cluster goes down"""
     config = {
         'failure_detector_timeout_in_ms': 2000,
-        'authenticator': 'PasswordAuthenticator',
-        'authorizer': 'CassandraAuthorizer',
         'permissions_validity_in_ms': 0,
         'permissions_update_interval_in_ms': 0,
     }
