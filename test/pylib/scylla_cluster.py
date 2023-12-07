@@ -77,7 +77,8 @@ def make_scylla_conf(workdir: pathlib.Path, host_addr: str, seed_addrs: List[str
                                   'consistent-topology-changes',
                                   'broadcast-tables',
                                   'keyspace-storage-options',
-                                  'tablets'],
+                                  'tablets',
+                                  'auth_v2'],
 
         'consistent_cluster_management': True,
 
