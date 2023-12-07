@@ -1325,6 +1325,7 @@ std::map<sstring, db::experimental_features_t::feature> db::experimental_feature
         {"broadcast-tables", feature::BROADCAST_TABLES},
         {"keyspace-storage-options", feature::KEYSPACE_STORAGE_OPTIONS},
         {"tablets", feature::TABLETS},
+        {"auth-v2", feature::AUTH_V2},
     };
 }
 
