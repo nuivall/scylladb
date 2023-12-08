@@ -41,6 +41,7 @@ future<schema_ptr> load_one_schema_from_file(std::filesystem::path path);
 /// Note that only schemas from builtin system tables are supported, i.e.,
 /// from the following keyspaces:
 /// * system
+/// * system_auth_v2
 /// * system_schema
 /// * system_distributed
 /// * system_distributed_everywhere

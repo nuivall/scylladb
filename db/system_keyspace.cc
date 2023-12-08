@@ -14,6 +14,7 @@
 #include <seastar/coroutine/parallel_for_each.hh>
 #include "system_keyspace.hh"
 #include "cql3/untyped_result_set.hh"
+#include "db/system_auth_keyspace.hh"
 #include "utils/hash.hh"
 #include "thrift/server.hh"
 #include "exceptions/exceptions.hh"
@@ -1859,6 +1860,8 @@ std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
     std::vector<schema_ptr> r;
     auto schema_tables = db::schema_tables::all_tables(schema_features::full());
     std::copy(schema_tables.begin(), schema_tables.end(), std::back_inserter(r));
+    auto auth_tables = db::system_auth_keyspace::all_tables(cfg);
+    std::copy(auth_tables.begin(), auth_tables.end(), std::back_inserter(r));
     r.insert(r.end(), { built_indexes(), hints(), batchlog(), paxos(), local(),
                     peers(), peer_events(), range_xfers(),
                     compactions_in_progress(), compaction_history(),

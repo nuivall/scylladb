@@ -17,6 +17,7 @@
 #include "replica/global_table_ptr.hh"
 #include "db/config.hh"
 #include "db/extensions.hh"
+#include "db/system_auth_keyspace.hh"
 #include "db/system_keyspace.hh"
 #include "db/system_distributed_keyspace.hh"
 #include "db/schema_tables.hh"
@@ -37,7 +38,7 @@
 extern logging::logger dblog;
 
 static const std::unordered_set<std::string_view> system_keyspaces = {
-                db::system_keyspace::NAME, db::schema_tables::NAME
+                db::system_keyspace::NAME, db::system_auth_keyspace::NAME, db::schema_tables::NAME,
 };
 
 // Not super nice. Adding statefulness to the file. 
@@ -61,6 +62,7 @@ static const std::unordered_set<std::string_view> internal_keyspaces = {
         db::system_distributed_keyspace::NAME,
         db::system_distributed_keyspace::NAME_EVERYWHERE,
         db::system_keyspace::NAME,
+        db::system_auth_keyspace::NAME,
         db::schema_tables::NAME,
         auth::meta::AUTH_KS,
         tracing::trace_keyspace_helper::KEYSPACE_NAME
