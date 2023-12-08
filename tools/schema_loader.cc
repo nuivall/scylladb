@@ -28,6 +28,7 @@
 #include "db/large_data_handler.hh"
 #include "db/system_distributed_keyspace.hh"
 #include "db/schema_tables.hh"
+#include "db/system_auth_keyspace.hh"
 #include "db/system_keyspace.hh"
 #include "partition_slice_builder.hh"
 #include "readers/combined.hh"
@@ -677,6 +678,7 @@ schema_ptr load_system_schema(const db::config& cfg, std::string_view keyspace, 
     const std::unordered_map<std::string_view, std::vector<schema_ptr>> schemas{
         {db::schema_tables::NAME, db::schema_tables::all_tables(db::schema_features::full())},
         {db::system_keyspace::NAME, db::system_keyspace::all_tables(cfg)},
+        {db::system_auth_keyspace::NAME, db::system_auth_keyspace::all_tables()},
         {db::system_distributed_keyspace::NAME, db::system_distributed_keyspace::all_distributed_tables()},
         {db::system_distributed_keyspace::NAME_EVERYWHERE, db::system_distributed_keyspace::all_everywhere_tables()},
     };
