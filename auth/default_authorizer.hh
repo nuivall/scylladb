@@ -34,6 +34,8 @@ class default_authorizer : public authorizer {
 
     future<> _finished{make_ready_future<>()};
 
+    std::string_view _auth_ks_name;
+
 public:
     default_authorizer(cql3::query_processor&, ::service::migration_manager&);
 
