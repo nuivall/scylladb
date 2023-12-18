@@ -33,9 +33,13 @@ constinit const std::string_view AUTH_PACKAGE_NAME("org.apache.cassandra.auth.")
 
 static logging::logger auth_log("auth");
 
+bool auth_v2(cql3::query_processor& qp) {
+    return qp.db().get_config().check_experimental(
+        db::experimental_features_t::feature::AUTH_V2);
+}
+
 std::string_view get_auth_ks_name(cql3::query_processor& qp) {
-    if (qp.db().get_config().check_experimental(
-        db::experimental_features_t::feature::AUTH_V2)) {
+    if (auth_v2(qp)) {
         return db::system_auth_keyspace::NAME;
     }
     return meta::legacy::AUTH_KS;

@@ -55,8 +55,8 @@ static const class_registrator<
 
 default_authorizer::default_authorizer(cql3::query_processor& qp, ::service::migration_manager& mm)
         : _qp(qp)
-        , _migration_manager(mm)
-        , _auth_ks_name(get_auth_ks_name(qp)) {
+        , _auth_ks_name(get_auth_ks_name(qp))
+        , _legacy_impl(*this, qp, mm) {
 }
 
 default_authorizer::~default_authorizer() {
@@ -64,7 +64,7 @@ default_authorizer::~default_authorizer() {
 
 static const sstring legacy_table_name{"permissions"};
 
-bool default_authorizer::legacy_metadata_exists() const {
+bool default_authorizer_legacy_impl::legacy_metadata_exists() const {
     return _qp.db().has_schema(meta::legacy::AUTH_KS, legacy_table_name);
 }
 
@@ -80,7 +80,7 @@ future<bool> default_authorizer::any_granted() const {
     });
 }
 
-future<> default_authorizer::migrate_legacy_metadata() const {
+future<> default_authorizer_legacy_impl::migrate_legacy_metadata() const {
     alogger.info("Starting migration of legacy permissions metadata.");
     static const sstring query = format("SELECT * FROM {}.{}", meta::legacy::AUTH_KS, legacy_table_name);
 
@@ -94,7 +94,7 @@ future<> default_authorizer::migrate_legacy_metadata() const {
                     parse_resource(row.get_as<sstring>(RESOURCE_NAME)),
                     [this, &row](const auto& username, const auto& r) {
                 const permission_set perms = permissions::from_strings(row.get_set<sstring>(PERMISSIONS_NAME));
-                return grant(username, perms, r);
+                return _main_impl.grant(username, perms, r);
             });
         }).finally([results] {});
     }).then([] {
@@ -106,6 +106,13 @@ future<> default_authorizer::migrate_legacy_metadata() const {
 }
 
 future<> default_authorizer::start() {
+    if (auth_v2(_qp)) {
+        return _legacy_impl.start();
+    }
+    return make_ready_future<>();
+}
+
+future<> default_authorizer_legacy_impl::start() {
     static const sstring create_table = fmt::format(
             "CREATE TABLE {}.{} ("
             "{} text,"
@@ -133,7 +140,7 @@ future<> default_authorizer::start() {
                     _migration_manager.wait_for_schema_agreement(_qp.db().real_database(), db::timeout_clock::time_point::max(), &_as).get0();
 
                     if (legacy_metadata_exists()) {
-                        if (!any_granted().get0()) {
+                        if (!_main_impl.any_granted().get0()) {
                             migrate_legacy_metadata().get0();
                             return;
                         }
@@ -147,6 +154,13 @@ future<> default_authorizer::start() {
 }
 
 future<> default_authorizer::stop() {
+    if (auth_v2(_qp)) {
+        return _legacy_impl.stop();
+    }
+    return make_ready_future<>();
+}
+
+future<> default_authorizer_legacy_impl::stop() {
     _as.request_abort();
     return _finished.handle_exception_type([](const sleep_aborted&) {}).handle_exception_type([](const abort_requested_exception&) {});
 }

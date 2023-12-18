@@ -52,6 +52,9 @@ extern constinit const std::string_view AUTH_PACKAGE_NAME;
 
 } // namespace meta
 
+// This is a helper to check auth-v2 feature.
+bool auth_v2(cql3::query_processor& qp);
+
 // We have legacy implementation using different keyspace
 // and need to parametrize depending on runtime feature.
 std::string_view get_auth_ks_name(cql3::query_processor& qp);
