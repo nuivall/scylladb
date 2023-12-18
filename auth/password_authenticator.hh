@@ -38,6 +38,7 @@ class password_authenticator : public authenticator {
     future<> _stopped;
     seastar::abort_source _as;
     std::string _superuser;
+    std::string_view _auth_ks_name;
 
 public:
     static db::consistency_level consistency_for_user(std::string_view role_name);
