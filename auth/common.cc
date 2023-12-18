@@ -24,11 +24,12 @@ namespace auth {
 
 namespace meta {
 
-constinit const std::string_view AUTH_KS("system_auth");
-constinit const std::string_view USERS_CF("users");
+namespace legacy {
+    constinit const std::string_view AUTH_KS("system_auth");
+    constinit const std::string_view USERS_CF("users");
+} // namespace legacy
 constinit const std::string_view AUTH_PACKAGE_NAME("org.apache.cassandra.auth.");
-
-}
+} // namespace meta
 
 static logging::logger auth_log("auth");
 
@@ -37,7 +38,7 @@ std::string_view get_auth_ks_name(cql3::query_processor& qp) {
         db::experimental_features_t::feature::AUTH_V2)) {
         return db::system_auth_keyspace::NAME;
     }
-    return meta::AUTH_KS;
+    return meta::legacy::AUTH_KS;
 }
 
 // Func must support being invoked more than once.
@@ -65,7 +66,7 @@ static future<> create_metadata_table_if_missing_impl(
     auto parsed_statement = cql3::query_processor::parse_statement(cql);
     auto& parsed_cf_statement = static_cast<cql3::statements::raw::cf_statement&>(*parsed_statement);
 
-    parsed_cf_statement.prepare_keyspace(meta::AUTH_KS);
+    parsed_cf_statement.prepare_keyspace(meta::legacy::AUTH_KS);
 
     auto statement = static_pointer_cast<cql3::statements::create_table_statement>(
             parsed_cf_statement.prepare(db, qp.get_cql_stats())->statement);

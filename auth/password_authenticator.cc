@@ -76,7 +76,7 @@ static bool has_salted_hash(const cql3::untyped_result_set_row& row) {
 
 static const sstring& update_row_query() {
     static const sstring update_row_query = format("UPDATE {}.{} SET {} = ? WHERE {} = ?",
-            meta::AUTH_KS,
+            meta::legacy::AUTH_KS,
             meta::roles_table::name,
             SALTED_HASH,
             meta::roles_table::role_col_name);
@@ -86,12 +86,12 @@ static const sstring& update_row_query() {
 static const sstring legacy_table_name{"credentials"};
 
 bool password_authenticator::legacy_metadata_exists() const {
-    return _qp.db().has_schema(meta::AUTH_KS, legacy_table_name);
+    return _qp.db().has_schema(meta::legacy::AUTH_KS, legacy_table_name);
 }
 
 future<> password_authenticator::migrate_legacy_metadata() const {
     plogger.info("Starting migration of legacy authentication metadata.");
-    static const sstring query = format("SELECT * FROM {}.{}", meta::AUTH_KS, legacy_table_name);
+    static const sstring query = format("SELECT * FROM {}.{}", meta::legacy::AUTH_KS, legacy_table_name);
 
     return _qp.execute_internal(
             query,
@@ -275,7 +275,7 @@ future<> password_authenticator::alter(std::string_view role_name, const authent
     }
 
     static const sstring query = format("UPDATE {}.{} SET {} = ? WHERE {} = ?",
-            meta::AUTH_KS,
+            meta::legacy::AUTH_KS,
             meta::roles_table::name,
             SALTED_HASH,
             meta::roles_table::role_col_name);
@@ -291,7 +291,7 @@ future<> password_authenticator::alter(std::string_view role_name, const authent
 future<> password_authenticator::drop(std::string_view name) const {
     static const sstring query = format("DELETE {} FROM {}.{} WHERE {} = ?",
             SALTED_HASH,
-            meta::AUTH_KS,
+            meta::legacy::AUTH_KS,
             meta::roles_table::name,
             meta::roles_table::role_col_name);
 
@@ -307,7 +307,7 @@ future<custom_options> password_authenticator::query_custom_options(std::string_
 }
 
 const resource_set& password_authenticator::protected_resources() const {
-    static const resource_set resources({make_data_resource(meta::AUTH_KS, meta::roles_table::name)});
+    static const resource_set resources({make_data_resource(meta::legacy::AUTH_KS, meta::roles_table::name)});
     return resources;
 }
 

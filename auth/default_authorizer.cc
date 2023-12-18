@@ -65,7 +65,7 @@ default_authorizer::~default_authorizer() {
 static const sstring legacy_table_name{"permissions"};
 
 bool default_authorizer::legacy_metadata_exists() const {
-    return _qp.db().has_schema(meta::AUTH_KS, legacy_table_name);
+    return _qp.db().has_schema(meta::legacy::AUTH_KS, legacy_table_name);
 }
 
 future<bool> default_authorizer::any_granted() const {
@@ -82,7 +82,7 @@ future<bool> default_authorizer::any_granted() const {
 
 future<> default_authorizer::migrate_legacy_metadata() const {
     alogger.info("Starting migration of legacy permissions metadata.");
-    static const sstring query = format("SELECT * FROM {}.{}", meta::AUTH_KS, legacy_table_name);
+    static const sstring query = format("SELECT * FROM {}.{}", meta::legacy::AUTH_KS, legacy_table_name);
 
     return _qp.execute_internal(
             query,
@@ -113,7 +113,7 @@ future<> default_authorizer::start() {
             "{} set<text>,"
             "PRIMARY KEY({}, {})"
             ") WITH gc_grace_seconds={}",
-            meta::AUTH_KS,
+            meta::legacy::AUTH_KS,
             PERMISSIONS_CF,
             ROLE_NAME,
             RESOURCE_NAME,
@@ -185,7 +185,7 @@ default_authorizer::modify(
         std::string_view op) const {
     return do_with(
             format("UPDATE {}.{} SET {} = {} {} ? WHERE {} = ? AND {} = ?",
-                    meta::AUTH_KS,
+                    meta::legacy::AUTH_KS,
                     PERMISSIONS_CF,
                     PERMISSIONS_NAME,
                     PERMISSIONS_NAME,
@@ -279,7 +279,7 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
                     res->end(),
                     [this, res, resource](const cql3::untyped_result_set::row& r) {
                 static const sstring query = format("DELETE FROM {}.{} WHERE {} = ? AND {} = ?",
-                        meta::AUTH_KS,
+                        meta::legacy::AUTH_KS,
                         PERMISSIONS_CF,
                         ROLE_NAME,
                         RESOURCE_NAME);
@@ -306,7 +306,7 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
 }
 
 const resource_set& default_authorizer::protected_resources() const {
-    static const resource_set resources({ make_data_resource(meta::AUTH_KS, PERMISSIONS_CF) });
+    static const resource_set resources({ make_data_resource(meta::legacy::AUTH_KS, PERMISSIONS_CF) });
     return resources;
 }
 
