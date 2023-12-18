@@ -42,12 +42,15 @@ namespace auth {
 
 namespace meta {
 
-constexpr std::string_view DEFAULT_SUPERUSER_NAME("cassandra");
+namespace legacy {
 extern constinit const std::string_view AUTH_KS;
 extern constinit const std::string_view USERS_CF;
+} // namespace legacy
+
+constexpr std::string_view DEFAULT_SUPERUSER_NAME("cassandra");
 extern constinit const std::string_view AUTH_PACKAGE_NAME;
 
-}
+} // namespace meta
 
 // This is a helper to check whether auth-v2 feature is on.
 bool legacy_mode(cql3::query_processor& qp);
