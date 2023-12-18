@@ -52,7 +52,7 @@ static std::string_view creation_query() noexcept {
             "  value text,"
             "  PRIMARY KEY(role, name)"
             ")",
-            meta::AUTH_KS,
+            meta::legacy::AUTH_KS,
             name);
 
     return instance;
@@ -140,8 +140,8 @@ std::string_view standard_role_manager::qualified_java_name() const noexcept {
 
 const resource_set& standard_role_manager::protected_resources() const {
     static const resource_set resources({
-            make_data_resource(meta::AUTH_KS, meta::roles_table::name),
-            make_data_resource(meta::AUTH_KS, meta::role_members_table::name)});
+            make_data_resource(meta::legacy::AUTH_KS, meta::roles_table::name),
+            make_data_resource(meta::legacy::AUTH_KS, meta::role_members_table::name)});
 
     return resources;
 }
@@ -153,7 +153,7 @@ future<> standard_role_manager::create_metadata_tables_if_missing() const {
             "  member text,"
             "  PRIMARY KEY (role, member)"
             ")",
-            meta::AUTH_KS,
+            meta::legacy::AUTH_KS,
             meta::role_members_table::name);
 
 
@@ -204,12 +204,12 @@ future<> standard_role_manager::create_default_role_if_missing() const {
 static const sstring legacy_table_name{"users"};
 
 bool standard_role_manager::legacy_metadata_exists() {
-    return _qp.db().has_schema(meta::AUTH_KS, legacy_table_name);
+    return _qp.db().has_schema(meta::legacy::AUTH_KS, legacy_table_name);
 }
 
 future<> standard_role_manager::migrate_legacy_metadata() const {
     log.info("Starting migration of legacy user metadata.");
-    static const sstring query = format("SELECT * FROM {}.{}", meta::AUTH_KS, legacy_table_name);
+    static const sstring query = format("SELECT * FROM {}.{}", meta::legacy::AUTH_KS, legacy_table_name);
 
     return _qp.execute_internal(
             query,
