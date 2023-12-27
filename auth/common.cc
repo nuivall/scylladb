@@ -10,15 +10,20 @@
 
 #include <seastar/core/coroutine.hh>
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/core/sharded.hh>
 
+#include "mutation/canonical_mutation.hh"
+#include "schema/schema_fwd.hh"
 #include "utils/exponential_backoff_retry.hh"
 #include "cql3/query_processor.hh"
 #include "cql3/statements/create_table_statement.hh"
 #include "schema/schema_builder.hh"
 #include "service/migration_manager.hh"
+#include "service/raft/group0_state_machine.hh"
 #include "timeout_config.hh"
 #include "db/config.hh"
 #include "db/system_auth_keyspace.hh"
+#include "utils/error_injection.hh"
 
 namespace auth {
 
@@ -111,6 +116,101 @@ future<> create_metadata_table_if_missing(
     static thread_local ::service::client_state cs(::service::client_state::internal_tag{}, tc);
     static thread_local ::service::query_state qs(cs, empty_service_permit());
     return qs;
+}
+
+static future<> announce_mutations_with_guard(
+        ::service::raft_group0_client& group0_client,
+        std::vector<canonical_mutation> muts,
+        ::service::group0_guard group0_guard,
+        seastar::abort_source* as) {
+    auto group0_cmd = group0_client.prepare_command(
+        ::service::write_mutations{
+            .mutations{std::move(muts)},
+        },
+        group0_guard,
+        "auth: modify internal data"
+    );
+    return group0_client.add_entry(std::move(group0_cmd), std::move(group0_guard), as);
+}
+
+static future<> announce_mutations_maybe_split(
+        ::service::raft_group0_client& group0_client,
+        std::vector<canonical_mutation> muts,
+        ::service::group0_guard group0_guard,
+        seastar::abort_source* as) {
+    auto begin = muts.begin();
+    auto end = muts.end();
+    size_t batch_size  = muts.size();
+    auto remaining = batch_size;
+    while (remaining) {
+        try {
+            co_await announce_mutations_with_guard(group0_client, {begin, end}, std::move(group0_guard), as);
+            remaining -= (end - begin);
+            begin = end;
+        } catch (raft::command_is_too_big_error&) {
+            batch_size /= 2;
+            if (batch_size == 0) {
+                std::throw_with_nested(std::runtime_error("raft add entry failed with batch size 1"));
+            }
+            // when retrying we don't change begin and end gets truncated below
+        }
+        if (remaining) {
+            end = begin + std::min(batch_size, remaining);
+            // FIXME: we need a way to reuse single guard when retry
+            // doesn't require command data regeneration as in this case
+            // otherwise we may violate operation consistency guarantee
+            group0_guard = co_await group0_client.start_operation(as);
+        }
+    }
+}
+
+future<> announce_mutations_with_batching(
+        ::service::raft_group0_client& group0_client,
+        ::service::group0_guard group0_guard,
+        std::function<mutations_generator()> gen,
+        seastar::abort_source* as) {
+    // account for command's overhead, it's better to use smaller threshold than constantly bounce off the limit
+    const size_t memory_threshold = group0_client.max_command_size() * 0.75;
+    size_t memory_usage = 0;
+    std::vector<canonical_mutation> muts;
+
+    auto g = gen();
+    while (auto mut = co_await g()) {
+        muts.push_back(canonical_mutation{*mut});
+        memory_usage += muts.back().representation().size();
+        if (memory_usage >= memory_threshold) {
+            if (!group0_guard) {
+                group0_guard = co_await group0_client.start_operation(as);
+            }
+            co_await announce_mutations_maybe_split(group0_client, std::move(muts), std::move(group0_guard), as);
+            memory_usage = 0;
+            muts = {};
+        }
+    }
+    if (!muts.empty()) {
+        if (!group0_guard) {
+            group0_guard = co_await group0_client.start_operation(as);
+        }
+        co_await announce_mutations_maybe_split(group0_client, std::move(muts), std::move(group0_guard), as);
+    }
+}
+
+future<> announce_mutations(
+        cql3::query_processor& qp,
+        ::service::raft_group0_client& group0_client,
+        const sstring query_string,
+        std::vector<data_value_or_unset> values,
+        seastar::abort_source* as) {
+    auto group0_guard = co_await group0_client.start_operation(as);
+    auto timestamp = group0_guard.write_timestamp();
+    auto muts = co_await qp.get_mutations_internal(
+        query_string,
+        internal_distributed_query_state(),
+        timestamp,
+        std::move(values)
+    );
+    std::vector<canonical_mutation> cmuts = {muts.begin(), muts.end()};
+    co_await announce_mutations_with_guard(group0_client, std::move(cmuts), std::move(group0_guard), as);
 }
 
 }
