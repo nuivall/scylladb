@@ -10,12 +10,14 @@
 #include "auth/common.hh"
 
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/core/sharded.hh>
 
 #include "cql3/query_processor.hh"
 #include "cql3/statements/create_table_statement.hh"
 #include "replica/database.hh"
 #include "schema/schema_builder.hh"
 #include "service/migration_manager.hh"
+#include "service/raft/group0_state_machine.hh"
 #include "timeout_config.hh"
 #include "db/config.hh"
 #include "db/system_auth_keyspace.hh"
@@ -111,6 +113,53 @@ future<> create_metadata_table_if_missing(
     static thread_local ::service::client_state cs(::service::client_state::internal_tag{}, tc);
     static thread_local ::service::query_state qs(cs, empty_service_permit());
     return qs;
+}
+
+future<::service::group0_guard> start_group0_operation(
+        cql3::query_processor& qp,
+        ::service::raft_group0_client& group0_client,
+        seastar::abort_source* as) {
+    co_return co_await qp.container().invoke_on(0,
+        [&group0_client, as](cql3::query_processor& qp) -> future<::service::group0_guard> {
+            co_return co_await group0_client.start_operation(as);
+    });
+}
+
+future<> announce_mutations_with_guard(
+        cql3::query_processor& qp,
+        ::service::raft_group0_client& group0_client,
+        std::vector<mutation> muts,
+        ::service::group0_guard group0_guard,
+        seastar::abort_source* as) {
+    co_await qp.container().invoke_on(0,
+        [&group0_client, muts = std::move(muts), group0_guard = std::move(group0_guard), as]
+        (cql3::query_processor&) mutable -> future<> {
+            auto group0_cmd = group0_client.prepare_command(
+                ::service::write_mutations{
+                    .mutations{muts.begin(), muts.end()},
+                },
+                group0_guard,
+                "auth: modify internal data"
+            );
+            co_await group0_client.add_entry(std::move(group0_cmd), std::move(group0_guard), as);
+    });
+}
+
+future<> announce_mutations(
+        cql3::query_processor& qp,
+        ::service::raft_group0_client& group0_client,
+        const sstring query_string,
+        std::vector<data_value_or_unset> values,
+        seastar::abort_source* as) {
+    auto group0_guard = co_await start_group0_operation(qp, group0_client, as);
+    auto timestamp = group0_guard.write_timestamp();
+    auto muts = co_await qp.get_mutations_internal(
+        query_string,
+        internal_distributed_query_state(),
+        timestamp,
+        std::move(values)
+    );
+    co_await announce_mutations_with_guard(qp, group0_client, std::move(muts), std::move(group0_guard), as);
 }
 
 }
