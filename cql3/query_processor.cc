@@ -910,6 +910,22 @@ query_processor::execute_internal(
     }
 }
 
+future<std::vector<mutation>> query_processor::get_mutations_internal(
+        const sstring& query_string,
+        service::query_state& query_state,
+        api::timestamp_type timestamp,
+        const std::initializer_list<data_value>& values) {
+    auto stmt = prepare_internal(query_string);
+    auto mod_stmt = dynamic_pointer_cast<cql3::statements::modification_statement>(stmt->statement);
+
+    auto opts = make_internal_options(stmt, values, db::consistency_level::LOCAL_ONE);
+    auto json_cache = mod_stmt->maybe_prepare_json_cache(opts);
+    auto keys = mod_stmt->build_partition_keys(opts, json_cache);
+    // timeout only applies when modification requires read
+    auto timeout = db::timeout_clock::now() + query_state.get_client_state().get_timeout_config().read_timeout;
+    co_return co_await mod_stmt->get_mutations(*this, opts, timeout, true, timestamp, query_state, json_cache, std::move(keys));
+}
+
 future<::shared_ptr<untyped_result_set>>
 query_processor::execute_with_params(
         statements::prepared_statement::checked_weak_ptr p,

@@ -23,6 +23,7 @@
 #include "cql3/cql_statement.hh"
 #include "exceptions/exceptions.hh"
 #include "service/migration_listener.hh"
+#include "timestamp.hh"
 #include "transport/messages/result_message.hh"
 #include "service/qos/service_level_controller.hh"
 #include "service/client_state.hh"
@@ -371,6 +372,15 @@ public:
     execute_internal(const sstring& query_string, cache_internal cache) {
         return execute_internal(query_string, db::consistency_level::ONE, {}, cache);
     }
+
+    // Obtains mutations from query. For internal usage, most notable
+    // use-case is generating data for group0 announce().
+    future<std::vector<mutation>> get_mutations_internal(
+        const sstring& query_string,
+        service::query_state& query_state,
+        api::timestamp_type timestamp,
+        const std::initializer_list<data_value>&);
+
     future<::shared_ptr<untyped_result_set>> execute_with_params(
             statements::prepared_statement::checked_weak_ptr p,
             db::consistency_level,

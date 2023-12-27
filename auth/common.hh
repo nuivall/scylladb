@@ -22,6 +22,7 @@
 #include "log.hh"
 #include "seastarx.hh"
 #include "utils/exponential_backoff_retry.hh"
+#include "types/types.hh"
 
 using namespace std::chrono_literals;
 
@@ -81,5 +82,12 @@ future<> create_metadata_table_if_missing(
 /// Time-outs for internal, non-local CQL queries.
 ///
 ::service::query_state& internal_distributed_query_state() noexcept;
+
+// Execute update query via group0 mechanism, mutations will be applied on all nodes.
+future<> announce_mutations(
+        cql3::query_processor& qp,
+        ::service::migration_manager& mm,
+        const sstring& query_string,
+        const std::initializer_list<data_value>& values);
 
 }

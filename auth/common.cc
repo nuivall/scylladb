@@ -113,4 +113,19 @@ future<> create_metadata_table_if_missing(
     return qs;
 }
 
+future<> announce_mutations(
+        cql3::query_processor& qp,
+        ::service::migration_manager& mm,
+        const sstring& query_string,
+        const std::initializer_list<data_value>& values) {
+    auto group0_guard = co_await mm.start_group0_operation();
+    auto timestamp = group0_guard.write_timestamp();
+    auto muts = co_await qp.get_mutations_internal(
+        query_string,
+        internal_distributed_query_state(),
+        timestamp,
+        values);
+    co_return co_await mm.announce(std::move(muts), std::move(group0_guard), "auth: modify internal data");
+}
+
 }
