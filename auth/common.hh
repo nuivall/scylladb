@@ -22,6 +22,8 @@
 #include "log.hh"
 #include "seastarx.hh"
 #include "utils/exponential_backoff_retry.hh"
+#include "types/types.hh"
+#include "service/raft/raft_group0_client.hh"
 
 using namespace std::chrono_literals;
 
@@ -81,5 +83,21 @@ future<> create_metadata_table_if_missing(
 /// Time-outs for internal, non-local CQL queries.
 ///
 ::service::query_state& internal_distributed_query_state() noexcept;
+
+// Helper function for announce_mutations. It can be used directly if
+// multiple operations need to be combined into one command
+future<> announce_mutations_with_guard(
+        ::service::raft_group0_client& group0_client,
+        const std::vector<mutation>& muts,
+        ::service::group0_guard group0_guard,
+        seastar::abort_source* as = nullptr);
+
+// Execute update query via group0 mechanism, mutations will be applied on all nodes.
+future<> announce_mutations(
+        cql3::query_processor& qp,
+        ::service::raft_group0_client& group0_client,
+        const sstring& query_string,
+        const data_value_list& values,
+        seastar::abort_source* as = nullptr);
 
 }
