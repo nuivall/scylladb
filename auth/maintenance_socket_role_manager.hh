@@ -13,6 +13,7 @@
 #include "authorizer.hh"
 #include "seastar/core/future.hh"
 #include <stdexcept>
+#include "service/raft/raft_group0_client.hh"
 
 namespace cql3 {
 class query_processor;

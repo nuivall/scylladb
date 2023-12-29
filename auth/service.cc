@@ -128,6 +128,7 @@ static future<> validate_role_exists(const service& ser, std::string_view role_n
 service::service(
         utils::loading_cache_config c,
         cql3::query_processor& qp,
+        ::service::raft_group0_client& g0,
         ::service::migration_notifier& mn,
         std::unique_ptr<authorizer> z,
         std::unique_ptr<authenticator> a,
@@ -151,6 +152,7 @@ service::service(
 service::service(
         utils::loading_cache_config c,
         cql3::query_processor& qp,
+        ::service::raft_group0_client& g0,
         ::service::migration_notifier& mn,
         ::service::migration_manager& mm,
         const service_config& sc,
@@ -158,10 +160,11 @@ service::service(
             : service(
                       std::move(c),
                       qp,
+                      g0,
                       mn,
-                      create_object<authorizer>(sc.authorizer_java_name, qp, mm),
-                      create_object<authenticator>(sc.authenticator_java_name, qp, mm),
-                      create_object<role_manager>(sc.role_manager_java_name, qp, mm),
+                      create_object<authorizer>(sc.authorizer_java_name, qp, g0, mm),
+                      create_object<authenticator>(sc.authenticator_java_name, qp, g0, mm),
+                      create_object<role_manager>(sc.role_manager_java_name, qp, g0, mm),
                       used_by_maintenance_socket) {
 }
 
