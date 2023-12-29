@@ -134,7 +134,7 @@ future<> password_authenticator::create_default_if_missing() const {
                     plogger.info("Created default superuser authentication record.");
                 });
             } else {
-                return announce_mutations(_qp, _migration_manager, std::move(query),
+                return announce_mutations(_qp, _group0_client, std::move(query),
                     {salted_pwd, _superuser}).then([]() {
                     plogger.info("Created default superuser authentication record.");
                 });
@@ -276,7 +276,7 @@ future<> password_authenticator::create(std::string_view role_name, const authen
             {passwords::hash(*options.password, rng_for_salt), sstring(role_name)},
             cql3::query_processor::cache_internal::no).discard_result();
     } else {
-        return announce_mutations(_qp, _migration_manager, std::move(query),
+        return announce_mutations(_qp, _group0_client, std::move(query),
             {passwords::hash(*options.password, rng_for_salt), sstring(role_name)});
     }
 }
@@ -299,7 +299,7 @@ future<> password_authenticator::alter(std::string_view role_name, const authent
                 {passwords::hash(*options.password, rng_for_salt), sstring(role_name)},
                 cql3::query_processor::cache_internal::no).discard_result();
     } else {
-        return announce_mutations(_qp, _migration_manager, query,
+        return announce_mutations(_qp, _group0_client, query,
             {passwords::hash(*options.password, rng_for_salt), sstring(role_name)});
     }
 }
@@ -317,7 +317,7 @@ future<> password_authenticator::drop(std::string_view name) const {
                 {sstring(name)},
                 cql3::query_processor::cache_internal::no).discard_result();
     } else {
-        return announce_mutations(_qp, _migration_manager, query, {sstring(name)});
+        return announce_mutations(_qp, _group0_client, query, {sstring(name)});
     }
 }
 

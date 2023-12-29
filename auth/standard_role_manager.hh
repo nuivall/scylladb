@@ -31,6 +31,7 @@ namespace auth {
 
 class standard_role_manager final : public role_manager {
     cql3::query_processor& _qp;
+    ::service::raft_group0_client& _group0_client;
     ::service::migration_manager& _migration_manager;
     future<> _stopped;
     seastar::abort_source _as;

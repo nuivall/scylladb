@@ -199,7 +199,7 @@ default_authorizer::modify(
                 {permissions::to_strings(set), sstring(role_name), resource.name()},
                 cql3::query_processor::cache_internal::no).discard_result();
     }
-    return announce_mutations(_qp, _migration_manager, query,
+    return announce_mutations(_qp, _group0_client, query,
         {permissions::to_strings(set), sstring(role_name), resource.name()});
 }
 
@@ -255,7 +255,7 @@ future<> default_authorizer::revoke_all(std::string_view role_name) const {
                 {sstring(role_name)},
                 cql3::query_processor::cache_internal::no).discard_result();
     } else {
-        f = announce_mutations(_qp, _migration_manager, query, {sstring(role_name)});
+        f = announce_mutations(_qp, _group0_client, query, {sstring(role_name)});
     }
 
     return f.handle_exception([role_name](auto ep) {
@@ -322,7 +322,7 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
         PERMISSIONS_CF,
         RESOURCE_NAME);
     try {
-        auto group0_guard = co_await _migration_manager.start_group0_operation();
+        auto group0_guard = co_await _group0_client.start_operation();
         auto timestamp = group0_guard.write_timestamp();
 
         auto res = co_await _qp.execute_internal(
@@ -347,7 +347,7 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
             muts.reserve(muts.size() + muts2.size());
             std::move(muts2.begin(), muts2.end(), std::back_inserter(muts));
         });
-        co_return co_await _migration_manager.announce(std::move(muts), std::move(group0_guard), "auth: modify internal data");
+        co_return co_await announce_mutations_with_guard(_group0_client, std::move(muts), std::move(group0_guard));
     } catch (exceptions::request_execution_exception& e) {
         alogger.warn("CassandraAuthorizer failed to revoke all permissions on {}: {}", resource, e);
     }
