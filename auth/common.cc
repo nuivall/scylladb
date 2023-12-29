@@ -10,12 +10,14 @@
 #include "auth/common.hh"
 
 #include <seastar/core/shared_ptr.hh>
+#include <seastar/core/sharded.hh>
 
 #include "cql3/query_processor.hh"
 #include "cql3/statements/create_table_statement.hh"
 #include "replica/database.hh"
 #include "schema/schema_builder.hh"
 #include "service/migration_manager.hh"
+#include "service/raft/group0_state_machine.hh"
 #include "timeout_config.hh"
 #include "db/config.hh"
 #include "db/system_auth_keyspace.hh"
@@ -113,19 +115,38 @@ future<> create_metadata_table_if_missing(
     return qs;
 }
 
+future<> announce_mutations_with_guard(
+        ::service::raft_group0_client& group0_client,
+        const std::vector<mutation>& muts,
+        ::service::group0_guard group0_guard,
+        seastar::abort_source* as) {
+    auto group0_cmd = group0_client.prepare_command(
+        ::service::write_mutations{
+            .mutations{muts.begin(), muts.end()},
+        },
+        group0_guard,
+        "auth: modify internal data"
+    );
+    co_await group0_client.add_entry(std::move(group0_cmd), std::move(group0_guard), as);
+}
+
 future<> announce_mutations(
         cql3::query_processor& qp,
-        ::service::migration_manager& mm,
+        ::service::raft_group0_client& group0_client,
         const sstring& query_string,
-        const std::initializer_list<data_value>& values) {
-    auto group0_guard = co_await mm.start_group0_operation();
-    auto timestamp = group0_guard.write_timestamp();
-    auto muts = co_await qp.get_mutations_internal(
-        query_string,
-        internal_distributed_query_state(),
-        timestamp,
-        values);
-    co_return co_await mm.announce(std::move(muts), std::move(group0_guard), "auth: modify internal data");
+        const std::initializer_list<data_value>& values,
+        seastar::abort_source* as) {
+    co_await qp.container().invoke_on(0, [&group0_client, query_string = std::move(query_string), values = std::move(values), as](cql3::query_processor& qp) -> future<> {
+        auto group0_guard = co_await group0_client.start_operation();
+        auto timestamp = group0_guard.write_timestamp();
+        auto muts = co_await qp.get_mutations_internal(
+            query_string,
+            internal_distributed_query_state(),
+            timestamp,
+            values
+        );
+        co_await announce_mutations_with_guard(group0_client, muts, std::move(group0_guard), as);
+    });
 }
 
 }
