@@ -16,6 +16,7 @@
 
 #include "auth/authorizer.hh"
 #include "service/migration_manager.hh"
+#include "service/raft/raft_group0_client.hh"
 
 namespace cql3 {
 
@@ -27,6 +28,7 @@ namespace auth {
 
 class default_authorizer : public authorizer {
     cql3::query_processor& _qp;
+    ::service::raft_group0_client& _group0_client;
 
     ::service::migration_manager& _migration_manager;
 
@@ -57,6 +59,7 @@ public:
 
     virtual future<> revoke_all(std::string_view) const override;
 
+    future<> revoke_all_legacy(const resource&) const;
     virtual future<> revoke_all(const resource&) const override;
 
     virtual const resource_set& protected_resources() const override;
