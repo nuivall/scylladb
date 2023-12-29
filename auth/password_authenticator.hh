@@ -13,6 +13,7 @@
 #include <seastar/core/abort_source.hh>
 
 #include "auth/authenticator.hh"
+#include "service/raft/raft_group0_client.hh"
 
 namespace db {
     class config;
@@ -34,9 +35,10 @@ extern const std::string_view password_authenticator_name;
 
 class password_authenticator : public authenticator {
     cql3::query_processor& _qp;
+    ::service::raft_group0_client& _group0_client;
     ::service::migration_manager& _migration_manager;
     future<> _stopped;
-    seastar::abort_source _as;
+    mutable abort_source _as;
     std::string _superuser;
     std::string_view _auth_ks_name;
 
