@@ -103,7 +103,6 @@ future<> password_authenticator::migrate_legacy_metadata() const {
         return do_for_each(*results, [this](const cql3::untyped_result_set_row& row) {
             auto username = row.get_as<sstring>("username");
             auto salted_hash = row.get_as<sstring>(SALTED_HASH);
-
             return _qp.execute_internal(
                     update_row_query(),
                     consistency_for_user(username),
@@ -126,14 +125,22 @@ future<> password_authenticator::create_default_if_missing() const {
             if (salted_pwd.empty()) {
                 salted_pwd = passwords::hash(DEFAULT_USER_PASSWORD, rng_for_salt);
             }
-            return _qp.execute_internal(
-                    update_row_query(),
+            auto query = update_row_query();
+            if (legacy_mode(_qp)) {
+                return _qp.execute_internal(
+                    std::move(query),
                     db::consistency_level::QUORUM,
                     internal_distributed_query_state(),
                     {salted_pwd, _superuser},
                     cql3::query_processor::cache_internal::no).then([](auto&&) {
-                plogger.info("Created default superuser authentication record.");
-            });
+                    plogger.info("Created default superuser authentication record.");
+                });
+            } else {
+                return announce_mutations(_qp, _group0_client, std::move(query),
+                    {salted_pwd, _superuser}).then([]() {
+                    plogger.info("Created default superuser authentication record.");
+                });
+            }
         }
 
         return make_ready_future<>();
@@ -262,13 +269,18 @@ future<> password_authenticator::create(std::string_view role_name, const authen
     if (!options.password) {
         return make_ready_future<>();
     }
-
-    return _qp.execute_internal(
-            update_row_query(),
+    auto query = update_row_query();
+    if (legacy_mode(_qp)) {
+        return _qp.execute_internal(
+            std::move(query),
             consistency_for_user(role_name),
             internal_distributed_query_state(),
             {passwords::hash(*options.password, rng_for_salt), sstring(role_name)},
             cql3::query_processor::cache_internal::no).discard_result();
+    } else {
+        return announce_mutations(_qp, _group0_client, std::move(query),
+            {passwords::hash(*options.password, rng_for_salt), sstring(role_name)});
+    }
 }
 
 future<> password_authenticator::alter(std::string_view role_name, const authentication_options& options) const {
@@ -281,13 +293,17 @@ future<> password_authenticator::alter(std::string_view role_name, const authent
             meta::roles_table::name,
             SALTED_HASH,
             meta::roles_table::role_col_name);
-
-    return _qp.execute_internal(
-            query,
-            consistency_for_user(role_name),
-            internal_distributed_query_state(),
-            {passwords::hash(*options.password, rng_for_salt), sstring(role_name)},
-            cql3::query_processor::cache_internal::no).discard_result();
+    if (legacy_mode(_qp)) {
+        return _qp.execute_internal(
+                query,
+                consistency_for_user(role_name),
+                internal_distributed_query_state(),
+                {passwords::hash(*options.password, rng_for_salt), sstring(role_name)},
+                cql3::query_processor::cache_internal::no).discard_result();
+    } else {
+        return announce_mutations(_qp, _group0_client, query,
+            {passwords::hash(*options.password, rng_for_salt), sstring(role_name)});
+    }
 }
 
 future<> password_authenticator::drop(std::string_view name) const {
@@ -296,12 +312,15 @@ future<> password_authenticator::drop(std::string_view name) const {
             _auth_ks_name,
             meta::roles_table::name,
             meta::roles_table::role_col_name);
-
-    return _qp.execute_internal(
-            query, consistency_for_user(name),
-            internal_distributed_query_state(),
-            {sstring(name)},
-            cql3::query_processor::cache_internal::no).discard_result();
+    if (legacy_mode(_qp)) {
+        return _qp.execute_internal(
+                query, consistency_for_user(name),
+                internal_distributed_query_state(),
+                {sstring(name)},
+                cql3::query_processor::cache_internal::no).discard_result();
+    } else {
+        return announce_mutations(_qp, _group0_client, query, {sstring(name)});
+    }
 }
 
 future<custom_options> password_authenticator::query_custom_options(std::string_view role_name) const {
