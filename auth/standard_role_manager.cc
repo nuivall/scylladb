@@ -182,18 +182,22 @@ future<> standard_role_manager::create_default_role_if_missing() const {
                     _auth_ks_name,
                     meta::roles_table::name,
                     meta::roles_table::role_col_name);
-
-            return _qp.execute_internal(
-                    query,
-                    db::consistency_level::QUORUM,
-                    internal_distributed_query_state(),
-                    {_superuser},
-                    cql3::query_processor::cache_internal::no).then([this](auto&&) {
-                log.info("Created default superuser role '{}'.", _superuser);
-                return make_ready_future<>();
+            auto f = make_ready_future<>();
+            if (legacy_mode(_qp)) {
+                f = _qp.execute_internal(
+                        query,
+                        db::consistency_level::QUORUM,
+                        internal_distributed_query_state(),
+                        {_superuser},
+                        cql3::query_processor::cache_internal::no).discard_result();
+            } else {
+                f = announce_mutations(_qp, _migration_manager, query, {_superuser});
+            }
+            return f.then([this]() {
+                    log.info("Created default superuser role '{}'.", _superuser);
+                    return make_ready_future<>();
             });
         }
-
         return make_ready_future<>();
     }).handle_exception_type([](const exceptions::unavailable_exception& e) {
         log.warn("Skipped default role setup: some nodes were not ready; will retry");
@@ -273,13 +277,16 @@ future<> standard_role_manager::create_or_replace(std::string_view role_name, co
             _auth_ks_name,
             meta::roles_table::name,
             meta::roles_table::role_col_name);
-
-    return _qp.execute_internal(
-            query,
-            consistency_for_role(role_name),
-            internal_distributed_query_state(),
-            {sstring(role_name), c.is_superuser, c.can_login},
-            cql3::query_processor::cache_internal::yes).discard_result();
+    if (legacy_mode(_qp)) {
+        return _qp.execute_internal(
+                query,
+                consistency_for_role(role_name),
+                internal_distributed_query_state(),
+                {sstring(role_name), c.is_superuser, c.can_login},
+                cql3::query_processor::cache_internal::yes).discard_result();
+    } else {
+        return announce_mutations(_qp, _migration_manager, query, {sstring(role_name), c.is_superuser, c.can_login});
+    }
 }
 
 future<>
@@ -313,17 +320,21 @@ standard_role_manager::alter(std::string_view role_name, const role_config_updat
         if (!u.is_superuser && !u.can_login) {
             return make_ready_future<>();
         }
-
-        return _qp.execute_internal(
-                format("UPDATE {}.{} SET {} WHERE {} = ?",
-                        _auth_ks_name,
-                        meta::roles_table::name,
-                        build_column_assignments(u),
-                        meta::roles_table::role_col_name),
-                consistency_for_role(role_name),
-                internal_distributed_query_state(),
-                {sstring(role_name)},
-                cql3::query_processor::cache_internal::no).discard_result();
+        const sstring query = format("UPDATE {}.{} SET {} WHERE {} = ?",
+            _auth_ks_name,
+            meta::roles_table::name,
+            build_column_assignments(u),
+            meta::roles_table::role_col_name);
+        if (legacy_mode(_qp)) {
+            return _qp.execute_internal(
+                    std::move(query),
+                    consistency_for_role(role_name),
+                    internal_distributed_query_state(),
+                    {sstring(role_name)},
+                    cql3::query_processor::cache_internal::no).discard_result();
+        } else {
+            return announce_mutations(_qp, _migration_manager, std::move(query), {sstring(role_name)});
+        }
     });
 }
 
@@ -338,7 +349,6 @@ future<> standard_role_manager::drop(std::string_view role_name) {
             static const sstring query = format("SELECT member FROM {}.{} WHERE role = ?",
                     _auth_ks_name,
                     meta::role_members_table::name);
-
             return _qp.execute_internal(
                     query,
                     consistency_for_role(role_name),
@@ -378,7 +388,12 @@ future<> standard_role_manager::drop(std::string_view role_name) {
             static const sstring query = format("DELETE FROM {}.{} WHERE role = ?",
                     _auth_ks_name,
                     meta::role_attributes_table::name);
-            return _qp.execute_internal(query, {sstring(role_name)}, cql3::query_processor::cache_internal::yes).discard_result();
+            if (legacy_mode(_qp)) {
+                return _qp.execute_internal(query, {sstring(role_name)},
+                    cql3::query_processor::cache_internal::yes).discard_result();
+            } else {
+                return announce_mutations(_qp, _migration_manager, query, {sstring(role_name)});
+            }
         };
 
         // Finally, delete the role itself.
@@ -388,12 +403,16 @@ future<> standard_role_manager::drop(std::string_view role_name) {
                     meta::roles_table::name,
                     meta::roles_table::role_col_name);
 
-            return _qp.execute_internal(
-                    query,
-                    consistency_for_role(role_name),
-                    internal_distributed_query_state(),
-                    {sstring(role_name)},
-                    cql3::query_processor::cache_internal::no).discard_result();
+            if (legacy_mode(_qp)) {
+                return _qp.execute_internal(
+                        query,
+                        consistency_for_role(role_name),
+                        internal_distributed_query_state(),
+                        {sstring(role_name)},
+                        cql3::query_processor::cache_internal::no).discard_result();
+            } else {
+                return announce_mutations(_qp, _migration_manager, query, {sstring(role_name)});
+            }
         };
 
         return when_all_succeed(revoke_from_members(), revoke_members_of(),
@@ -408,7 +427,9 @@ standard_role_manager::modify_membership(
         std::string_view grantee_name,
         std::string_view role_name,
         membership_change ch) const {
-
+    // FIXME: in auth-v2 mode callers of this function should use a single guard
+    // to achieve consistent data across read and write, but the structure of calls
+    // is too complex to make such a refactor a quick fix.
 
     const auto modify_roles = [this, role_name, grantee_name, ch] {
         const auto query = format(
@@ -417,36 +438,52 @@ standard_role_manager::modify_membership(
                 meta::roles_table::name,
                 (ch == membership_change::add ? '+' : '-'),
                 meta::roles_table::role_col_name);
-
-        return _qp.execute_internal(
-                query,
-                consistency_for_role(grantee_name),
-                internal_distributed_query_state(),
-                {role_set{sstring(role_name)}, sstring(grantee_name)},
-                cql3::query_processor::cache_internal::no).discard_result();
+        if (legacy_mode(_qp)) {
+            return _qp.execute_internal(
+                    query,
+                    consistency_for_role(grantee_name),
+                    internal_distributed_query_state(),
+                    {role_set{sstring(role_name)}, sstring(grantee_name)},
+                    cql3::query_processor::cache_internal::no).discard_result();
+        } else {
+            return announce_mutations(_qp, _migration_manager, query,
+                {role_set{sstring(role_name)}, sstring(grantee_name)});
+        }
     };
 
     const auto modify_role_members = [this, role_name, grantee_name, ch] {
         switch (ch) {
             case membership_change::add:
-                return _qp.execute_internal(
-                        format("INSERT INTO {}.{} (role, member) VALUES (?, ?)",
-                                _auth_ks_name,
-                                meta::role_members_table::name),
-                        consistency_for_role(role_name),
-                        internal_distributed_query_state(),
-                        {sstring(role_name), sstring(grantee_name)},
-                        cql3::query_processor::cache_internal::no).discard_result();
+                static const sstring insert_query = format("INSERT INTO {}.{} (role, member) VALUES (?, ?)",
+                    _auth_ks_name,
+                    meta::role_members_table::name);
+                if (legacy_mode(_qp)) {
+                    return _qp.execute_internal(
+                            insert_query,
+                            consistency_for_role(role_name),
+                            internal_distributed_query_state(),
+                            {sstring(role_name), sstring(grantee_name)},
+                            cql3::query_processor::cache_internal::no).discard_result();
+                } else {
+                    return announce_mutations(_qp, _migration_manager, insert_query,
+                        {sstring(role_name), sstring(grantee_name)});
+                }
 
             case membership_change::remove:
-                return _qp.execute_internal(
-                        format("DELETE FROM {}.{} WHERE role = ? AND member = ?",
-                                _auth_ks_name,
-                                meta::role_members_table::name),
-                        consistency_for_role(role_name),
-                        internal_distributed_query_state(),
-                        {sstring(role_name), sstring(grantee_name)},
-                        cql3::query_processor::cache_internal::no).discard_result();
+                static const sstring delete_query = format("DELETE FROM {}.{} WHERE role = ? AND member = ?",
+                    _auth_ks_name,
+                    meta::role_members_table::name);
+                if (legacy_mode(_qp)) {
+                    return _qp.execute_internal(
+                            delete_query,
+                            consistency_for_role(role_name),
+                            internal_distributed_query_state(),
+                            {sstring(role_name), sstring(grantee_name)},
+                            cql3::query_processor::cache_internal::no).discard_result();
+                } else {
+                    return announce_mutations(_qp, _migration_manager, delete_query,
+                        {sstring(role_name), sstring(grantee_name)});
+                }
         }
 
         return make_ready_future<>();
@@ -622,7 +659,12 @@ future<> standard_role_manager::set_attribute(std::string_view role_name, std::s
             if (!role_exists) {
                 throw auth::nonexistant_role(role_name);
             }
-            return _qp.execute_internal(query, {sstring(role_name), sstring(attribute_name), sstring(attribute_value)}, cql3::query_processor::cache_internal::yes).discard_result();
+            if (legacy_mode(_qp)) {
+                return _qp.execute_internal(query, {sstring(role_name), sstring(attribute_name), sstring(attribute_value)}, cql3::query_processor::cache_internal::yes).discard_result();
+            } else {
+                return announce_mutations(_qp, _migration_manager, query,
+                    {sstring(role_name), sstring(attribute_name), sstring(attribute_value)});
+            }
         });
     });
 
@@ -637,7 +679,12 @@ future<> standard_role_manager::remove_attribute(std::string_view role_name, std
             if (!role_exists) {
                 throw auth::nonexistant_role(role_name);
             }
-            return _qp.execute_internal(query, {sstring(role_name), sstring(attribute_name)}, cql3::query_processor::cache_internal::yes).discard_result();
+            if (legacy_mode(_qp)) {
+                return _qp.execute_internal(query, {sstring(role_name), sstring(attribute_name)}, cql3::query_processor::cache_internal::yes).discard_result();
+            } else {
+                return announce_mutations(_qp, _migration_manager, query,
+                    {sstring(role_name), sstring(attribute_name)});
+            }
         });
     });
 }

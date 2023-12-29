@@ -57,6 +57,7 @@ public:
 
     virtual future<> revoke_all(std::string_view) const override;
 
+    future<> revoke_all_legacy(const resource&) const;
     virtual future<> revoke_all(const resource&) const override;
 
     virtual const resource_set& protected_resources() const override;
