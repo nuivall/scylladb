@@ -18,6 +18,7 @@
 #include <seastar/core/sstring.hh>
 
 #include "seastarx.hh"
+#include "service/raft/raft_group0_client.hh"
 
 namespace cql3 {
 class query_processor;
@@ -38,7 +39,7 @@ class standard_role_manager final : public role_manager {
     std::string_view _auth_ks_name;
 
 public:
-    standard_role_manager(cql3::query_processor&, ::service::migration_manager&);
+    standard_role_manager(cql3::query_processor&, ::service::raft_group0_client&, ::service::migration_manager&);
 
     virtual std::string_view qualified_java_name() const noexcept override;
 
