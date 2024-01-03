@@ -77,7 +77,8 @@ def make_scylla_conf(workdir: pathlib.Path, host_addr: str, seed_addrs: List[str
                                   'consistent-topology-changes',
                                   'broadcast-tables',
                                   'keyspace-storage-options',
-                                  'tablets'],
+                                  'tablets',
+                                  'auth-v2'],
 
         'skip_wait_for_gossip_to_settle': 0,
         'ring_delay_ms': 0,
@@ -128,7 +129,8 @@ SCYLLA_CMDLINE_OPTIONS = [
     '--abort-on-lsa-bad-alloc', '1',
     '--abort-on-seastar-bad-alloc',
     '--abort-on-internal-error', '1',
-    '--abort-on-ebadf', '1'
+    '--abort-on-ebadf', '1',
+    '--logger-log-level=password_authenticator=trace:auth=trace'
 ]
 
 # [--smp, 1], [--smp, 2] -> [--smp, 2]
@@ -714,6 +716,7 @@ class ScyllaCluster:
                          expected_error: Optional[str] = None) -> ServerInfo:
         """Add a new server to the cluster"""
         self.is_dirty = True
+        self.logger.info("fefe!!!!!!")
 
         # If the cluster isn't empty and all servers are stopped,
         # adding a new server would create a new cluster.

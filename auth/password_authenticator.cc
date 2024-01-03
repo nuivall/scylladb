@@ -149,6 +149,9 @@ future<> password_authenticator::create_default_if_missing() const {
 
 future<> password_authenticator::start() {
      return once_among_shards([this] {
+
+        plogger.info("password_authenticator::start!!!");
+
          auto f = create_metadata_table_if_missing(
                  meta::roles_table::name,
                  _qp,
@@ -156,9 +159,11 @@ future<> password_authenticator::start() {
                  _migration_manager);
 
          _stopped = do_after_system_ready(_as, [this] {
+             plogger.info("do_after_system_ready!!!");
              return async([this] {
+                 plogger.info("wait_for_schema_agreement!!!");
                  _migration_manager.wait_for_schema_agreement(_qp.db().real_database(), db::timeout_clock::time_point::max(), &_as).get0();
-
+                 plogger.info("after wait_for_schema_agreement!!!");
                  if (any_nondefault_role_row_satisfies(_qp, &has_salted_hash, _superuser).get0()) {
                      if (legacy_metadata_exists()) {
                          plogger.warn("Ignoring legacy authentication metadata since nondefault data already exist.");
@@ -171,7 +176,7 @@ future<> password_authenticator::start() {
                      migrate_legacy_metadata().get0();
                      return;
                  }
-
+                 plogger.info("create_default_if_missing!!!");
                  create_default_if_missing().get0();
              });
          });
