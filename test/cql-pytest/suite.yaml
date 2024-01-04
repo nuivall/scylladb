@@ -7,3 +7,4 @@ extra_scylla_cmdline_options:
   - '--experimental-features=consistent-topology-changes'
   - '--experimental-features=keyspace-storage-options'
   - '--experimental-features=tablets'
+  - '--experimental-features=auth-v2'
