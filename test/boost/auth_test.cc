@@ -159,20 +159,25 @@ namespace {
 
 /// Asserts that table is protected from alterations that can brick a node.
 void require_table_protected(cql_test_env& env, const char* table) {
-    using exception_predicate::message_contains;
+    using exception_predicate::message_matches;
     using unauth = exceptions::unauthorized_exception;
     const auto q = [&] (const char* stmt) { return env.execute_cql(fmt::format(fmt::runtime(stmt), table)).get(); };
+    const char* pattern = ".*(is protected)|(is not user-modifiable).*";
     BOOST_TEST_INFO(table);
-    BOOST_REQUIRE_EXCEPTION(q("ALTER TABLE {} ALTER role TYPE blob"), unauth, message_contains("is protected"));
-    BOOST_REQUIRE_EXCEPTION(q("ALTER TABLE {} RENAME role TO user"), unauth, message_contains("is protected"));
-    BOOST_REQUIRE_EXCEPTION(q("ALTER TABLE {} DROP role"), unauth, message_contains("is protected"));
-    BOOST_REQUIRE_EXCEPTION(q("DROP TABLE {}"), unauth, message_contains("is protected"));
+    BOOST_REQUIRE_EXCEPTION(q("ALTER TABLE {} ALTER role TYPE blob"), unauth, message_matches(pattern));
+    BOOST_REQUIRE_EXCEPTION(q("ALTER TABLE {} RENAME role TO user"), unauth, message_matches(pattern));
+    BOOST_REQUIRE_EXCEPTION(q("ALTER TABLE {} DROP role"), unauth, message_matches(pattern));
+    BOOST_REQUIRE_EXCEPTION(q("DROP TABLE {}"), unauth, message_matches(pattern));
 }
 
 cql_test_config auth_on() {
     cql_test_config cfg;
     cfg.db_config->authorizer("CassandraAuthorizer");
     cfg.db_config->authenticator("PasswordAuthenticator");
+    cfg.db_config->experimental_features({
+        db::experimental_features_t::feature::CONSISTENT_TOPOLOGY_CHANGES,
+        db::experimental_features_t::feature::AUTH_V2,
+    });
     return cfg;
 }
 
@@ -180,27 +185,19 @@ cql_test_config auth_on() {
 
 SEASTAR_TEST_CASE(roles_table_is_protected) {
     return do_with_cql_env_thread([] (cql_test_env& env) {
-        require_table_protected(env, "system_auth.roles");
+        require_table_protected(env, "system_auth_v2.roles");
     }, auth_on());
 }
 
 SEASTAR_TEST_CASE(role_members_table_is_protected) {
     return do_with_cql_env_thread([] (cql_test_env& env) {
-        require_table_protected(env, "system_auth.role_members");
+        require_table_protected(env, "system_auth_v2.role_members");
     }, auth_on());
 }
 
 SEASTAR_TEST_CASE(role_permissions_table_is_protected) {
     return do_with_cql_env_thread([] (cql_test_env& env) {
-        require_table_protected(env, "system_auth.role_permissions");
-    }, auth_on());
-}
-
-SEASTAR_TEST_CASE(alter_opts_on_system_auth_tables) {
-    return do_with_cql_env_thread([] (cql_test_env& env) {
-        cquery_nofail(env, "ALTER TABLE system_auth.roles WITH speculative_retry = 'NONE'");
-        cquery_nofail(env, "ALTER TABLE system_auth.role_members WITH gc_grace_seconds = 123");
-        cquery_nofail(env, "ALTER TABLE system_auth.role_permissions WITH min_index_interval = 456");
+        require_table_protected(env, "system_auth_v2.role_permissions");
     }, auth_on());
 }
 
