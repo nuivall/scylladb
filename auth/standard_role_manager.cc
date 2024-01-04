@@ -180,6 +180,7 @@ future<> standard_role_manager::create_metadata_tables_if_missing() const {
 future<> standard_role_manager::create_default_role_if_missing() const {
     return default_role_row_satisfies(_qp, &has_can_login, _superuser).then([this](bool exists) {
         if (!exists) {
+            log.info("create_default_role_if_missing {}", _superuser);
             static const sstring query = format("INSERT INTO {}.{} ({}, is_superuser, can_login) VALUES (?, true, true)",
                     _auth_ks_name,
                     meta::roles_table::name,

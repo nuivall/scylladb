@@ -134,16 +134,20 @@ future<> announce_mutations(
         cql3::query_processor& qp,
         ::service::raft_group0_client& group0_client,
         const sstring& query_string,
-        const data_value_list& values,
+        const std::vector<data_value_or_unset> values,
         seastar::abort_source* as) {
+    auth_log.info("announce_mutations {}", fmt::join(values, ", "));
     co_await qp.container().invoke_on(0, [&group0_client, query_string = std::move(query_string), values = std::move(values), as](cql3::query_processor& qp) -> future<> {
+        const auto vs = std::move(values);
+        auth_log.info("announce_mutations [shard0] {}", fmt::join(vs, ", "));
         auto group0_guard = co_await group0_client.start_operation();
         auto timestamp = group0_guard.write_timestamp();
+        auth_log.info("announce_mutations [shard0] 2 {}", fmt::join(vs, ", "));
         auto muts = co_await qp.get_mutations_internal(
-            query_string,
+            std::move(query_string),
             internal_distributed_query_state(),
             timestamp,
-            values
+            vs
         );
         co_await announce_mutations_with_guard(group0_client, muts, std::move(group0_guard), as);
     });

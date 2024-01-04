@@ -318,6 +318,10 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
     if (legacy_mode(_qp)) {
         co_return co_await revoke_all_legacy(resource);
     }
+
+    co_return co_await _qp.container().invoke_on(0, [this, name = resource.name()] (cql3::query_processor& _qp) -> future<> {
+           
+    
     static const sstring query = format("SELECT {} FROM {}.{} WHERE {} = ? ALLOW FILTERING",
         ROLE_NAME,
         _auth_ks_name,
@@ -330,12 +334,13 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
         auto res = co_await _qp.execute_internal(
             query,
             db::consistency_level::LOCAL_ONE,
-            {resource.name()},
+            {name},
             cql3::query_processor::cache_internal::no);
 
         std::vector<mutation> muts;
+        alogger.warn("default_authorizer::revoke_all d={}", std::distance(res->begin(), res->end()));
         co_await parallel_for_each(res->begin(), res->end(),
-            [this, timestamp, resource, &muts](const cql3::untyped_result_set::row& r) -> future<> {
+            [this, timestamp, &name, &muts, &_qp](const cql3::untyped_result_set::row& r) -> future<> {
             static const sstring query = format("DELETE FROM {}.{} WHERE {} = ? AND {} = ?",
                 _auth_ks_name,
                 PERMISSIONS_CF,
@@ -345,14 +350,16 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
                 query,
                 internal_distributed_query_state(),
                 timestamp,
-                {r.get_as<sstring>(ROLE_NAME), resource.name()});
+                std::vector<data_value_or_unset>{r.get_as<sstring>(ROLE_NAME), name});
             muts.reserve(muts.size() + muts2.size());
+            alogger.warn("muts.reserve {} + {}", muts.size(), muts2.size());
             std::move(muts2.begin(), muts2.end(), std::back_inserter(muts));
         });
         co_return co_await announce_mutations_with_guard(_group0_client, std::move(muts), std::move(group0_guard));
     } catch (exceptions::request_execution_exception& e) {
-        alogger.warn("CassandraAuthorizer failed to revoke all permissions on {}: {}", resource, e);
+        alogger.warn("CassandraAuthorizer failed to revoke all permissions on {}: {}", name, e);
     }
+});
 }
 
 const resource_set& default_authorizer::protected_resources() const {

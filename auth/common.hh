@@ -97,7 +97,7 @@ future<> announce_mutations(
         cql3::query_processor& qp,
         ::service::raft_group0_client& group0_client,
         const sstring& query_string,
-        const data_value_list& values,
+        const std::vector<data_value_or_unset> values,
         seastar::abort_source* as = nullptr);
 
 }

@@ -2007,6 +2007,8 @@ int main(int ac, char** av) {
         _exit(71);
     }
 
+    //raise(SIGSTOP);
+
     std::string exec_name;
     if (ac >= 2) {
         exec_name = av[1];

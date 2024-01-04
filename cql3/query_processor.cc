@@ -763,7 +763,7 @@ std::pair<std::reference_wrapper<struct query_processor::remote>, gate::holder> 
 
 query_options query_processor::make_internal_options(
         const statements::prepared_statement::checked_weak_ptr& p,
-        const data_value_list& values,
+        const std::vector<data_value_or_unset>& values,
         db::consistency_level cl,
         int32_t page_size) const {
     if (p->bound_names.size() != values.size()) {
@@ -924,10 +924,12 @@ future<std::vector<mutation>> query_processor::get_mutations_internal(
         const sstring& query_string,
         service::query_state& query_state,
         api::timestamp_type timestamp,
-        const data_value_list& values) {
+        const std::vector<data_value_or_unset>& values) {
     auto stmt = prepare_internal(query_string);
     auto mod_stmt = dynamic_pointer_cast<cql3::statements::modification_statement>(stmt->statement);
-
+    if (log.is_enabled(logging::log_level::info)) {
+        log.info("get_mutations_internal: \"{}\" ({})", query_string, fmt::join(values, ", "));
+    }
     auto opts = make_internal_options(stmt, values, db::consistency_level::LOCAL_ONE);
     auto json_cache = mod_stmt->maybe_prepare_json_cache(opts);
     auto keys = mod_stmt->build_partition_keys(opts, json_cache);

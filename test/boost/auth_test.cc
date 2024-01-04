@@ -34,6 +34,8 @@
 
 #include "utils/fmt-compat.hh"
 
+// fefe
+
 SEASTAR_TEST_CASE(test_default_authenticator) {
     return do_with_cql_env([](cql_test_env& env) {
         auto& a = env.local_auth_service().underlying_authenticator();

@@ -380,7 +380,7 @@ public:
         const sstring& query_string,
         service::query_state& query_state,
         api::timestamp_type timestamp,
-        const data_value_list&);
+        const std::vector<data_value_or_unset>& values);
 
     future<::shared_ptr<untyped_result_set>> execute_with_params(
             statements::prepared_statement::checked_weak_ptr p,
@@ -462,7 +462,7 @@ private:
 
     query_options make_internal_options(
             const statements::prepared_statement::checked_weak_ptr& p,
-            const data_value_list& values,
+            const std::vector<data_value_or_unset>& values,
             db::consistency_level,
             int32_t page_size = -1) const;
 
