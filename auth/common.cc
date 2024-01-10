@@ -125,10 +125,15 @@ future<::service::group0_guard> start_group0_operation(
     });
 }
 
+template <typename T>
+requires (
+    utils::Iterable<T>
+    && std::movable<T>
+    && requires(T t) { { *t.begin() } -> std::same_as<mutation&>; })
 future<> announce_mutations_with_guard(
         cql3::query_processor& qp,
         ::service::raft_group0_client& group0_client,
-        std::vector<mutation> muts,
+        T muts,
         ::service::group0_guard group0_guard,
         seastar::abort_source* as) {
     co_await qp.container().invoke_on(0,

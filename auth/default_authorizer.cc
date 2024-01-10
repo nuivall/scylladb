@@ -32,6 +32,7 @@ extern "C" {
 #include "log.hh"
 #include "replica/database.hh"
 #include "utils/class_registrator.hh"
+#include "utils/chunked_vector.hh"
 
 namespace auth {
 
@@ -337,7 +338,8 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
             {name},
             cql3::query_processor::cache_internal::no);
 
-        std::vector<mutation> muts;
+        utils::chunked_vector<mutation> muts;
+        size_t memory_usage = 0; // this is just an estimation for command splitting fallback
         co_await parallel_for_each(res->begin(), res->end(),
             [this, timestamp, &name, &muts](const cql3::untyped_result_set::row& r) -> future<> {
             static const sstring query = format("DELETE FROM {}.{} WHERE {} = ? AND {} = ?",
@@ -350,6 +352,7 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
                 internal_distributed_query_state(),
                 timestamp,
                 {r.get_as<sstring>(ROLE_NAME), name});
+            //command_is_too_big_error
             std::move(muts2.begin(), muts2.end(), std::back_inserter(muts));
         });
         co_return co_await announce_mutations_with_guard(_qp, _group0_client, std::move(muts), std::move(group0_guard), &_as);

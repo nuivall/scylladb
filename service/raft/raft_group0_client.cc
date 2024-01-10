@@ -329,6 +329,10 @@ group0_command raft_group0_client::prepare_command(Command change, std::string_v
     return group0_cmd;
 }
 
+size_t raft_group0_client::max_command_size() const {
+    return _raft_gr.group0().max_command_size();
+}
+
 raft_group0_client::raft_group0_client(service::raft_group_registry& raft_gr, db::system_keyspace& sys_ks)
         : _raft_gr(raft_gr), _sys_ks(sys_ks) {
 }

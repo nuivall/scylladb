@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <concepts>
 #include <chrono>
 #include <string_view>
 
@@ -19,11 +20,14 @@
 #include <seastar/core/sstring.hh>
 #include <seastar/core/smp.hh>
 
+
 #include "log.hh"
 #include "seastarx.hh"
 #include "utils/exponential_backoff_retry.hh"
+#include "utils/stall_free.hh"
 #include "types/types.hh"
 #include "service/raft/raft_group0_client.hh"
+
 
 using namespace std::chrono_literals;
 
@@ -91,10 +95,15 @@ future<::service::group0_guard> start_group0_operation(
 
 // Helper function for announce_mutations. It can be used directly if
 // multiple operations need to be combined into one command. Must be called on shard 0.
+template <typename T>
+requires (
+   utils::Iterable<T>
+    && std::movable<T>
+    && requires(T t) { { *t.begin() } -> std::same_as<mutation&>; })
 future<> announce_mutations_with_guard(
         cql3::query_processor& qp,
         ::service::raft_group0_client& group0_client,
-        std::vector<mutation> muts,
+        T muts,
         ::service::group0_guard group0_guard,
         seastar::abort_source* as);
 
