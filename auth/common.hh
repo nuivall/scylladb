@@ -86,7 +86,8 @@ future<> create_metadata_table_if_missing(
 
 future<::service::group0_guard> start_group0_operation(
         cql3::query_processor& qp,
-        ::service::raft_group0_client& group0_client);
+        ::service::raft_group0_client& group0_client,
+        seastar::abort_source* as = nullptr);
 
 // Helper function for announce_mutations. It can be used directly if
 // multiple operations need to be combined into one command. Must be called on shard 0.

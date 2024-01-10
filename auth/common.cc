@@ -117,10 +117,11 @@ future<> create_metadata_table_if_missing(
 
 future<::service::group0_guard> start_group0_operation(
         cql3::query_processor& qp,
-        ::service::raft_group0_client& group0_client) {
+        ::service::raft_group0_client& group0_client,
+        seastar::abort_source* as) {
     co_return co_await qp.container().invoke_on(0,
-        [&group0_client](cql3::query_processor& qp) -> future<::service::group0_guard> {
-            co_return co_await group0_client.start_operation(nullptr);
+        [&group0_client, as](cql3::query_processor& qp) -> future<::service::group0_guard> {
+            co_return co_await group0_client.start_operation(as);
     });
 }
 
@@ -150,7 +151,7 @@ future<> announce_mutations(
         const sstring query_string,
         std::vector<data_value_or_unset> values,
         seastar::abort_source* as) {
-    auto group0_guard = co_await start_group0_operation(qp, group0_client);
+    auto group0_guard = co_await start_group0_operation(qp, group0_client, as);
     auto timestamp = group0_guard.write_timestamp();
     auto muts = co_await qp.get_mutations_internal(
         query_string,
