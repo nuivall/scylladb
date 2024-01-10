@@ -202,7 +202,7 @@ default_authorizer::modify(
                 cql3::query_processor::cache_internal::no).discard_result();
     }
     co_return co_await announce_mutations(_qp, _group0_client, query,
-        {permissions::to_strings(set), sstring(role_name), resource.name()});
+        {permissions::to_strings(set), sstring(role_name), resource.name()}, &_as);
 }
 
 
@@ -257,7 +257,7 @@ future<> default_authorizer::revoke_all(std::string_view role_name) const {
                 {sstring(role_name)},
                 cql3::query_processor::cache_internal::no).discard_result();
     } else {
-        f = announce_mutations(_qp, _group0_client, query, {sstring(role_name)});
+        f = announce_mutations(_qp, _group0_client, query, {sstring(role_name)}, &_as);
     }
 
     return f.handle_exception([role_name](auto ep) {
@@ -328,7 +328,7 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
         // guard has to be taken before we execute select so that
         // operation is linearizable with other auth statements
         // in other words delete and select below operate on the same data
-        auto group0_guard = co_await start_group0_operation(_qp, _group0_client);
+        auto group0_guard = co_await start_group0_operation(_qp, _group0_client, &_as);
         auto timestamp = group0_guard.write_timestamp();
 
         auto res = co_await _qp.execute_internal(
@@ -355,7 +355,7 @@ future<> default_authorizer::revoke_all(const resource& resource) const {
             alogger.warn("muts.reserve {} + {}", muts.size(), muts2.size());
             std::move(muts2.begin(), muts2.end(), std::back_inserter(muts));
         });
-        co_return co_await announce_mutations_with_guard(_qp, _group0_client, std::move(muts), std::move(group0_guard));
+        co_return co_await announce_mutations_with_guard(_qp, _group0_client, std::move(muts), std::move(group0_guard), &_as);
     } catch (exceptions::request_execution_exception& e) {
         alogger.warn("CassandraAuthorizer failed to revoke all permissions on {}: {}", name, e);
     }

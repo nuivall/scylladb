@@ -193,7 +193,7 @@ future<> standard_role_manager::create_default_role_if_missing() const {
                         {_superuser},
                         cql3::query_processor::cache_internal::no).discard_result();
             } else {
-                f = announce_mutations(_qp, _group0_client, query, {_superuser});
+                f = announce_mutations(_qp, _group0_client, query, {_superuser}, &_as);
             }
             return f.then([this]() {
                     log.info("Created default superuser role '{}'.", _superuser);
@@ -287,7 +287,7 @@ future<> standard_role_manager::create_or_replace(std::string_view role_name, co
                 {sstring(role_name), c.is_superuser, c.can_login},
                 cql3::query_processor::cache_internal::yes).discard_result();
     } else {
-        return announce_mutations(_qp, _group0_client, query, {sstring(role_name), c.is_superuser, c.can_login});
+        return announce_mutations(_qp, _group0_client, query, {sstring(role_name), c.is_superuser, c.can_login}, &_as);
     }
 }
 
@@ -335,7 +335,7 @@ standard_role_manager::alter(std::string_view role_name, const role_config_updat
                     {sstring(role_name)},
                     cql3::query_processor::cache_internal::no).discard_result();
         } else {
-            return announce_mutations(_qp, _group0_client, std::move(query), {sstring(role_name)});
+            return announce_mutations(_qp, _group0_client, std::move(query), {sstring(role_name)}, &_as);
         }
     });
 }
@@ -394,7 +394,7 @@ future<> standard_role_manager::drop(std::string_view role_name) {
                 return _qp.execute_internal(query, {sstring(role_name)},
                     cql3::query_processor::cache_internal::yes).discard_result();
             } else {
-                return announce_mutations(_qp, _group0_client, query, {sstring(role_name)});
+                return announce_mutations(_qp, _group0_client, query, {sstring(role_name)}, &_as);
             }
         };
 
@@ -413,7 +413,7 @@ future<> standard_role_manager::drop(std::string_view role_name) {
                         {sstring(role_name)},
                         cql3::query_processor::cache_internal::no).discard_result();
             } else {
-                return announce_mutations(_qp, _group0_client, query, {sstring(role_name)});
+                return announce_mutations(_qp, _group0_client, query, {sstring(role_name)}, &_as);
             }
         };
 
@@ -449,7 +449,7 @@ standard_role_manager::modify_membership(
                     cql3::query_processor::cache_internal::no).discard_result();
         } else {
             return announce_mutations(_qp, _group0_client, std::move(query),
-                {role_set{sstring(role_name)}, sstring(grantee_name)});
+                {role_set{sstring(role_name)}, sstring(grantee_name)}, &_as);
         }
     };
 
@@ -468,7 +468,7 @@ standard_role_manager::modify_membership(
                             cql3::query_processor::cache_internal::no).discard_result();
                 } else {
                     return announce_mutations(_qp, _group0_client, insert_query,
-                        {sstring(role_name), sstring(grantee_name)});
+                        {sstring(role_name), sstring(grantee_name)}, &_as);
                 }
 
             case membership_change::remove:
@@ -484,7 +484,7 @@ standard_role_manager::modify_membership(
                             cql3::query_processor::cache_internal::no).discard_result();
                 } else {
                     return announce_mutations(_qp, _group0_client, delete_query,
-                        {sstring(role_name), sstring(grantee_name)});
+                        {sstring(role_name), sstring(grantee_name)}, &_as);
                 }
         }
 
@@ -665,7 +665,7 @@ future<> standard_role_manager::set_attribute(std::string_view role_name, std::s
                 return _qp.execute_internal(query, {sstring(role_name), sstring(attribute_name), sstring(attribute_value)}, cql3::query_processor::cache_internal::yes).discard_result();
             } else {
                 return announce_mutations(_qp, _group0_client, query,
-                    {sstring(role_name), sstring(attribute_name), sstring(attribute_value)});
+                    {sstring(role_name), sstring(attribute_name), sstring(attribute_value)}, &_as);
             }
         });
     });
@@ -685,7 +685,7 @@ future<> standard_role_manager::remove_attribute(std::string_view role_name, std
                 return _qp.execute_internal(query, {sstring(role_name), sstring(attribute_name)}, cql3::query_processor::cache_internal::yes).discard_result();
             } else {
                 return announce_mutations(_qp, _group0_client, query,
-                    {sstring(role_name), sstring(attribute_name)});
+                    {sstring(role_name), sstring(attribute_name)}, &_as);
             }
         });
     });

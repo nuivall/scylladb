@@ -87,7 +87,7 @@ future<> create_metadata_table_if_missing(
 future<::service::group0_guard> start_group0_operation(
         cql3::query_processor& qp,
         ::service::raft_group0_client& group0_client,
-        seastar::abort_source* as = nullptr);
+        seastar::abort_source* as);
 
 // Helper function for announce_mutations. It can be used directly if
 // multiple operations need to be combined into one command. Must be called on shard 0.
@@ -96,7 +96,7 @@ future<> announce_mutations_with_guard(
         ::service::raft_group0_client& group0_client,
         std::vector<mutation> muts,
         ::service::group0_guard group0_guard,
-        seastar::abort_source* as = nullptr);
+        seastar::abort_source* as);
 
 // Execute update query via group0 mechanism, mutations will be applied on all nodes.
 // Must be called on shard 0.
@@ -105,6 +105,6 @@ future<> announce_mutations(
         ::service::raft_group0_client& group0_client,
         const sstring query_string,
         std::vector<data_value_or_unset> values,
-        seastar::abort_source* as = nullptr);
+        seastar::abort_source* as);
 
 }
