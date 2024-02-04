@@ -54,3 +54,34 @@ async def test_auth_no_quorum(manager: ManagerClient) -> None:
             auth_provider=PlainTextAuthProvider(username=role, password=role))
     names = [row.role for row in cql.execute(f"LIST ROLES", execution_profile='whitelist')]
     assert(set(names) == set(['cassandra'] + roles))
+
+"""
+Tests raft snapshot transfer of auth data.
+"""
+@pytest.mark.asyncio
+async def test_auth_raft_snapshot_transfer(manager: ManagerClient) -> None:
+    servers = await manager.servers_add(3)
+
+    cql = manager.get_cql()
+    await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    await manager.servers_see_each_other(servers)
+
+    snapshot_receiving_server = servers[0]
+    await manager.server_stop_gracefully(snapshot_receiving_server.server_id)
+
+    roles = ["ro" + unique_name() for _ in range(10)]
+    for role in roles:
+        # if not exists due to https://github.com/scylladb/python-driver/issues/296
+        cql.execute(f"CREATE ROLE IF NOT EXISTS {role}")
+
+    await manager.server_start(snapshot_receiving_server.server_id)
+    await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+    await manager.servers_see_each_other(servers)
+
+    # lost quorum but snapshot with data should have been transferred already
+    for i in range(1, 3):
+        await manager.server_stop_gracefully(servers[i].server_id)
+
+    await manager.driver_connect(server=snapshot_receiving_server)
+    names = [row.role for row in cql.execute(f"LIST ROLES", execution_profile='whitelist')]
+    assert(set(names) == set(['cassandra'] + roles))

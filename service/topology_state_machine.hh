@@ -200,6 +200,9 @@ struct raft_topology_snapshot {
 
     // Mutations for system.topology_requests table
     std::vector<canonical_mutation> topology_requests_mutations;
+
+    // Mutations for system_auth_v2.* tables
+    utils::chunked_vector<canonical_mutation> auth_mutations;
 };
 
 struct raft_topology_pull_params {

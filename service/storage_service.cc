@@ -11,6 +11,7 @@
 
 #include "storage_service.hh"
 #include "compaction/task_manager_module.hh"
+#include "db/system_auth_keyspace.hh"
 #include "gc_clock.hh"
 #include "service/topology_guard.hh"
 #include "service/session.hh"
@@ -5707,12 +5708,24 @@ void storage_service::init_messaging_service(bool raft_topology_change_enabled) 
                     auto read_apply_mutex_holder = co_await ss._group0->client().hold_read_apply_mutex();
                     topology_requests_mutations = co_await ss.get_system_mutations(db::system_keyspace::NAME, db::system_keyspace::TOPOLOGY_REQUESTS);
                 }
+
+                utils::chunked_vector<canonical_mutation> auth_mutations;
+                {
+                    // FIXME: make it an rwlock, here we only need to lock for reads,
+                    // might be useful if multiple nodes are trying to pull concurrently.
+                    auto read_apply_mutex_holder = co_await ss._group0->client().hold_read_apply_mutex();
+                    for (const auto& schema : db::system_auth_keyspace::all_tables()) {
+                        auto muts = co_await ss.get_system_mutations(db::system_auth_keyspace::NAME, schema->cf_name());
+                        auth_mutations.reserve(auth_mutations.size() + muts.size());
+                        std::move(muts.begin(), muts.end(), std::back_inserter(auth_mutations));
+                    }
                 }
 
                 co_return raft_topology_snapshot{
                     .topology_mutations = std::move(topology_mutations),
                     .cdc_generation_mutations = std::move(cdc_generation_mutations),
                     .topology_requests_mutations = std::move(topology_requests_mutations),
+                    .auth_mutations = std::move(auth_mutations),
                 };
             });
         });
