@@ -716,6 +716,9 @@ future<> server_impl::do_on_leader_with_retries(seastar::abort_source* as, Async
 }
 
 future<> server_impl::add_entry(command command, wait_type type, seastar::abort_source* as) {
+    utils::get_local_injector().inject("raft_server_command_is_too_big_error", [&command] {
+        throw command_is_too_big_error(command.size(), command.size() - 1);
+    });
     if (command.size() > _config.max_command_size) {
         logger.trace("[{}] add_entry command size exceeds the limit: {} > {}",
                      id(), command.size(), _config.max_command_size);
