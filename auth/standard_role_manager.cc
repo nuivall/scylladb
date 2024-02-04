@@ -604,9 +604,22 @@ future<role_set> standard_role_manager::query_all() {
 }
 
 future<bool> standard_role_manager::exists(std::string_view role_name) {
-    return find_record(_qp, role_name).then([](std::optional<record> mr) {
-        return static_cast<bool>(mr);
-    });
+    auto r = co_await find_record(_qp, role_name);
+    if (!r) {
+        // Trigger raft read barrier, we do this because function is used as a validation
+        // before write operations, we want writes to observe the last state so that
+        // user can easily do something like this: `CREATE ROLE x; GRANT ... TO x;`
+        // without worrying that information about new role hasn't propagated yet
+        // which would make second statement fail.
+        // Note: this doesn't fully close the gap as a single guard should be used
+        // when doing actual write later, but there is no easy way to pass it there
+        // without bigger code refactor, it only matters when somebody deletes
+        // role concurrently with modification operation on it (e.g. GRANT).
+        (void) co_await start_group0_operation(_qp, _group0_client, &_as);
+        r = co_await find_record(_qp, role_name);
+        co_return static_cast<bool>(r);
+    }
+    co_return true;
 }
 
 future<bool> standard_role_manager::is_superuser(std::string_view role_name) {
