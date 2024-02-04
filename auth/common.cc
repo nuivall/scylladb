@@ -145,6 +145,9 @@ static future<> announce_mutations_maybe_split(
     while (remaining) {
         try {
             co_await announce_mutations_with_guard(group0_client, {begin, end}, std::move(group0_guard), as);
+            utils::get_local_injector().inject("auth_announce_command_is_too_big_error", [] {
+                throw raft::command_is_too_big_error(100, 99);
+            });
             remaining -= (end - begin);
             begin = end;
         } catch (raft::command_is_too_big_error&) {
@@ -170,7 +173,12 @@ future<> announce_mutations_with_batching(
         std::function<mutations_generator()> gen,
         seastar::abort_source* as) {
     // account for command's overhead, it's better to use smaller threshold than constantly bounce off the limit
-    const size_t memory_threshold = group0_client.max_command_size() * 0.75;
+    size_t memory_threshold = group0_client.max_command_size() * 0.75;
+    utils::get_local_injector().inject("auth_announce_mutations_command_max_size",
+        [&memory_threshold] {
+        memory_threshold = 1000;
+    });
+
     size_t memory_usage = 0;
     std::vector<canonical_mutation> muts;
 
