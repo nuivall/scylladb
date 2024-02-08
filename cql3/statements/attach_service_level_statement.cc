@@ -13,6 +13,7 @@
 #include "transport/messages/result_message.hh"
 #include "service/client_state.hh"
 #include "service/query_state.hh"
+#include "cql3/query_processor.hh"
 
 namespace cql3 {
 
@@ -20,6 +21,10 @@ namespace statements {
 
 attach_service_level_statement::attach_service_level_statement(sstring service_level, sstring role_name) :
     _service_level(service_level), _role_name(role_name) {
+}
+
+bool attach_service_level_statement::needs_guard(query_processor& qp) const {
+    return qp.db().get_config().check_experimental(db::experimental_features_t::feature::AUTH_V2);
 }
 
 std::unique_ptr<cql3::statements::prepared_statement>

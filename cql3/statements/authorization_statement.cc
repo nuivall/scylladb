@@ -75,3 +75,7 @@ void cql3::statements::authorization_statement::maybe_correct_resource(auth::res
     }
 }
 
+bool cql3::statements::authorization_altering_statement::needs_guard(
+                query_processor& qp) const {
+    return qp.db().get_config().check_experimental(db::experimental_features_t::feature::AUTH_V2);
+};
