@@ -2077,8 +2077,6 @@ std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
     std::vector<schema_ptr> r;
     auto schema_tables = db::schema_tables::all_tables(schema_features::full());
     std::copy(schema_tables.begin(), schema_tables.end(), std::back_inserter(r));
-    auto auth_tables = db::system_auth_keyspace::all_tables();
-    std::copy(auth_tables.begin(), auth_tables.end(), std::back_inserter(r));
     r.insert(r.end(), { built_indexes(), hints(), batchlog(), paxos(), local(),
                     peers(), peer_events(), range_xfers(),
                     compactions_in_progress(), compaction_history(),
@@ -2096,6 +2094,11 @@ std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
 
     if (cfg.check_experimental(db::experimental_features_t::feature::CONSISTENT_TOPOLOGY_CHANGES)) {
         r.insert(r.end(), {topology(), cdc_generations_v3(), topology_requests()});
+    }
+
+    if (cfg.check_experimental(db::experimental_features_t::feature::AUTH_V2)) {
+        auto auth_tables = db::system_auth_keyspace::all_tables();
+        std::copy(auth_tables.begin(), auth_tables.end(), std::back_inserter(r));
     }
 
     if (cfg.check_experimental(db::experimental_features_t::feature::BROADCAST_TABLES)) {
