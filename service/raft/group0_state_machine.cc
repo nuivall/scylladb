@@ -6,6 +6,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 #include "service/raft/group0_state_machine.hh"
+#include "db/system_auth_keyspace.hh"
 #include "mutation/atomic_cell.hh"
 #include "cql3/selection/selection.hh"
 #include "dht/i_partitioner.hh"
@@ -51,6 +52,7 @@ static logging::logger slogger("group0_raft_sm");
 
 group0_state_machine::group0_state_machine(raft_group0_client& client, migration_manager& mm, storage_proxy& sp, storage_service& ss, raft_address_map& address_map, gms::feature_service& feat, bool topology_change_enabled)
         : _client(client), _mm(mm), _sp(sp), _ss(ss), _address_map(address_map), _topology_change_enabled(topology_change_enabled)
+        , _auth_v2_enabled(sp.data_dictionary().get_config().check_experimental(db::experimental_features_t::feature::AUTH_V2))
         , _topology_on_raft_support_listener(feat.supports_consistent_topology_changes.when_enabled([this] () noexcept {
             // Using features to decide whether to start fetching topology snapshots
             // or not is technically not correct because we also use features to guard
@@ -81,6 +83,14 @@ static mutation extract_history_mutation(std::vector<canonical_mutation>& muts, 
     auto res = it->to_mutation(s);
     muts.erase(it);
     return res;
+}
+
+static future<> mutate_locally(utils::chunked_vector<canonical_mutation> muts, storage_proxy& sp) {
+    auto db = sp.data_dictionary();
+    co_await max_concurrent_for_each(muts, 128, [&sp, &db] (const canonical_mutation& cmut) -> future<> {
+        auto schema = db.find_schema(cmut.column_family_id());
+        co_await sp.mutate_locally(cmut.to_mutation(schema), nullptr, db::commitlog::force_sync::no);
+    });
 }
 
 static bool should_flush_system_topology_after_applying(const mutation& mut, const data_dictionary::database db) {
@@ -261,6 +271,16 @@ future<> group0_state_machine::transfer_snapshot(raft::server_id from_id, raft::
         topology_snp = co_await ser::storage_service_rpc_verbs::send_raft_pull_topology_snapshot(&_mm._messaging, addr, as, from_id, service::raft_topology_pull_params{});
     }
 
+    std::optional<service::raft_snapshot> auth_snp;
+    if (_auth_v2_enabled) {
+        std::vector<table_id> tables;
+        for (const auto& schema : db::system_auth_keyspace::all_tables()) {
+            tables.push_back(schema->id());
+        }
+        auth_snp = co_await ser::storage_service_rpc_verbs::send_raft_pull_snapshot(
+            &_mm._messaging, addr, as, from_id, service::raft_snapshot_pull_params{std::move(tables)});
+    }
+
     auto history_mut = extract_history_mutation(*cm, _sp.data_dictionary());
 
     // TODO ensure atomicity of snapshot application in presence of crashes (see TODO in `apply`)
@@ -273,6 +293,10 @@ future<> group0_state_machine::transfer_snapshot(raft::server_id from_id, raft::
         co_await _ss.merge_topology_snapshot(std::move(*topology_snp));
         // Flush so that current supported and enabled features are readable before commitlog replay
         co_await _sp.get_db().local().flush(db::system_keyspace::NAME, db::system_keyspace::TOPOLOGY);
+    }
+
+    if (auth_snp) {
+        co_await mutate_locally(std::move(auth_snp->mutations), _sp);
     }
 
     co_await _sp.mutate_locally({std::move(history_mut)}, nullptr);

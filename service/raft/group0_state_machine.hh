@@ -96,6 +96,7 @@ class group0_state_machine : public raft_state_machine {
     seastar::gate _gate;
     abort_source _abort_source;
     bool _topology_change_enabled;
+    bool _auth_v2_enabled;
     gms::feature::listener_registration _topology_on_raft_support_listener;
 
     future<> merge_and_apply(group0_state_machine_merger& merger);
