@@ -15,15 +15,25 @@ from test.pylib.util import wait_for_cql_and_get_hosts
 from test.topology.util import log_run_time, wait_until_topology_upgrade_finishes, \
         check_system_topology_and_cdc_generations_v3_consistency
 
+def mock_auth_data():
+    return {
+        "roles": [("user1", True, False, frozenset('users1'), "salt1")],
+    }
+
 def populate_auth_data(manager: ManagerClient):
+    data = mock_auth_data()
     cql = manager.get_cql()
-    cql.execute("INSERT INTO system_auth.roles (role, salted_hash) VALUES ('user1', 'fefe')")
+    stmt = cql.prepare("INSERT INTO system_auth.roles (role, can_login, is_superuser, member_of, salted_hash) VALUES (?, ?, ?, ?, ?)")
+    for role in data["roles"]:
+        cql.execute(stmt.bind(role))
 
 def check_auth_v2_data_consistency(manager: ManagerClient):
-    return
+    data = mock_auth_data()
+    # default auto-added user
+    data["roles"] += ("cassandra", True, True, None, None)
     cql = manager.get_cql()
-    roles = cql.execute("SELECT (role, salted_hash) FROM system_auth_v2.roles")
-    assert set(roles) == set([{"user1", "fefe"}])
+    roles = cql.execute("SELECT * FROM system_auth_v2.roles").all()
+    assert set(roles) == set(data["roles"])
 
 @pytest.mark.asyncio
 @log_run_time
