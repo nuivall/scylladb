@@ -314,4 +314,7 @@ future<std::vector<permission_details>> list_filtered_permissions(
         std::optional<std::string_view> role_name,
         const std::optional<std::pair<resource, recursive_permissions>>& resource_filter);
 
+// Migrates data from old keyspace to new one with support for linearizable writes via raft.
+future<> migrate_to_auth_v2(::service::storage_service& ss, ::service::raft_group0_client& g0, abort_source& as);
+
 }

@@ -67,7 +67,7 @@ using raft_topology_cmd_handler_type = noncopyable_function<future<raft_topology
 future<> run_topology_coordinator(
         seastar::sharded<db::system_distributed_keyspace>& sys_dist_ks, gms::gossiper& gossiper,
         netw::messaging_service& messaging, locator::shared_token_metadata& shared_tm,
-        db::system_keyspace& sys_ks, replica::database& db, service::raft_group0& group0,
+        db::system_keyspace& sys_ks, replica::database& db, service::raft_group0& group0, service::storage_service& ss,
         service::topology_state_machine& topo_sm, seastar::abort_source& as, raft::server& raft,
         raft_topology_cmd_handler_type raft_topology_cmd_handler,
         tablet_allocator& tablet_allocator,

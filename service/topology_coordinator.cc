@@ -14,6 +14,7 @@
 #include <seastar/core/sharded.hh>
 #include <seastar/util/noncopyable_function.hh>
 
+#include "auth/service.hh"
 #include "cdc/generation.hh"
 #include "db/system_distributed_keyspace.hh"
 #include "db/system_keyspace.hh"
@@ -74,6 +75,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
     db::system_keyspace& _sys_ks;
     replica::database& _db;
     service::raft_group0& _group0;
+    service::storage_service& _ss;
     const service::raft_address_map& _address_map;
     service::topology_state_machine& _topo_sm;
     abort_source& _as;
@@ -2083,14 +2085,14 @@ public:
     topology_coordinator(
             sharded<db::system_distributed_keyspace>& sys_dist_ks, gms::gossiper& gossiper,
             netw::messaging_service& messaging, locator::shared_token_metadata& shared_tm,
-            db::system_keyspace& sys_ks, replica::database& db, service::raft_group0& group0,
+            db::system_keyspace& sys_ks, replica::database& db, service::raft_group0& group0, service::storage_service& ss,
             service::topology_state_machine& topo_sm, abort_source& as, raft::server& raft_server,
             raft_topology_cmd_handler_type raft_topology_cmd_handler,
             tablet_allocator& tablet_allocator,
             std::chrono::milliseconds ring_delay)
         : _sys_dist_ks(sys_dist_ks), _gossiper(gossiper), _messaging(messaging)
         , _shared_tm(shared_tm), _sys_ks(sys_ks), _db(db)
-        , _group0(group0), _address_map(_group0.address_map()), _topo_sm(topo_sm), _as(as)
+        , _group0(group0), _ss(ss), _address_map(_group0.address_map()), _topo_sm(topo_sm), _as(as)
         , _raft(raft_server), _term(raft_server.get_current_term())
         , _raft_topology_cmd_handler(std::move(raft_topology_cmd_handler))
         , _tablet_allocator(tablet_allocator)
@@ -2260,9 +2262,12 @@ future<> topology_coordinator::build_coordinator_state(group0_guard guard) {
     rtlogger.info("waiting for all nodes to finish upgrade to raft schema");
     release_guard(std::move(guard));
     co_await _group0.wait_for_all_nodes_to_finish_upgrade(_as);
-    guard = co_await start_operation();
+
+    rtlogger.info("migrating system_auth keyspace data");
+    co_await auth::migrate_to_auth_v2(_ss, _group0.client(), _as);
 
     rtlogger.info("building initial raft topology state and CDC generation");
+    guard = co_await start_operation();
 
     auto get_application_state = [&] (locator::host_id host_id, gms::inet_address ep, const gms::application_state_map& epmap, gms::application_state app_state) -> sstring {
         const auto it = epmap.find(app_state);
@@ -2558,7 +2563,7 @@ future<> topology_coordinator::run() {
 future<> run_topology_coordinator(
         seastar::sharded<db::system_distributed_keyspace>& sys_dist_ks, gms::gossiper& gossiper,
         netw::messaging_service& messaging, locator::shared_token_metadata& shared_tm,
-        db::system_keyspace& sys_ks, replica::database& db, service::raft_group0& group0,
+        db::system_keyspace& sys_ks, replica::database& db, service::raft_group0& group0, service::storage_service& ss,
         service::topology_state_machine& topo_sm, seastar::abort_source& as, raft::server& raft,
         raft_topology_cmd_handler_type raft_topology_cmd_handler,
         tablet_allocator& tablet_allocator,
@@ -2567,7 +2572,7 @@ future<> run_topology_coordinator(
 
     topology_coordinator coordinator{
             sys_dist_ks, gossiper, messaging, shared_tm,
-            sys_ks, db, group0, topo_sm, as, raft,
+            sys_ks, db, group0, ss, topo_sm, as, raft,
             std::move(raft_topology_cmd_handler),
             tablet_allocator,
             ring_delay};

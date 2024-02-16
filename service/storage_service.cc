@@ -897,7 +897,7 @@ future<> storage_service::raft_state_monitor_fiber(raft::server& raft, sharded<d
             // start topology change coordinator in the background
             _topology_change_coordinator = run_topology_coordinator(
                     sys_dist_ks, _gossiper, _messaging.local(), _shared_token_metadata,
-                    _sys_ks.local(), _db.local(), *_group0, _topology_state_machine, *as, raft,
+                    _sys_ks.local(), _db.local(), *_group0, *this, _topology_state_machine, *as, raft,
                     std::bind_front(&storage_service::raft_topology_cmd_handler, this),
                     _tablet_allocator.local(),
                     get_ring_delay(),

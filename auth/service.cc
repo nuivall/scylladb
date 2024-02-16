@@ -26,11 +26,14 @@
 #include "db/config.hh"
 #include "db/consistency_level_type.hh"
 #include "db/functions/function_name.hh"
+#include "db/system_auth_keyspace.hh"
 #include "log.hh"
+#include "seastar/core/future.hh"
 #include "service/migration_manager.hh"
 #include "utils/class_registrator.hh"
 #include "locator/abstract_replication_strategy.hh"
 #include "data_dictionary/keyspace_metadata.hh"
+#include "service/storage_service.hh"
 
 namespace auth {
 
@@ -625,6 +628,33 @@ future<std::vector<permission_details>> list_filtered_permissions(
             });
         });
     });
+}
+
+future<> migrate_to_auth_v2(::service::storage_service& ss, ::service::raft_group0_client& g0, abort_source& as) {
+    auto gen = [&ss] () -> mutations_generator {
+        for (const auto& schema : db::system_auth_keyspace::all_tables()) {
+            std::vector<canonical_mutation> cmuts;
+             try {
+                cmuts = co_await ss.get_system_mutations(
+                sstring(meta::legacy::AUTH_KS), schema->cf_name());
+            } catch (data_dictionary::no_such_column_family&) {
+                continue; // some tables may be missing if they were not used
+            }
+            std::vector<mutation> muts;
+            muts.reserve(cmuts.size());
+            for (const auto& cmut : cmuts) {
+                muts.push_back(cmut.to_mutation(schema,
+                    canonical_mutation::ignore_cf_id_mismatch::yes));
+            }
+            for (auto& mut : muts) {
+                co_yield std::move(mut);
+            }
+        }
+    };
+    co_await announce_mutations_with_batching(g0,
+        co_await g0.start_operation(&as),
+        std::move(gen),
+        &as);
 }
 
 }

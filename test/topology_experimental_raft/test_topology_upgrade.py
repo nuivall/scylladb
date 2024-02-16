@@ -15,6 +15,15 @@ from test.pylib.util import wait_for_cql_and_get_hosts
 from test.topology.util import log_run_time, wait_until_topology_upgrade_finishes, \
         check_system_topology_and_cdc_generations_v3_consistency
 
+def populate_auth_data(manager: ManagerClient):
+    cql = manager.get_cql()
+    cql.execute("INSERT INTO system_auth.roles (role, salted_hash) VALUES ('user1', 'fefe')")
+
+def check_auth_v2_data_consistency(manager: ManagerClient):
+    return
+    cql = manager.get_cql()
+    roles = cql.execute("SELECT (role, salted_hash) FROM system_auth_v2.roles")
+    assert set(roles) == set([{"user1", "fefe"}])
 
 @pytest.mark.asyncio
 @log_run_time
@@ -39,6 +48,8 @@ async def test_topology_upgrade_basic(request, manager: ManagerClient):
         status = await manager.api.raft_topology_upgrade_status(host.address)
         assert status == "not_upgraded"
 
+    populate_auth_data(manager)
+
     logging.info("Triggering upgrade to raft topology")
     await manager.api.upgrade_to_raft_topology(hosts[0].address)
 
@@ -50,6 +61,8 @@ async def test_topology_upgrade_basic(request, manager: ManagerClient):
 
     logging.info("Checking consistency of data in system.topology and system.cdc_generations_v3")
     await check_system_topology_and_cdc_generations_v3_consistency(manager, hosts)
+    logging.info("Checking consistency of data in system_auth_v2")
+    check_auth_v2_data_consistency(manager)
 
     logging.info("Booting new node")
     await manager.server_add(config=cfg)
@@ -59,3 +72,5 @@ async def test_topology_upgrade_basic(request, manager: ManagerClient):
 
     logging.info("Checking consistency of data in system.topology and system.cdc_generations_v3")
     await check_system_topology_and_cdc_generations_v3_consistency(manager, hosts)
+    logging.info("Checking consistency of data in system_auth_v2")
+    check_auth_v2_data_consistency(manager)

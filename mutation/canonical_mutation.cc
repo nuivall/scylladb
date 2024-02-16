@@ -40,12 +40,12 @@ table_id canonical_mutation::column_family_id() const {
     return mv.table_id();
 }
 
-mutation canonical_mutation::to_mutation(schema_ptr s) const {
+mutation canonical_mutation::to_mutation(schema_ptr s, ignore_cf_id_mismatch ignore_cf_id_mismatch) const {
     auto in = ser::as_input_stream(_data);
     auto mv = ser::deserialize(in, boost::type<ser::canonical_mutation_view>());
 
     auto cf_id = mv.table_id();
-    if (s->id() != cf_id) {
+    if (s->id() != cf_id && !ignore_cf_id_mismatch) {
         throw std::runtime_error(format("Attempted to deserialize canonical_mutation of table {} with schema of table {} ({}.{})",
                                         cf_id, s->id(), s->ks_name(), s->cf_name()));
     }
