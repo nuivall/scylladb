@@ -22,7 +22,7 @@ detach_service_level_statement::detach_service_level_statement(sstring role_name
 }
 
 bool detach_service_level_statement::needs_guard(query_processor& qp) const {
-    return qp.db().get_config().check_experimental(db::experimental_features_t::feature::AUTH_V2);
+    return qp.db().get_config().check_experimental(db::experimental_features_t::feature::CONSISTENT_TOPOLOGY_CHANGES);
 }
 
 std::unique_ptr<cql3::statements::prepared_statement>

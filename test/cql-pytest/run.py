@@ -313,7 +313,6 @@ def run_scylla_cmd(pid, dir):
         '--experimental-features=keyspace-storage-options',
         '--experimental-features=consistent-topology-changes',
         '--experimental-features=tablets',
-        '--experimental-features=auth-v2',
         '--enable-user-defined-functions', '1',
         # Set up authentication in order to allow testing this module
         # and other modules dependent on it: e.g. service levels

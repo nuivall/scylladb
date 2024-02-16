@@ -52,7 +52,7 @@ static logging::logger slogger("group0_raft_sm");
 
 group0_state_machine::group0_state_machine(raft_group0_client& client, migration_manager& mm, storage_proxy& sp, storage_service& ss, raft_address_map& address_map, gms::feature_service& feat, bool topology_change_enabled)
         : _client(client), _mm(mm), _sp(sp), _ss(ss), _address_map(address_map), _topology_change_enabled(topology_change_enabled)
-        , _auth_v2_enabled(sp.data_dictionary().get_config().check_experimental(db::experimental_features_t::feature::AUTH_V2))
+        , _auth_v2_enabled(sp.data_dictionary().get_config().check_experimental(db::experimental_features_t::feature::CONSISTENT_TOPOLOGY_CHANGES))
         , _topology_on_raft_support_listener(feat.supports_consistent_topology_changes.when_enabled([this] () noexcept {
             // Using features to decide whether to start fetching topology snapshots
             // or not is technically not correct because we also use features to guard

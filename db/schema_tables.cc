@@ -231,7 +231,7 @@ future<> save_system_schema(cql3::query_processor& qp) {
     // #2514 - make sure "system" is written to system_schema.keyspaces.
     co_await save_system_schema_to_keyspace(qp, system_keyspace::NAME);
     if (qp.db().get_config().check_experimental(
-        db::experimental_features_t::feature::AUTH_V2)) {
+        db::experimental_features_t::feature::CONSISTENT_TOPOLOGY_CHANGES)) {
         co_await save_system_schema_to_keyspace(qp, system_auth_keyspace::NAME);
     }
 }

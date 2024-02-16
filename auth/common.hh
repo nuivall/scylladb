@@ -51,7 +51,7 @@ extern constinit const std::string_view AUTH_PACKAGE_NAME;
 
 } // namespace meta
 
-// This is a helper to check whether auth-v2 feature is on.
+// This is a helper to check whether auth-v2 is on.
 bool legacy_mode(cql3::query_processor& qp);
 
 // We have legacy implementation using different keyspace

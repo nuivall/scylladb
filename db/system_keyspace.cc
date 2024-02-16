@@ -2096,7 +2096,7 @@ std::vector<schema_ptr> system_keyspace::all_tables(const db::config& cfg) {
         r.insert(r.end(), {topology(), cdc_generations_v3(), topology_requests()});
     }
 
-    if (cfg.check_experimental(db::experimental_features_t::feature::AUTH_V2)) {
+    if (cfg.check_experimental(db::experimental_features_t::feature::CONSISTENT_TOPOLOGY_CHANGES)) {
         auto auth_tables = db::system_auth_keyspace::all_tables();
         std::copy(auth_tables.begin(), auth_tables.end(), std::back_inserter(r));
     }

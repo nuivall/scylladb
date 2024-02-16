@@ -176,7 +176,6 @@ cql_test_config auth_on() {
     cfg.db_config->authenticator("PasswordAuthenticator");
     cfg.db_config->experimental_features({
         db::experimental_features_t::feature::CONSISTENT_TOPOLOGY_CHANGES,
-        db::experimental_features_t::feature::AUTH_V2,
     });
     return cfg;
 }

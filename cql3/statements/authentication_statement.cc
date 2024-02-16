@@ -25,5 +25,5 @@ future<> cql3::statements::authentication_statement::check_access(query_processo
 }
 
 bool cql3::statements::authentication_altering_statement::needs_guard(query_processor& qp) const {
-    return qp.db().get_config().check_experimental(db::experimental_features_t::feature::AUTH_V2);
+    return qp.db().get_config().check_experimental(db::experimental_features_t::feature::CONSISTENT_TOPOLOGY_CHANGES);
 }
