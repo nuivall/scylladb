@@ -86,9 +86,6 @@ create_role_statement::execute(query_processor&,
                                service::query_state& state,
                                const query_options&,
                                std::optional<service::group0_guard> guard) const {
-    if (guard) {
-        release_guard(std::move(*guard));
-    }
     auth::role_config config;
     config.is_superuser = *_options.is_superuser;
     config.can_login = *_options.can_login;
@@ -97,7 +94,10 @@ create_role_statement::execute(query_processor&,
     auto& as = *cs.get_auth_service();
 
     try {
-        co_await auth::create_role(as, _role, config, extract_authentication_options(_options));
+        auth::mutations_collector mc{std::move(guard)};
+        co_await auth::create_role(as, _role, config, extract_authentication_options(_options), mc);
+        co_await auth::announce_mutations(as, mc);
+        // FIXME(mmal): pass mc below as well
         co_await grant_permissions_to_creator(cs);
     } catch (const auth::role_already_exists& e) {
         if (!_if_not_exists) {

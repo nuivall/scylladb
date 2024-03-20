@@ -79,6 +79,8 @@ class service final : public seastar::peering_sharded_service<service> {
 
     cql3::query_processor& _qp;
 
+    ::service::raft_group0_client& _group0_client;
+
     ::service::migration_notifier& _mnotifier;
 
     authorizer::ptr_type _authorizer;
@@ -99,10 +101,13 @@ class service final : public seastar::peering_sharded_service<service> {
 
     maintenance_socket_enabled _used_by_maintenance_socket;
 
+    abort_source _as; //FIXME(mmal): handle auth service stop
+
 public:
     service(
             utils::loading_cache_config,
             cql3::query_processor&,
+            ::service::raft_group0_client&,
             ::service::migration_notifier&,
             std::unique_ptr<authorizer>,
             std::unique_ptr<authenticator>,
@@ -174,6 +179,10 @@ public:
         return _qp;
     }
 
+    future<> announce_mutations(mutations_collector& mc) {
+        return mc.announce(_group0_client, _as);
+    }
+
 private:
     future<bool> has_existing_legacy_users() const;
 
@@ -213,7 +222,8 @@ future<> create_role(
         const service&,
         std::string_view name,
         const role_config&,
-        const authentication_options&);
+        const authentication_options&,
+        mutations_collector& mc);
 
 ///
 /// Alter an existing role and its authentication information.
@@ -337,6 +347,10 @@ future<std::vector<permission_details>> list_filtered_permissions(
         permission_set,
         std::optional<std::string_view> role_name,
         const std::optional<std::pair<resource, recursive_permissions>>& resource_filter);
+
+
+// Finalizes write operations performed in auth by committing mutations via raft group0.
+future<> announce_mutations(service& ser, mutations_collector& mc);
 
 // Migrates data from old keyspace to new one which supports linearizable writes via raft.
 future<> migrate_to_auth_v2(cql3::query_processor& qp, ::service::raft_group0_client& g0, start_operation_func_t start_operation_func, abort_source& as);
