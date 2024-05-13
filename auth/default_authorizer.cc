@@ -244,7 +244,7 @@ future<std::vector<permission_details>> default_authorizer::list_all() const {
     co_return all_details;
 }
 
-future<> default_authorizer::revoke_all(std::string_view role_name) {
+future<> default_authorizer::revoke_all(std::string_view role_name, ::service::mutations_collector& mc) {
     try {
         const sstring query = format("DELETE FROM {}.{} WHERE {} = ?",
                 get_auth_ks_name(_qp),
@@ -258,7 +258,7 @@ future<> default_authorizer::revoke_all(std::string_view role_name) {
                     {sstring(role_name)},
                     cql3::query_processor::cache_internal::no).discard_result();
         } else {
-            co_await announce_mutations(_qp, _group0_client, query, {sstring(role_name)}, &_as, ::service::raft_timeout{});
+            co_await collect_mutations(_qp, mc, query, {sstring(role_name)});
         }
     } catch (exceptions::request_execution_exception& e) {
         alogger.warn("CassandraAuthorizer failed to revoke all permissions of {}: {}", role_name, e);
@@ -310,12 +310,12 @@ future<> default_authorizer::revoke_all_legacy(const resource& resource) {
     });
 }
 
-future<> default_authorizer::revoke_all(const resource& resource) {
+future<> default_authorizer::revoke_all(const resource& resource, ::service::mutations_collector& mc) {
     if (legacy_mode(_qp)) {
         co_return co_await revoke_all_legacy(resource);
     }
     auto name = resource.name();
-    auto gen = [this, name] (api::timestamp_type& t) -> mutations_generator {
+    auto gen = [this, name] (api::timestamp_type t) -> ::service::mutations_generator {
         const sstring query = format("SELECT {} FROM {}.{} WHERE {} = ? ALLOW FILTERING",
                 ROLE_NAME,
                 get_auth_ks_name(_qp),
@@ -344,13 +344,7 @@ future<> default_authorizer::revoke_all(const resource& resource) {
             co_yield std::move(muts[0]);
         }
     };
-    const auto timeout = ::service::raft_timeout{};
-    co_await announce_mutations_with_batching(
-            _group0_client,
-            [this, timeout](abort_source* as) { return _group0_client.start_operation(as, timeout); },
-            std::move(gen),
-            &_as,
-            timeout);
+    mc.add_generator(std::move(gen));
 }
 
 const resource_set& default_authorizer::protected_resources() const {
