@@ -23,6 +23,7 @@
 #include <seastar/core/sstring.hh>
 
 #include "auth/permission.hh"
+#include "cql3/functions/function.hh"
 #include "seastarx.hh"
 #include "utils/hash.hh"
 #include "utils/small_vector.hh"
@@ -261,6 +262,8 @@ inline resource make_functions_resource(std::string_view keyspace, std::string_v
 inline resource make_functions_resource(std::string_view keyspace, std::string_view function_name, std::vector<::shared_ptr<cql3::cql3_type::raw>> function_signature) {
     return resource(functions_resource_t{}, keyspace, function_name, function_signature);
 }
+
+resource make_functions_resource(const cql3::functions::function& f);
 
 sstring encode_signature(std::string_view name, std::vector<data_type> args);
 
