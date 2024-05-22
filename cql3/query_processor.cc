@@ -1035,9 +1035,16 @@ query_processor::execute_schema_statement(const statements::schema_altering_stat
     }
 
     ce = std::move(ret);
-
-    // If an IF [NOT] EXISTS clause was used, this may not result in an actual schema change.  To avoid doing
-    // extra work in the drivers to handle schema changes, we return an empty message in this case. (CASSANDRA-7600)
+    if (!ce) {
+        // If an IF [NOT] EXISTS clause was used and resource was already created
+        // we don't emit schema change event. However it interact badly with
+        // concurrent clients creating resources. The client seeing no create event
+        // assumes resource is created and proceeds with its logic which may depend on
+        // that resource. But it may send requests to nodes which are not yet aware of
+        // new schema or client's metadata may be outdated. To force synchronization
+        // we'll try to emit fake event (see github.com/scylladb/scylladb/issues/16909).
+        ce = stmt.created_event();
+    }
     ::shared_ptr<messages::result_message> result;
     if (!ce) {
         result = ::make_shared<messages::result_message::void_message>();
