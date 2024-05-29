@@ -43,6 +43,14 @@ public:
 
     future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, std::vector<mutation>, cql3::cql_warnings_vec>> prepare_schema_mutations(query_processor& qp, const query_options& options, api::timestamp_type) const override;
 
+    virtual ::shared_ptr<event_t> created_event() const override {
+        return make_shared<event_t>(
+                event_t::change_type::CREATED,
+                event_t::target_type::TYPE,
+                keyspace(),
+                _name.get_string_type_name());
+    }
+
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats) override;
 
     static void check_for_duplicate_names(user_type type);

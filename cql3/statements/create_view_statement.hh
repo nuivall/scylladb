@@ -58,6 +58,14 @@ public:
     virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
     future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, std::vector<mutation>, cql3::cql_warnings_vec>> prepare_schema_mutations(query_processor& qp, const query_options& options, api::timestamp_type) const override;
 
+    virtual ::shared_ptr<event_t> created_event() const override {
+        return make_shared<event_t>(
+                event_t::change_type::CREATED,
+                event_t::target_type::TABLE,
+                keyspace(),
+                column_family());
+    }
+
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats) override;
 
     // FIXME: continue here. See create_table_statement.hh and CreateViewStatement.java
