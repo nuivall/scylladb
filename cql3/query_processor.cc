@@ -1024,6 +1024,14 @@ query_processor::execute_schema_statement(const statements::schema_altering_stat
     if (!m.empty()) {
         auto description = format("CQL DDL statement: \"{}\"", stmt.raw_cql_statement);
         co_await remote_.get().mm.announce(std::move(m), std::move(*guard), description);
+        // Internal queries don't trigger auto-grant. Statements which don't require
+        // auto-grant use default nop grant_permissions_to_creator implementation.
+        // Additional implicit assumption is that prepare_schema_mutations returns
+        // empty mutations vector when resource doesn't need to be created (e.g. already exists).
+        auto& client_state = state.get_client_state();
+        if (!client_state.is_internal()) {
+            co_await stmt.grant_permissions_to_creator(client_state);
+        }
     }
 
     ce = std::move(ret);

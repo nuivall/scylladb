@@ -71,12 +71,6 @@ schema_altering_statement::execute(query_processor& qp, service::query_state& st
         }
     }
     auto result = co_await qp.execute_schema_statement(*this, state, options, std::move(guard));
-    // We don't want to grant the permissions to the supposed creator even if the statement succeeded if it's an internal query
-    // or if the query did not actually create the item, i.e. the query is bounced to another shard or it's a IF NOT EXISTS
-    // query where the item already exists.
-    if (!internal && result->is_schema_change()) {
-        co_await grant_permissions_to_creator(state.get_client_state());
-    }
     co_return std::move(result);
 }
 
