@@ -47,6 +47,13 @@ public:
         auto val_to = _func(val_from);
         return to_type->decompose(val_to);
     }
+
+    virtual future<std::unique_ptr<function>> copy(sharded<replica::database>& db) const override {
+        co_return std::make_unique<castas_function_for>(
+                return_type(),
+                arg_types()[0],
+                _func);
+    }
 };
 
 shared_ptr<function> make_castas_function(data_type to_type, data_type from_type, castas_fctn func) {

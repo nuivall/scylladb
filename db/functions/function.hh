@@ -10,7 +10,11 @@
 
 #pragma once
 
+#include "seastar/core/sharded.hh"
 #include "types/types.hh"
+#include "replica/database_fwd.hh"
+
+#include <memory>
 #include <vector>
 #include <optional>
 #include <fmt/ostream.h>
@@ -60,6 +64,11 @@ public:
      * @return the name of the function to use within a ResultSet
      */
     virtual sstring column_name(const std::vector<sstring>& column_names) const = 0;
+
+    /**
+     * Returns deep copy of function object.
+     */
+    virtual future<std::unique_ptr<function>> copy(sharded<replica::database>& db) const = 0;
 
     friend class function_call;
     friend std::ostream& operator<<(std::ostream& os, const function& f);

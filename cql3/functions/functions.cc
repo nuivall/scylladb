@@ -23,6 +23,7 @@
 #include "cql3/expr/expression.hh"
 #include <boost/range/adaptor/transformed.hpp>
 #include <boost/range/adaptors.hpp>
+#include <memory>
 
 #include "error_injection_fcts.hh"
 

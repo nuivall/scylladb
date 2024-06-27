@@ -9,8 +9,11 @@
 #include "user_function.hh"
 #include "cql3/util.hh"
 #include "log.hh"
-#include "lang/wasm.hh"
+#include "lang/wasm.hh
+#include "lang/manager.hh"
+#include "replica/database.hh"
 
+#include <memory>
 #include <seastar/core/thread.hh>
 
 namespace cql3 {
@@ -92,6 +95,19 @@ std::ostream& user_function::describe(std::ostream& os) const {
        << "$$;";
 
     return os;
+}
+
+future<std::unique_ptr<function>> user_function::copy(sharded<replica::database>& db) const {
+    auto ctx = co_await db.local().lang().create(language(), name().name, arg_names(), body());
+    co_return std::make_unique<user_function>(
+            name(),
+            arg_types(),
+            arg_names(),
+            body(),
+            language(),
+            return_type(),
+            called_on_null_input(),
+            std::move(*ctx));
 }
 
 }

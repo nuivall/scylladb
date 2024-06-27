@@ -11,6 +11,7 @@
 #include "error_injection_fcts.hh"
 #include "utils/error_injection.hh"
 #include "types/list.hh"
+#include <memory>
 #include <seastar/core/map_reduce.hh>
 
 namespace cql3
@@ -42,6 +43,14 @@ public:
 
     bytes_opt execute(std::span<const bytes_opt> parameters) override {
         return _func(parameters);
+    }
+
+    virtual future<std::unique_ptr<function>> copy(sharded<replica::database>& db) const override {
+        co_return std::make_unique<failure_injection_function_for>(
+                function_name().name,
+                return_type(),
+                arg_types(),
+                _func);
     }
 };
 

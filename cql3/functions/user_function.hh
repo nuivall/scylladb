@@ -65,6 +65,8 @@ public:
     virtual sstring element_name() const override { return name().name; }
     virtual sstring element_type() const override { return "function"; }
     virtual std::ostream& describe(std::ostream& os) const override;
+
+    virtual future<std::unique_ptr<function>> copy(sharded<replica::database>& db) const override;
 };
 
 }

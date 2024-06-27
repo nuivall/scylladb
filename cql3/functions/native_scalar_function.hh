@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "cql3/functions/function_name.hh"
 #include "native_function.hh"
 #include "scalar_function.hh"
 #include "exceptions/exceptions.hh"
@@ -65,6 +66,13 @@ public:
             throw exceptions::function_execution_exception(name().name,
                 format("Failed execution of function {}: {}", name(), std::current_exception()), name().keyspace, std::move(args));
         }
+    }
+    virtual future<std::unique_ptr<function>> copy(sharded<replica::database>& db) const override {
+        co_return std::make_unique<native_scalar_function_for>(
+                function_name().name,
+                return_type(),
+                arg_types(),
+                _func);
     }
 };
 

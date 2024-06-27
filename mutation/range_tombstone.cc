@@ -7,6 +7,7 @@
  */
 
 #include "range_tombstone.hh"
+#include "mutation/position_in_partition.hh"
 
 #include <boost/range/algorithm/upper_bound.hpp>
 #include <boost/range/numeric.hpp>
