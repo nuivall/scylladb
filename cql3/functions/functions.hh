@@ -60,16 +60,9 @@ public:
     static declared_t::iterator find_iter(const function_name& name, const std::vector<data_type>& arg_types);
     static shared_ptr<function> find(const function_name& name, const std::vector<data_type>& arg_types);
     static shared_ptr<function> mock_get(const function_name& name, const std::vector<data_type>& arg_types);
-    static void clear_functions() noexcept;
-    static void add_function(shared_ptr<function>);
-    static void replace_function(shared_ptr<function>);
-    static void remove_function(const function_name& name, const std::vector<data_type>& arg_types);
     static std::optional<function_name> used_by_user_aggregate(shared_ptr<user_function>);
     static std::optional<function_name> used_by_user_function(const ut_name& user_type);
 private:
-    template <typename F>
-    static void with_udf_iter(const function_name& name, const std::vector<data_type>& arg_types, F&& f);
-
     template <typename F>
     static std::vector<shared_ptr<F>> get_filtered_transformed(const sstring& keyspace);
 
@@ -117,6 +110,18 @@ private:
         public void onDropAggregate(String ksName, String aggregateName) { }
     }
 #endif
+};
+
+// Class for applying modifications to function class in
+// an atomic way across shards (copy on write mechanism).
+class functions_shadow {
+    template <typename F>
+    static void with_udf_iter(const function_name& name, const std::vector<data_type>& arg_types, F&& f);
+public:
+    static void clear_functions() noexcept;
+    static void add_function(shared_ptr<function>);
+    static void replace_function(shared_ptr<function>);
+    static void remove_function(const function_name& name, const std::vector<data_type>& arg_types);
 };
 
 }
