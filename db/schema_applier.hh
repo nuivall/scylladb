@@ -45,6 +45,20 @@ struct schema_complete_view {
     schema_tables::schema_result scylla_aggregates;
 };
 
+struct affected_keyspaces_names {
+    std::set<sstring> dropped;
+};
+
+// groups keyspaces based on what is happening to them during schema change
+struct affected_keyspaces {
+    std::set<sstring> created;
+    std::set<sstring> altered;
+    // names need to be copied here as they are used multiple times and
+    // keyspace struct from which we obtain the name is moved when
+    // we commit it
+    affected_keyspaces_names names;
+};
+
 class schema_applier {
     using keyspace_name = sstring;
 
@@ -58,6 +72,8 @@ class schema_applier {
 
     schema_complete_view _before;
     schema_complete_view _after;
+
+    affected_keyspaces _affected_keyspaces;
 
     future<schema_complete_view> get_schema_complete_view();
 public:
