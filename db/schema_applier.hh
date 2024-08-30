@@ -59,6 +59,15 @@ struct affected_keyspaces {
     affected_keyspaces_names names;
 };
 
+struct affected_user_types_per_shard {
+    std::vector<user_type> created;
+    std::vector<user_type> altered;
+    std::vector<user_type> dropped;
+};
+
+// groups UDTs based on what is happening to them during schema change
+using affected_user_types = std::vector<affected_user_types_per_shard>;
+
 class schema_applier {
     using keyspace_name = sstring;
 
@@ -74,6 +83,7 @@ class schema_applier {
     schema_complete_view _after;
 
     affected_keyspaces _affected_keyspaces;
+    affected_user_types _affected_user_types;
 
     future<schema_complete_view> get_schema_complete_view();
 public:
