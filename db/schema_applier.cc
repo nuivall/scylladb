@@ -814,12 +814,6 @@ future<> schema_applier::update() {
     co_await merge_aggregates(_proxy, _functions_batch, _before.aggregates, _after.aggregates,
             _before.scylla_aggregates, _after.scylla_aggregates);
 
-    // TODO: move into schema_applier::commit
-    co_await _proxy.local().get_db().invoke_on_all([&] (replica::database& db) {
-        auto& batch = *_functions_batch[this_shard_id()];
-        batch.commit();
-    });
-
     co_await notify();
 
     co_await drop_types(_proxy, _affected_user_types);
@@ -837,6 +831,10 @@ void schema_applier::commit_on_shard(replica::database& db) {
     }
 
     // TODO: move code for all schema modifications
+
+    // commit user functions and aggregates
+    auto& funcs_change_batch = _functions_batch[this_shard_id()];
+    funcs_change_batch->commit();
 
     // it is safe to drop a keyspace only when all nested ColumnFamilies where deleted
     for (const auto& ks_name : _affected_keyspaces.names.dropped) {
