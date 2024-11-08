@@ -11,6 +11,7 @@
 #include <seastar/core/sharded.hh>
 #include <seastar/core/shared_ptr.hh>
 #include "schema/schema_fwd.hh"
+#include "seastar/core/rwlock.hh"
 
 namespace replica {
 class database;
@@ -32,5 +33,12 @@ public:
 
 future<global_table_ptr> get_table_on_all_shards(sharded<database>& db, table_id uuid);
 future<global_table_ptr> get_table_on_all_shards(sharded<database>& db, sstring ks_name, sstring cf_name);
+
+class write_locked_global_table_ptr : public global_table_ptr {
+    std::vector<foreign_ptr<std::unique_ptr<seastar::rwlock::holder>>> _holders;
+public:
+    write_locked_global_table_ptr(global_table_ptr&&);
+    void assign_lock(seastar::rwlock::holder&& h);
+};
 
 } // replica namespace
