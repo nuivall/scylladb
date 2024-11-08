@@ -528,7 +528,7 @@ public:
         mlogger.info("Dropping legacy schema tables");
         auto with_snapshot = !_keyspaces.empty();
         return parallel_for_each(legacy_schema_tables, [this, with_snapshot](const sstring& cfname) {
-            return replica::database::drop_table_on_all_shards(_db, _sys_ks, db::system_keyspace::NAME, cfname, with_snapshot);
+            return replica::database::legacy_drop_table_on_all_shards(_db, _sys_ks, db::system_keyspace::NAME, cfname, with_snapshot);
         });
     }
 
