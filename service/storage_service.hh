@@ -235,9 +235,8 @@ public:
     void init_messaging_service();
     future<> uninit_messaging_service();
 
-    future<> update_tablet_metadata(const locator::tablet_metadata_change_hint& hint);
     // If a hint is provided, only the changed parts of the tablet metadata will be (re)loaded.
-    future<> load_tablet_metadata(const locator::tablet_metadata_change_hint& hint);
+    future<> update_tablet_metadata(const locator::tablet_metadata_change_hint& hint, const bool wake_up_load_balancer = true);
     void start_tablet_split_monitor();
 private:
     using acquire_merge_lock = bool_class<class acquire_merge_lock_tag>;
