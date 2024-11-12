@@ -5373,12 +5373,14 @@ future<> storage_service::keyspace_changed(const sstring& ks_name) {
     return update_topology_change_info(reason, acquire_merge_lock::no);
 }
 
-void storage_service::on_update_tablet_metadata(const locator::tablet_metadata_change_hint& hint) {
+void storage_service::on_update_tablet_metadata(const locator::tablet_metadata_change_hint& hint) {}
+
+future<> storage_service::update_tablet_metadata(const locator::tablet_metadata_change_hint& hint) {
     if (this_shard_id() != 0) {
         // replicate_to_all_cores() takes care of other shards.
-        return;
+        co_return;
     }
-    load_tablet_metadata(hint).get();
+    co_await load_tablet_metadata(hint);
     _topology_state_machine.event.broadcast(); // wake up load balancer.
 }
 

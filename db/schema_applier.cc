@@ -500,6 +500,7 @@ constexpr size_t max_concurrent = 8;
 // upon an alter table or alter type statement), then they are published together
 // as well, without any deferring in-between.
 static future<affected_tables_and_views> merge_tables_and_views(distributed<service::storage_proxy>& proxy,
+distributed<service::storage_service>& ss,
     sharded<db::system_keyspace>& sys_ks,
     const std::map<table_id, schema_mutations>& tables_before,
     const std::map<table_id, schema_mutations>& tables_after,
@@ -569,6 +570,7 @@ static future<affected_tables_and_views> merge_tables_and_views(distributed<serv
         // We must do it after tables are dropped so that table snapshot doesn't experience missing tablet map,
         // and so that compaction groups are not destroyed altogether.
         // We must also do it before tables are created so that new tables see the tablet map.
+        co_await ss.local().update_tablet_metadata(tablet_hint);
         co_await db.invoke_on_all([&] (replica::database& db) -> future<> {
             co_await db.get_notifier().update_tablet_metadata(tablet_hint);
         });
@@ -756,7 +758,7 @@ future<> schema_applier::update() {
 
     _affected_keyspaces = co_await merge_keyspaces(_proxy, _before.keyspaces, _after.keyspaces);
     _affected_user_types = co_await merge_types(_proxy, _before.types, _after.types);
-    _affected_tables_and_views = co_await merge_tables_and_views(_proxy, _sys_ks,
+    _affected_tables_and_views = co_await merge_tables_and_views(_proxy, _ss, _sys_ks,
             _before.tables, _after.tables,
             _before.views, _after.views,
             _reload, _tablet_hint);
@@ -862,10 +864,10 @@ future<> schema_applier::notify() {
     co_return;
 }
 
-static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, sharded<db::system_keyspace>& sys_ks, std::vector<mutation> mutations, bool reload)
+static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, distributed<service::storage_service>& ss, sharded<db::system_keyspace>& sys_ks, std::vector<mutation> mutations, bool reload)
 {
     slogger.trace("do_merge_schema: {}", mutations);
-    schema_applier ap(proxy, sys_ks, reload);
+    schema_applier ap(proxy, ss, sys_ks, reload);
     co_await ap.prepare(mutations);
     co_await proxy.local().get_db().local().apply(freeze(mutations), db::no_timeout);
     co_await ap.update();
@@ -882,17 +884,17 @@ static future<> do_merge_schema(distributed<service::storage_proxy>& proxy, shar
  * @throws ConfigurationException If one of metadata attributes has invalid value
  * @throws IOException If data was corrupted during transportation or failed to apply fs operations
  */
-future<> merge_schema(sharded<db::system_keyspace>& sys_ks, distributed<service::storage_proxy>& proxy, gms::feature_service& feat, std::vector<mutation> mutations, bool reload)
+future<> merge_schema(sharded<db::system_keyspace>& sys_ks, distributed<service::storage_proxy>& proxy, distributed<service::storage_service>& ss, gms::feature_service& feat, std::vector<mutation> mutations, bool reload)
 {
     if (this_shard_id() != 0) {
         // mutations must be applied on the owning shard (0).
         co_await smp::submit_to(0, coroutine::lambda([&, fmuts = freeze(mutations)] () mutable -> future<> {
-            co_await merge_schema(sys_ks, proxy, feat, co_await unfreeze_gently(fmuts), reload);
+            co_await merge_schema(sys_ks, proxy, ss, feat, co_await unfreeze_gently(fmuts), reload);
         }));
         co_return;
     }
     co_await with_merge_lock([&] () mutable -> future<> {
-        co_await do_merge_schema(proxy, sys_ks, std::move(mutations), reload);
+        co_await do_merge_schema(proxy, ss, sys_ks, std::move(mutations), reload);
         auto version_from_group0 = co_await get_group0_schema_version(sys_ks.local());
         co_await update_schema_version_and_announce(sys_ks, proxy, feat.cluster_schema_features(), version_from_group0);
     });
