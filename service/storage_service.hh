@@ -235,8 +235,12 @@ public:
     void init_messaging_service();
     future<> uninit_messaging_service();
 
+
     // If a hint is provided, only the changed parts of the tablet metadata will be (re)loaded.
+    future<mutable_token_metadata_ptr> prepare_update_tablet_metadata(const locator::tablet_metadata_change_hint& hint);
+    future<> commit_update_tablet_metadata(locator::mutable_token_metadata_ptr tmptr, const bool wake_up_load_balancer = true);
     future<> update_tablet_metadata(const locator::tablet_metadata_change_hint& hint, const bool wake_up_load_balancer = true);
+
     void start_tablet_split_monitor();
 private:
     using acquire_merge_lock = bool_class<class acquire_merge_lock_tag>;
