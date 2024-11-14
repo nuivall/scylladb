@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include <exception>
 #include <fmt/ranges.h>
 #include <fmt/std.h>
 #include "seastar/core/rwlock.hh"
@@ -949,10 +950,15 @@ future<> database::add_column_family(keyspace& ks, schema_ptr schema, column_fam
         throw std::invalid_argument("Column family " + schema->cf_name() + " exists");
     }
     cf->start();
-    auto f = co_await coroutine::as_future(_tables_metadata.add_table(*this, ks, *cf, schema));
-    if (f.failed()) {
+    std::exception_ptr ex;
+    try {
+        _tables_metadata.add_table(*this, ks, *cf, schema);
+    } catch (...) {
+        ex = std::current_exception();
+    };
+    if (ex) {
         co_await cf->stop();
-        co_await coroutine::return_exception_ptr(f.get_exception());
+        co_await coroutine::return_exception_ptr(ex);
     }
 }
 
@@ -2839,8 +2845,8 @@ future<rwlock::holder> database::tables_metadata::hold_write_lock() {
     co_return co_await _cf_lock.hold_write_lock();
 }
 
-future<> database::tables_metadata::add_table(database& db, keyspace& ks, table& cf, schema_ptr s) {
-    auto holder = co_await _cf_lock.hold_write_lock();
+void database::tables_metadata::add_table(database& db, keyspace& ks, table& cf, schema_ptr s) {
+    SCYLLA_ASSERT(!_cf_lock.try_write_lock()); // lock should be acquired before the call
     add_table_helper(db, ks, cf, s);
 }
 
