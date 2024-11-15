@@ -17,6 +17,7 @@
 #include "schema/schema_registry.hh"
 
 #include <seastar/core/distributed.hh>
+#include <unordered_map>
 
 namespace db {
 
@@ -85,6 +86,12 @@ struct affected_tables_and_views {
     schema_diff tables;
     schema_diff views;
     std::vector<bool> columns_changed;
+
+    replica::tables_metadata_lock_on_all_shards locks;
+    std::unordered_map<table_id, replica::global_table_ptr> table_shards;
+
+    locator::mutable_token_metadata_ptr new_token_metadata; // represents token metadata after updating tablets metadata, nullptr if there was no change
+    std::vector<std::function<future<>()>> cleanups;
 };
 
 using functions_change_batch_all_shards = std::vector<cql3::functions::change_batch>;
@@ -139,6 +146,8 @@ public:
 
 private:
     void commit_on_shard(replica::database& db);
+    void commit_tables_and_views();
+    future<> finalize_tables_and_views();
 };
 
 }

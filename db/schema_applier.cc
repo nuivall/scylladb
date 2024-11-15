@@ -552,70 +552,25 @@ distributed<service::storage_service>& ss,
         return vp;
     });
 
-    // First drop views and *only then* the tables, if interleaved it can lead
-    // to a mv not finding its schema when snapshotting since the main table
-    // was already dropped (see https://github.com/scylladb/scylla/issues/5614)
     auto& db = proxy.local().get_db();
-    co_await max_concurrent_for_each(diff.views.dropped, max_concurrent, [&db, &sys_ks] (schema_diff::dropped_schema& dt) {
-        auto& s = *dt.schema.get();
-        return replica::database::legacy_drop_table_on_all_shards(db, sys_ks, s.ks_name(), s.cf_name());
+    // adding and dropping uses this locking mechanism
+    diff.locks = co_await replica::database::prepare_tables_metadata_change_on_all_shards(db);
+
+    co_await max_concurrent_for_each(diff.views.dropped, max_concurrent, [&db, &diff] (schema_diff::dropped_schema& dt) -> future<> {
+        auto uuid = dt.schema.get()->id();
+        diff.table_shards.insert({uuid,
+                co_await replica::database::prepare_drop_table_on_all_shards(db, uuid)});
     });
-    co_await max_concurrent_for_each(diff.tables.dropped, max_concurrent, [&db, &sys_ks] (schema_diff::dropped_schema& dt) -> future<> {
-        auto& s = *dt.schema.get();
-        return replica::database::legacy_drop_table_on_all_shards(db, sys_ks, s.ks_name(), s.cf_name());
+    co_await max_concurrent_for_each(diff.tables.dropped, max_concurrent, [&db, &diff] (schema_diff::dropped_schema& dt) -> future<> {
+        auto uuid = dt.schema.get()->id();
+        diff.table_shards.insert({uuid,
+                co_await replica::database::prepare_drop_table_on_all_shards(db, uuid)});
     });
 
     if (tablet_hint) {
         slogger.info("Tablet metadata changed");
-        // We must do it after tables are dropped so that table snapshot doesn't experience missing tablet map,
-        // and so that compaction groups are not destroyed altogether.
-        // We must also do it before tables are created so that new tables see the tablet map.
-        co_await ss.local().update_tablet_metadata(tablet_hint);
-        co_await db.invoke_on_all([&] (replica::database& db) -> future<> {
-            co_await db.get_notifier().update_tablet_metadata(tablet_hint);
-        });
+        diff.new_token_metadata = co_await ss.local().prepare_update_tablet_metadata(tablet_hint);
     }
-
-    co_await db.invoke_on_all([&] (replica::database& db) -> future<> {
-        // In order to avoid possible races we first create the tables and only then the views.
-        // That way if a view seeks information about its base table it's guaranteed to find it.
-        co_await max_concurrent_for_each(diff.tables.created, max_concurrent, [&] (global_schema_ptr& gs) -> future<> {
-            co_await db.add_column_family_and_make_directory(gs, replica::database::is_new_cf::yes);
-        });
-        co_await max_concurrent_for_each(diff.views.created, max_concurrent, [&] (global_schema_ptr& gs) -> future<> {
-            co_await db.add_column_family_and_make_directory(gs, replica::database::is_new_cf::yes);
-        });
-    });
-    co_await db.invoke_on_all([&](replica::database& db) -> future<> {
-        diff.columns_changed.reserve(diff.tables.altered.size() + diff.views.altered.size());
-        for (auto&& altered : boost::range::join(diff.tables.altered, diff.views.altered)) {
-            diff.columns_changed.push_back(db.update_column_family(altered.new_schema));
-            co_await coroutine::maybe_yield();
-        }
-    });
-
-    // Insert column_mapping into history table for altered and created tables.
-    //
-    // Entries for new tables are inserted without TTL, which means that the most
-    // recent schema version should always be available.
-    //
-    // For altered tables we both insert a new column mapping without TTL and
-    // overwrite the previous version entries with TTL to expire them eventually.
-    //
-    // Drop column mapping entries for dropped tables since these will not be TTLed automatically
-    // and will stay there forever if we don't clean them up manually
-    co_await max_concurrent_for_each(diff.tables.created, max_concurrent, [&proxy] (global_schema_ptr& gs) -> future<> {
-        co_await store_column_mapping(proxy, gs.get(), false);
-    });
-    co_await max_concurrent_for_each(diff.tables.altered, max_concurrent, [&proxy] (schema_diff::altered_schema& altered) -> future<> {
-        co_await when_all_succeed(
-            store_column_mapping(proxy, altered.old_schema.get(), true),
-            store_column_mapping(proxy, altered.new_schema.get(), false));
-    });
-    co_await max_concurrent_for_each(diff.tables.dropped, max_concurrent, [&sys_ks] (schema_diff::dropped_schema& dropped) -> future<> {
-        schema_ptr s = dropped.schema.get();
-        co_await drop_column_mapping(sys_ks.local(), s->id(), s->version());
-    });
 
     co_return diff;
 }
@@ -767,6 +722,40 @@ future<> schema_applier::update() {
             _before.scylla_aggregates, _after.scylla_aggregates);
 }
 
+
+void schema_applier::commit_tables_and_views() {
+    auto& sharded_db = _proxy.local().get_db();
+    auto& db = sharded_db.local();
+    auto& diff = _affected_tables_and_views;
+
+    for (auto& dropped_view : diff.views.dropped) {
+        auto s = dropped_view.schema.get();
+        replica::database::drop_table(sharded_db, s->ks_name(), s->cf_name(), true, diff.table_shards[s->id()]);
+    }
+    for (auto& dropped_table : diff.views.dropped) {
+        auto s = dropped_table.schema.get();
+        replica::database::drop_table(sharded_db, s->ks_name(), s->cf_name(), true, diff.table_shards[s->id()]);
+    }
+
+    for (auto& created_table : diff.tables.created) {
+        auto schema = created_table.get();
+        auto& ks = db.find_keyspace(schema->ks_name());
+        auto cleanup = db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.new_token_metadata);
+        diff.cleanups.push_back(std::move(cleanup));
+    }
+    for (auto& created_view : diff.views.created) {
+        auto schema = created_view.get();
+        auto& ks = db.find_keyspace(schema->ks_name());
+        auto cleanup = db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.new_token_metadata);
+        diff.cleanups.push_back(std::move(cleanup));
+    }
+
+    diff.columns_changed.reserve(diff.tables.altered.size() + diff.views.altered.size());
+    for (auto&& altered : boost::range::join(diff.tables.altered, diff.views.altered)) {
+        diff.columns_changed.push_back(db.update_column_family(altered.new_schema));
+    }
+}
+
 void schema_applier::commit_on_shard(replica::database& db) {
     // commit keyspace operations
     for (auto& ks_per_shard : _affected_keyspaces.created) {
@@ -790,6 +779,8 @@ void schema_applier::commit_on_shard(replica::database& db) {
         db.find_keyspace(user_type->_keyspace).add_user_type(user_type);
     }
 
+    commit_tables_and_views();
+
     // commit user functions and aggregates
     auto& funcs_change_batch = _functions_batch[this_shard_id()];
     funcs_change_batch.commit();
@@ -800,7 +791,6 @@ void schema_applier::commit_on_shard(replica::database& db) {
     for (auto& user_type : _affected_user_types[this_shard_id()].dropped) {
         db.find_keyspace(user_type->_keyspace).remove_user_type(user_type);
     }
-    // TODO: move code for all schema modifications
 }
 
 // TODO: move per shard logic directly to raft so that all subsystems can be updated together
@@ -820,7 +810,66 @@ future<> schema_applier::commit() {
     });
 }
 
+future<> schema_applier::finalize_tables_and_views() {
+    auto& sharded_db = _proxy.local().get_db();
+    auto& db = sharded_db.local();
+    auto& diff = _affected_tables_and_views;
+    // first drop views and *only then* the tables, if interleaved it can lead
+    // to a mv not finding its schema when snapshotting since the main table
+    // was already dropped (see https://github.com/scylladb/scylla/issues/5614)
+    for (auto& dropped_view : diff.views.dropped) {
+        auto s = dropped_view.schema.get();
+        co_await replica::database::cleanup_drop_table_on_all_shards(sharded_db, _sys_ks, true, diff.table_shards[s->id()]);
+    }
+    for (auto& dropped_table : diff.views.dropped) {
+        auto s = dropped_table.schema.get();
+        co_await replica::database::cleanup_drop_table_on_all_shards(sharded_db, _sys_ks, true, diff.table_shards[s->id()]);
+    }
+
+    // We must do it after tables are dropped so that table snapshot doesn't experience missing tablet map,
+    // and so that compaction groups are not destroyed altogether.
+    // TODO: maybe untangle this dependency
+    if (diff.new_token_metadata) {
+        co_await _ss.local().commit_update_tablet_metadata(_affected_tables_and_views.new_token_metadata);
+    }
+
+    for (auto& cleanup : diff.cleanups) {
+        co_await cleanup();
+    }
+
+    for (auto& created_table : diff.tables.created) {
+        co_await db.make_column_family_directory(created_table);
+    }
+    for (auto& created_view : diff.views.created) {
+        co_await db.make_column_family_directory(created_view);
+    }
+
+    // Insert column_mapping into history table for altered and created tables.
+    //
+    // Entries for new tables are inserted without TTL, which means that the most
+    // recent schema version should always be available.
+    //
+    // For altered tables we both insert a new column mapping without TTL and
+    // overwrite the previous version entries with TTL to expire them eventually.
+    //
+    // Drop column mapping entries for dropped tables since these will not be TTLed automatically
+    // and will stay there forever if we don't clean them up manually
+    co_await max_concurrent_for_each(diff.tables.created, max_concurrent, [this] (global_schema_ptr& gs) -> future<> {
+        co_await store_column_mapping(_proxy, gs.get(), false);
+    });
+    co_await max_concurrent_for_each(diff.tables.altered, max_concurrent, [this] (schema_diff::altered_schema& altered) -> future<> {
+        co_await when_all_succeed(
+            store_column_mapping(_proxy, altered.old_schema.get(), true),
+            store_column_mapping(_proxy, altered.new_schema.get(), false));
+    });
+    co_await max_concurrent_for_each(diff.tables.dropped, max_concurrent, [this] (schema_diff::dropped_schema& dropped) -> future<> {
+        schema_ptr s = dropped.schema.get();
+        co_await drop_column_mapping(_sys_ks.local(), s->id(), s->version());
+    });
+}
+
 future<> schema_applier::notify() {
+    co_await finalize_tables_and_views();
     auto& sharded_db = _proxy.local().get_db();
     co_await sharded_db.invoke_on_all([&] (replica::database& db) -> future<> {
         auto& notifier = db.get_notifier();
@@ -860,7 +909,6 @@ future<> schema_applier::notify() {
             co_await notifier.drop_aggregate(aggr.name, aggr.arg_types);
         }
     });
-    // TODO: pull out notifications code from update() and place here
     co_return;
 }
 
