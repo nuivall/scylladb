@@ -8,6 +8,10 @@
 
 #pragma once
 
+#include <memory>
+#include <vector>
+#include <seastar/core/sharded.hh>
+
 namespace replica {
 
 // replica/database.hh
@@ -16,7 +20,9 @@ class keyspace;
 class table;
 using column_family = table;
 class memtable_list;
-
+class keyspace_change;
+using created_keyspace_per_shard = std::vector<seastar::foreign_ptr<std::unique_ptr<keyspace>>>;
+using keyspace_change_per_shard = std::vector<seastar::foreign_ptr<std::unique_ptr<keyspace_change>>>;
 }
 
 
