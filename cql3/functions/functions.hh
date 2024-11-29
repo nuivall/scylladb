@@ -16,6 +16,7 @@
 #include "cql3/functions/function_name.hh"
 #include "schema/schema.hh"
 #include <unordered_map>
+#include "data_dictionary/user_types_metadata.hh"
 
 namespace cql3 {
 
@@ -123,6 +124,8 @@ public:
         removed_functions.emplace_back(name, arg_types);
         functions::remove_function(name, arg_types);
     };
+
+    shared_ptr<const data_dictionary::user_types_storage> user_types;
 };
 
 }
