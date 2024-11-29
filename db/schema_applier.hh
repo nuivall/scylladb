@@ -97,6 +97,23 @@ struct affected_tables_and_views {
 
 using functions_change_batch_all_shards = std::vector<cql3::functions::change_batch>;
 
+// contains current types with in-progress modifications applied
+class in_progress_types_storage_per_shard : public data_dictionary::user_types_storage {
+    const data_dictionary::user_types_storage& _stored_user_types;
+    std::map<sstring, data_dictionary::user_types_metadata> _in_progress_types;
+public:
+    in_progress_types_storage_per_shard(const replica::database& db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types);
+    virtual const data_dictionary::user_types_metadata& get(const sstring& ks) const override;
+};
+
+class in_progress_types_storage {
+    std::vector<shared_ptr<in_progress_types_storage_per_shard>> shards;
+public:
+    in_progress_types_storage() : shards(smp::count) {}
+    future<> init(distributed<replica::database>& sharded_db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types);
+    shared_ptr<in_progress_types_storage_per_shard> local();
+};
+
 class schema_applier {
     using keyspace_name = sstring;
 
@@ -110,6 +127,8 @@ class schema_applier {
 
     schema_complete_view _before;
     schema_complete_view _after;
+
+    in_progress_types_storage _types_storage;
 
     affected_keyspaces _affected_keyspaces;
     // during commit we move out some content of _affected_keyspaces,
