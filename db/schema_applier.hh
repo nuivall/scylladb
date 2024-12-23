@@ -153,9 +153,6 @@ class schema_applier {
     in_progress_types_storage _types_storage;
 
     affected_keyspaces _affected_keyspaces;
-    // during commit we move out some content of _affected_keyspaces,
-    // we need just names for notify function
-    affected_keyspaces_names _affected_keyspaces_names;
     affected_user_types _affected_user_types;
     affected_tables_and_views _affected_tables_and_views;
 

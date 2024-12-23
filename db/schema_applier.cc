@@ -31,6 +31,7 @@
 #include "mutation/frozen_mutation.hh"
 #include "schema/schema_fwd.hh"
 #include "seastar/core/shard_id.hh"
+#include "seastar/util/log.hh"
 #include "view_info.hh"
 #include "replica/database.hh"
 #include "lang/manager.hh"
@@ -1024,13 +1025,13 @@ future<> schema_applier::notify() {
     co_await sharded_db.invoke_on_all([&] (replica::database& db) -> future<> {
         auto& notifier = db.get_notifier();
         // notify about keyspaces
-        for (const auto& name : _affected_keyspaces_names.created) {
+        for (const auto& name : _affected_keyspaces.names.created) {
             co_await notifier.create_keyspace(name);
         }
-        for (const auto& name : _affected_keyspaces_names.altered) {
+        for (const auto& name : _affected_keyspaces.names.altered) {
             co_await notifier.update_keyspace(name);
         }
-        for (const auto& name : _affected_keyspaces_names.dropped) {
+        for (const auto& name : _affected_keyspaces.names.dropped) {
             co_await notifier.drop_keyspace(name);
         }
         // notify about user types
