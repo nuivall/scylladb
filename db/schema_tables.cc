@@ -2214,7 +2214,7 @@ schema_ptr create_table_from_mutations(const schema_ctxt& ctxt, schema_mutations
         query::result_set dcr(*sm.dropped_columns_mutation());
         for (auto& row : dcr.rows()) {
             auto name = row.get_nonnull<sstring>("column_name");
-            auto type = cql_type_parser::parse(ks_name, row.get_nonnull<sstring>("type"), ctxt.user_types());
+            auto type = cql_type_parser::parse(ks_name, row.get_nonnull<sstring>("type"), user_types);
             auto time = row.get_nonnull<db_clock::time_point>("dropped_time");
             builder.without_column(name, type, time.time_since_epoch().count());
         }
@@ -2429,12 +2429,12 @@ view_ptr create_view_from_mutations(const schema_ctxt& ctxt, schema_mutations sm
     prepare_builder_from_table_row(ctxt, builder, row);
 
     auto computed_columns = get_computed_columns(sm);
-    auto column_defs = create_columns_from_column_rows(query::result_set(sm.columns_mutation()), ks_name, cf_name, false, column_view_virtual::no, computed_columns, ctxt.user_types());
+    auto column_defs = create_columns_from_column_rows(query::result_set(sm.columns_mutation()), ks_name, cf_name, false, column_view_virtual::no, computed_columns, user_types);
     for (auto&& cdef : column_defs) {
         builder.with_column_ordered(cdef);
     }
     if (sm.view_virtual_columns_mutation()) {
-        column_defs = create_columns_from_column_rows(query::result_set(*sm.view_virtual_columns_mutation()), ks_name, cf_name, false, column_view_virtual::yes, computed_columns, ctxt.user_types());
+        column_defs = create_columns_from_column_rows(query::result_set(*sm.view_virtual_columns_mutation()), ks_name, cf_name, false, column_view_virtual::yes, computed_columns, user_types);
         for (auto&& cdef : column_defs) {
             builder.with_column_ordered(cdef);
         }

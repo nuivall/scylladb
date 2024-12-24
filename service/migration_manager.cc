@@ -516,20 +516,27 @@ future<> migration_notifier::update_view(view_ptr view, bool columns_changed) {
     });
 }
 
-static service::storage_service* get_storage_service(atomic_vector<migration_listener*>& listeners) {
-    auto listener = std::find_if(listeners.raw_vector().cbegin(), listeners.raw_vector().cend(),
-            [] (auto listener) { return dynamic_cast<service::storage_service*>(listener) != nullptr; });
-    auto ss = dynamic_cast<service::storage_service*>(*listener);
-    SCYLLA_ASSERT(ss);
-    return ss;
+static future<service::storage_service*> get_storage_service(atomic_vector<migration_listener*>& listeners) {
+    service::storage_service* ssl = nullptr;
+    co_await listeners.for_each([&] (migration_listener* l) -> future<> {
+        auto ss = dynamic_cast<service::storage_service*>(l);
+        if (ss) {
+            ssl = ss;
+        }
+        co_return;
+    });
+    SCYLLA_ASSERT(ssl);
+    co_return ssl;
 }
 
-future<locator::mutable_token_metadata_ptr> migration_notifier::prepare_tablet_metadata(locator::tablet_metadata_change_hint hint) {
-    return get_storage_service(_listeners)->prepare_tablet_metadata(hint);
+future<locator::mutable_token_metadata_ptr> migration_notifier::prepare_tablet_metadata(const locator::tablet_metadata_change_hint& hint) {
+    auto ss = co_await get_storage_service(_listeners);
+    co_return co_await ss->prepare_tablet_metadata(hint);
 }
 
 future<> migration_notifier::commit_tablet_metadata(locator::mutable_token_metadata_ptr metadata) {
-    return get_storage_service(_listeners)->commit_tablet_metadata(metadata);
+    auto ss = co_await get_storage_service(_listeners);
+    co_return co_await ss->commit_tablet_metadata(metadata);
 }
 
 future<> migration_notifier::update_tablet_metadata(locator::tablet_metadata_change_hint hint) {

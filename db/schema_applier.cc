@@ -917,9 +917,7 @@ void schema_applier::commit_on_shard(replica::database& db) {
         auto ks_change = ks_change_per_shard[this_shard_id()].release();
         db.update_keyspace(std::move(ks_change));
     }
-    for (const auto& ks_name : _affected_keyspaces.names.dropped) {
-        db.drop_keyspace(ks_name);
-    }
+
     // commit user defined types,
     // create and update user types before any tables/views are created that potentially
     // use those types
@@ -939,6 +937,11 @@ void schema_applier::commit_on_shard(replica::database& db) {
     // dropping user types only after tables/views/functions/aggregates that may use some them are dropped
     for (auto& user_type : _affected_user_types[this_shard_id()].dropped) {
         db.find_keyspace(user_type->_keyspace).remove_user_type(user_type);
+    }
+
+    // it is safe to drop a keyspace only when all nested ColumnFamilies where deleted
+    for (const auto& ks_name : _affected_keyspaces.names.dropped) {
+        db.drop_keyspace(ks_name);
     }
 }
 
