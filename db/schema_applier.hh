@@ -74,6 +74,31 @@ struct affected_user_types_per_shard {
 // groups UDTs based on what is happening to them during schema change
 using affected_user_types = std::vector<affected_user_types_per_shard>;
 
+// In_progress_types_storage_per_shard contains current
+// types with in-progress modifications applied.
+// Important note: this storage can't be used directly in all cases,
+// e.g. it's legal to drop type together with dropping other entity
+// in such case we use existing storage instead so that whatever
+// is being dropped can reference this type (we remove it from in_progress storage)
+// in such cases get proper storage via committed_storage().
+class in_progress_types_storage_per_shard : public data_dictionary::user_types_storage {
+    std::shared_ptr<data_dictionary::user_types_storage> _stored_user_types;
+    std::map<sstring, data_dictionary::user_types_metadata> _in_progress_types;
+public:
+    in_progress_types_storage_per_shard(replica::database& db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types);
+    virtual const data_dictionary::user_types_metadata& get(const sstring& ks) const override;
+    std::shared_ptr<data_dictionary::user_types_storage> committed_storage();
+};
+
+class in_progress_types_storage {
+    // wrapped in foreign_ptr so they can be destroyed on the right shard
+    std::vector<foreign_ptr<shared_ptr<in_progress_types_storage_per_shard>>> shards;
+public:
+    in_progress_types_storage() : shards(smp::count) {}
+    future<> init(distributed<replica::database>& sharded_db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types);
+    in_progress_types_storage_per_shard& local();
+};
+
 struct frozen_schema_diff {
     struct altered_schema {
         frozen_schema old_schema;
@@ -97,7 +122,7 @@ struct schema_diff_per_shard {
 
     future<frozen_schema_diff> freeze() const;
 
-    static future<foreign_ptr<std::unique_ptr<schema_diff_per_shard>>> copy_from(replica::database&, std::shared_ptr<data_dictionary::user_types_storage>, const frozen_schema_diff& oth);
+    static future<foreign_ptr<std::unique_ptr<schema_diff_per_shard>>> copy_from(replica::database&, in_progress_types_storage&, const frozen_schema_diff& oth);
 };
 
 struct affected_tables_and_views {
@@ -114,24 +139,6 @@ struct affected_tables_and_views {
 // We wrap it with pointer because change_batch needs to be constructed and destructed
 // on the same shard as it's used for.
 using functions_change_batch_all_shards = std::vector<foreign_ptr<std::unique_ptr<cql3::functions::change_batch>>>;
-
-// contains current types with in-progress modifications applied
-class in_progress_types_storage_per_shard : public data_dictionary::user_types_storage {
-    const data_dictionary::user_types_storage& _stored_user_types;
-    std::map<sstring, data_dictionary::user_types_metadata> _in_progress_types;
-public:
-    in_progress_types_storage_per_shard(const replica::database& db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types);
-    virtual const data_dictionary::user_types_metadata& get(const sstring& ks) const override;
-};
-
-class in_progress_types_storage {
-    // wrapped in foreign_ptr so they can be destroyed on the right shard
-    std::vector<foreign_ptr<shared_ptr<in_progress_types_storage_per_shard>>> shards;
-public:
-    in_progress_types_storage() : shards(smp::count) {}
-    future<> init(distributed<replica::database>& sharded_db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types);
-    in_progress_types_storage_per_shard& local();
-};
 
 // Schema_applier encapsulates intermediate state needed to construct schema objects from
 // set of rows read from system tables (see struct schema_state). It does atomic (per shard)

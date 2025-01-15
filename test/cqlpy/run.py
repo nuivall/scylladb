@@ -288,7 +288,8 @@ def run_scylla_cmd(pid, dir):
         '--workdir', dir,
         '--auto-snapshot', '0',
         '--skip-wait-for-gossip-to-settle', '0',
-        '--logger-log-level', 'compaction=warn',
+        '--logger-log-level', 'compaction=error',
+        '--logger-log-level', 'schema_tables=trace',
         '--logger-log-level', 'migration_manager=warn',
         # Use lower settings for some parameters to allow faster testing
         '--num-tokens', '16',

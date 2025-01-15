@@ -519,7 +519,7 @@ static foreign_ptr<std::unique_ptr<schema_diff_per_shard>> diff_table_or_view(di
 constexpr size_t max_concurrent = 8;
 
 
-in_progress_types_storage_per_shard::in_progress_types_storage_per_shard(const replica::database& db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types) : _stored_user_types(db.user_types()) {
+in_progress_types_storage_per_shard::in_progress_types_storage_per_shard(replica::database& db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types) : _stored_user_types(db.as_user_types_storage()) {
     // initialize metadata for new keyspaces
     for (auto& ks_per_shard : affected_keyspaces.created) {
         auto metadata = ks_per_shard[this_shard_id()]->metadata();
@@ -558,7 +558,11 @@ const data_dictionary::user_types_metadata& in_progress_types_storage_per_shard:
         return _in_progress_types.at(ks);
     }
     // keyspace is not affected
-    return _stored_user_types.get(ks);
+    return _stored_user_types->get(ks);
+}
+
+std::shared_ptr<data_dictionary::user_types_storage> in_progress_types_storage_per_shard::committed_storage() {
+    return _stored_user_types;
 }
 
 future<> in_progress_types_storage::init(distributed<replica::database>& sharded_db, const affected_keyspaces& affected_keyspaces, const affected_user_types& affected_types) {
@@ -641,12 +645,10 @@ static future<affected_tables_and_views> merge_tables_and_views(distributed<serv
     frozen_schema_diff tables_frozen = co_await diff.tables[origin_shard]->freeze();
     frozen_schema_diff views_frozen = co_await diff.views[origin_shard]->freeze();
     co_await db.invoke_on_others([&types_storage, &diff, &tables_frozen, &views_frozen] (replica::database& db) -> future<> {
-        auto types = std::make_shared<in_progress_types_storage_per_shard>(
-                types_storage.local());
         diff.tables[this_shard_id()] = co_await schema_diff_per_shard::copy_from(
-                db, types, tables_frozen);
+                db, types_storage, tables_frozen);
         diff.views[this_shard_id()] = co_await schema_diff_per_shard::copy_from(
-                db, types, views_frozen);
+                db, types_storage, views_frozen);
     });
 
     // adding and dropping uses this locking mechanism
@@ -691,27 +693,27 @@ future<frozen_schema_diff> schema_diff_per_shard::freeze() const {
     co_return result;
 }
 
-future<foreign_ptr<std::unique_ptr<schema_diff_per_shard>>> schema_diff_per_shard::copy_from(replica::database& db, std::shared_ptr<data_dictionary::user_types_storage> uts, const frozen_schema_diff& oth) {
+// std::shared_ptr<data_dictionary::user_types_storage>
+
+future<foreign_ptr<std::unique_ptr<schema_diff_per_shard>>> schema_diff_per_shard::copy_from(replica::database& db, in_progress_types_storage& types_storage, const frozen_schema_diff& oth) {
+    auto uts = std::make_shared<in_progress_types_storage_per_shard>(types_storage.local());
     schema_ctxt ctxt(db.get_config(), uts, db.features(), &db);
+    schema_ctxt commited_ctxt(db.get_config(), uts->committed_storage(), db.features(), &db);
     schema_diff_per_shard result;
 
-    auto copy_fn = [&ctxt](const frozen_schema& oth_frozen) -> schema_ptr {
-        return oth_frozen.unfreeze(ctxt);
-    };
-
     for (const auto& c : oth.created) {
-        result.created.emplace_back(copy_fn(c));
+        result.created.emplace_back(c.unfreeze(ctxt));
         co_await coroutine::maybe_yield();
     }
     for (const auto& a : oth.altered) {
         result.altered.push_back(schema_diff_per_shard::altered_schema{
-            .old_schema = copy_fn(a.old_schema),
-            .new_schema = copy_fn(a.new_schema),
+            .old_schema = a.old_schema.unfreeze(commited_ctxt),
+            .new_schema = a.new_schema.unfreeze(ctxt),
         });
         co_await coroutine::maybe_yield();
     }
     for (const auto& d : oth.dropped) {
-        result.dropped.emplace_back(copy_fn(d));
+        result.dropped.emplace_back(d.unfreeze(commited_ctxt));
         co_await coroutine::maybe_yield();
     }
 
@@ -761,7 +763,8 @@ static future<functions_change_batch_all_shards> merge_functions(distributed<ser
         for (const auto& val : diff.dropped) {
             cql3::functions::function_name name{
                 val->get_nonnull<sstring>("keyspace_name"), val->get_nonnull<sstring>("function_name")};
-            auto arg_types = read_arg_types(*val, name.keyspace, types_storage.local());
+            auto commited_storage = types_storage.local().committed_storage();
+            auto arg_types = read_arg_types(*val, name.keyspace, *commited_storage);
             // as we don't yield between dropping cache and committing batch
             // change there is no window between cache removal and declaration removal
             drop_cached_func(db, *val);
