@@ -667,7 +667,12 @@ static future<affected_tables_and_views> merge_tables_and_views(distributed<serv
 
     if (tablet_hint) {
         slogger.info("Tablet metadata changed");
-        diff.new_token_metadata = co_await db.local().get_notifier().prepare_tablet_metadata(tablet_hint);
+        auto new_token_metadata = co_await db.local().get_notifier().prepare_tablet_metadata(tablet_hint);
+        co_await smp::invoke_on_others([&diff, &new_token_metadata] () -> future<> {
+            diff.new_token_metadata.local() =
+                    make_token_metadata_ptr(co_await new_token_metadata->clone_async());
+        });
+        diff.new_token_metadata.local() = std::move(new_token_metadata);
     }
 
     co_return diff;
@@ -718,6 +723,16 @@ future<foreign_ptr<std::unique_ptr<schema_diff_per_shard>>> schema_diff_per_shar
     }
 
     co_return make_foreign(std::make_unique<schema_diff_per_shard>(std::move(result)));
+}
+
+ locator::mutable_token_metadata_ptr& new_token_metadata::local() {
+    return shards[this_shard_id()];
+ }
+
+future<> new_token_metadata::destroy() {
+    return smp::invoke_on_all([this] () {
+        shards[this_shard_id()] = nullptr;
+    });
 }
 
 static future<> notify_tables_and_views(service::migration_notifier& notifier, const affected_tables_and_views& diff) {
@@ -894,12 +909,13 @@ void schema_applier::commit_tables_and_views() {
 
     for (auto& schema : tables.created) {
         auto& ks = db.find_keyspace(schema->ks_name());
-        auto cleanup = db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.new_token_metadata);
+        auto cleanup = db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.new_token_metadata.local());
         // TODO: handle cleanup
     }
+
     for (auto& schema : views.created) {
         auto& ks = db.find_keyspace(schema->ks_name());
-        auto cleanup = db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.new_token_metadata);
+        auto cleanup = db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.new_token_metadata.local());
         // TODO: handle cleanup
     }
 
@@ -986,8 +1002,9 @@ future<> schema_applier::finalize_tables_and_views() {
     // We must do it after tables are dropped so that table snapshot doesn't experience missing tablet map,
     // and so that compaction groups are not destroyed altogether.
     // TODO: maybe untangle this dependency
-    if (diff.new_token_metadata) {
-        co_await db.get_notifier().commit_tablet_metadata(_affected_tables_and_views.new_token_metadata);
+    if (diff.new_token_metadata.local()) {
+        co_await db.get_notifier().commit_tablet_metadata(diff.new_token_metadata.local());
+        co_await diff.new_token_metadata.destroy();
     }
 
     co_await sharded_db.invoke_on_all([&diff] (replica::database& db) -> future<> {

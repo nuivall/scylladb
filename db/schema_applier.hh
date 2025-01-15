@@ -125,6 +125,14 @@ struct schema_diff_per_shard {
     static future<foreign_ptr<std::unique_ptr<schema_diff_per_shard>>> copy_from(replica::database&, in_progress_types_storage&, const frozen_schema_diff& oth);
 };
 
+
+class new_token_metadata {
+    std::vector<locator::mutable_token_metadata_ptr> shards{smp::count};
+public:
+    locator::mutable_token_metadata_ptr& local();
+    future<> destroy();
+};
+
 struct affected_tables_and_views {
     std::vector<foreign_ptr<std::unique_ptr<schema_diff_per_shard>>> tables;
     std::vector<foreign_ptr<std::unique_ptr<schema_diff_per_shard>>> views;
@@ -133,7 +141,7 @@ struct affected_tables_and_views {
     replica::tables_metadata_lock_on_all_shards locks;
     std::unordered_map<table_id, replica::global_table_ptr> table_shards;
 
-    locator::mutable_token_metadata_ptr new_token_metadata; // represents token metadata after updating tablets metadata, nullptr if there was no change
+    new_token_metadata new_token_metadata; // represents token metadata after updating tablets metadata, nullptr if there was no change
 };
 
 // We wrap it with pointer because change_batch needs to be constructed and destructed
