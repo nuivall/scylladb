@@ -19,13 +19,15 @@ class table;
 
 class global_table_ptr {
     std::vector<foreign_ptr<lw_shared_ptr<table>>> _p;
+    std::vector<foreign_ptr<std::unique_ptr<std::vector<lw_shared_ptr<table>>>>> _views;
 public:
     global_table_ptr();
     global_table_ptr(global_table_ptr&&) noexcept;
     ~global_table_ptr();
-    void assign(table& t);
+    void assign(table& t, std::vector<lw_shared_ptr<table>> views);
     table* operator->() const noexcept;
     table& operator*() const noexcept;
+    std::vector<lw_shared_ptr<table>>& views() const noexcept;
     auto as_sharded_parameter() {
         return sharded_parameter([this] { return std::ref(**this); });
     }

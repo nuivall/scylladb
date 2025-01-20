@@ -2404,6 +2404,10 @@ future<> compaction_group::stop(sstring reason) noexcept {
     }
     auto closed_gate_fut = _async_gate.close();
 
+    dblog.error("compaction_group::stop tbl {} re {} at {}",
+            _table_state->schema()->cf_name(), reason, current_backtrace());
+
+
     auto flush_future = co_await seastar::coroutine::as_future(flush());
     co_await _t._compaction_manager.remove(as_table_state(), reason);
 

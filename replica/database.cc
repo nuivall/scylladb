@@ -12,6 +12,7 @@
 #include <fmt/ranges.h>
 #include <fmt/std.h>
 #include "seastar/core/rwlock.hh"
+#include "marshal_exception.hh"
 #include "utils/log.hh"
 #include "replica/database_fwd.hh"
 #include "seastar/core/shard_id.hh"
@@ -1052,6 +1053,7 @@ void database::remove(table& cf) noexcept {
 
 global_table_ptr::global_table_ptr() {
     _p.resize(smp::count);
+    _views.resize(smp::count);
 }
 
 global_table_ptr::global_table_ptr(global_table_ptr&& o) noexcept
@@ -1060,12 +1062,18 @@ global_table_ptr::global_table_ptr(global_table_ptr&& o) noexcept
 
 global_table_ptr::~global_table_ptr() {}
 
-void global_table_ptr::assign(table& t) {
+void global_table_ptr::assign(table& t, std::vector<lw_shared_ptr<table>> views) {
     _p[this_shard_id()] = make_foreign(t.shared_from_this());
+    _views[this_shard_id()] = make_foreign(
+            std::make_unique<std::vector<lw_shared_ptr<table>>>(std::move(views)));
 }
 
 table* global_table_ptr::operator->() const noexcept { return &*_p[this_shard_id()]; }
 table& global_table_ptr::operator*() const noexcept { return *_p[this_shard_id()]; }
+
+std::vector<lw_shared_ptr<table>>& global_table_ptr::views() const noexcept {
+    return *_views[this_shard_id()];
+}
 
 void tables_metadata_lock_on_all_shards::assign_lock(seastar::rwlock::holder&& h) {
     _holders[this_shard_id()] = make_foreign(std::make_unique<seastar::rwlock::holder>(std::move(h)));
@@ -1080,9 +1088,15 @@ future<global_table_ptr> get_table_on_all_shards(sharded<database>& sharded_db, 
     global_table_ptr table_shards;
     co_await sharded_db.invoke_on_all([&] (auto& db) {
         try {
-            table_shards.assign(db.find_column_family(uuid));
-        } catch (no_such_column_family&) {
-            on_internal_error(dblog, fmt::format("Table UUID={} not found", uuid));
+            auto& table = db.find_column_family(uuid);
+            std::vector<lw_shared_ptr<replica::table>> views;
+            views.reserve(table.views().size());
+            for (const auto& v : table.views()) {
+                views.push_back(db.find_column_family(v).shared_from_this());
+            }
+            table_shards.assign(table, std::move(views));
+        } catch (const no_such_column_family& err) {
+            on_internal_error(dblog, err.what());
         }
     });
     co_return table_shards;
@@ -1150,7 +1164,8 @@ table_id database::find_uuid(std::string_view ks, std::string_view cf) const {
     try {
         return _tables_metadata.get_table_id(std::make_pair(ks, cf));
     } catch (std::out_of_range&) {
-        throw no_such_column_family(ks, cf);
+        throw_with_backtrace<no_such_column_family>(ks, cf);
+        //throw no_such_column_family(uuid);
     }
 }
 
@@ -1282,7 +1297,8 @@ column_family& database::find_column_family(const table_id& uuid) {
     try {
         return _tables_metadata.get_table(uuid);
     } catch (...) {
-        throw no_such_column_family(uuid);
+        throw_with_backtrace<no_such_column_family>(uuid);
+        //throw no_such_column_family(uuid);
     }
 }
 
@@ -1290,7 +1306,8 @@ const column_family& database::find_column_family(const table_id& uuid) const {
     try {
         return _tables_metadata.get_table(uuid);
     } catch (...) {
-        throw no_such_column_family(uuid);
+        throw_with_backtrace<no_such_column_family>(uuid);
+        //throw no_such_column_family(uuid);
     }
 }
 
@@ -2574,6 +2591,7 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
     co_await coroutine::parallel_for_each(std::views::iota(0u, smp::count), [&] (unsigned shard) -> future<> {
         table_states[shard] = co_await smp::submit_to(shard, [&] () -> future<foreign_ptr<std::unique_ptr<table_truncate_state>>> {
             auto& cf = *table_shards;
+            auto& views = table_shards.views();
             auto st = std::make_unique<table_truncate_state>();
 
             st->holder = cf.async_gate().hold();
@@ -2586,15 +2604,14 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
             st->low_mark_at = db_clock::now();
             st->low_mark = cf.set_low_replay_position_mark();
 
-            st->cres.reserve(1 + cf.views().size());
+            st->cres.reserve(1 + views.size());
             auto& db = sharded_db.local();
             auto& cm = db.get_compaction_manager();
             co_await cf.parallel_foreach_table_state([&cm, &st] (compaction::table_state& ts) -> future<> {
                 st->cres.emplace_back(co_await cm.stop_and_disable_compaction(ts));
             });
-            co_await coroutine::parallel_for_each(cf.views(), [&] (view_ptr v) -> future<> {
-                auto& vcf = db.find_column_family(v);
-                co_await vcf.parallel_foreach_table_state([&cm, &st] (compaction::table_state& ts) -> future<> {
+            co_await coroutine::parallel_for_each(views, [&] (lw_shared_ptr<replica::table> v) -> future<> {
+                co_await v->parallel_foreach_table_state([&cm, &st] (compaction::table_state& ts) -> future<> {
                     st->cres.emplace_back(co_await cm.stop_and_disable_compaction(ts));
                 });
             });
@@ -2618,12 +2635,12 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
     co_await sharded_db.invoke_on_all([&] (replica::database& db) -> future<> {
         unsigned shard = this_shard_id();
         auto& cf = *table_shards;
+        auto& views = table_shards.views();
         auto& st = *table_states[shard];
 
         co_await flush_or_clear(cf);
-        co_await coroutine::parallel_for_each(cf.views(), [&] (view_ptr v) -> future<> {
-            auto& vcf = db.find_column_family(v);
-            co_await flush_or_clear(vcf);
+        co_await coroutine::parallel_for_each(views, [&] (lw_shared_ptr<replica::table> v) -> future<> {
+            co_await flush_or_clear(*v);
         });
         st.did_flush = should_flush;
     });
@@ -2639,14 +2656,15 @@ future<> database::truncate_table_on_all_shards(sharded<database>& sharded_db, s
     co_await sharded_db.invoke_on_all([&] (database& db) {
         auto shard = this_shard_id();
         auto& cf = *table_shards;
+        auto& views = table_shards.views();
         auto& st = *table_states[shard];
 
-        return db.truncate(sys_ks.local(), cf, st, truncated_at);
+        return db.truncate(sys_ks.local(), cf, views, st, truncated_at);
     });
     dblog.info("Truncated {}.{}", s->ks_name(), s->cf_name());
 }
 
-future<> database::truncate(db::system_keyspace& sys_ks, column_family& cf, const table_truncate_state& st, db_clock::time_point truncated_at) {
+future<> database::truncate(db::system_keyspace& sys_ks, column_family& cf, std::vector<lw_shared_ptr<replica::table>>& views, const table_truncate_state& st, db_clock::time_point truncated_at) {
     dblog.trace("Truncating {}.{} on shard", cf.schema()->ks_name(), cf.schema()->cf_name());
 
     const auto uuid = cf.schema()->id();
@@ -2680,10 +2698,9 @@ future<> database::truncate(db::system_keyspace& sys_ks, column_family& cf, cons
             rp = st.low_mark;
         }
     }
-    co_await coroutine::parallel_for_each(cf.views(), [this, &sys_ks, truncated_at] (view_ptr v) -> future<> {
-        auto& vcf = find_column_family(v);
-            db::replay_position rp = co_await vcf.discard_sstables(truncated_at);
-            co_await sys_ks.save_truncation_record(vcf, truncated_at, rp);
+    co_await coroutine::parallel_for_each(views, [&sys_ks, truncated_at] (lw_shared_ptr<replica::table> v) -> future<> {
+            db::replay_position rp = co_await v->discard_sstables(truncated_at);
+            co_await sys_ks.save_truncation_record(*v, truncated_at, rp);
     });
     // save_truncation_record() may actually fail after we cached the truncation time
     // but this is not be worse that if failing without caching: at least the correct time

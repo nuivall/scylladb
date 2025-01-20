@@ -113,7 +113,8 @@ table
 database::find_table(std::string_view ks, std::string_view table) const {
     auto t = try_find_table(ks, table);
     if (!t) {
-        throw no_such_column_family(ks, table);
+        throw_with_backtrace<no_such_column_family>(ks, table);
+        //throw no_such_column_family(uuid);
     }
     return *t;
 }
@@ -127,7 +128,8 @@ table
 database::find_column_family(table_id uuid) const {
     auto t = try_find_table(uuid);
     if (!t) {
-        throw no_such_column_family(uuid);
+        throw_with_backtrace<no_such_column_family>(uuid);
+        //throw no_such_column_family(uuid);
     }
     return *t;
 }
