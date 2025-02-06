@@ -257,7 +257,7 @@ class ScyllaServer:
     # pylint: disable=too-many-instance-attributes
 
     # in seconds, used for topology operations such as bootstrap or decommission
-    TOPOLOGY_TIMEOUT = 1000
+    TOPOLOGY_TIMEOUT = 60
     start_time: float
     sleep_interval: float
     log_file: BufferedWriter
@@ -643,6 +643,7 @@ class ScyllaServer:
                 if server_up_state == ServerUpState.PROCESS_STARTED:
                     server_up_state = ServerUpState.HOST_ID_QUERIED
                 server_up_state = await self.get_cql_up_state() or server_up_state
+                self.logger.info("got server_up_state %s", server_up_state)
                 if server_up_state == expected_server_up_state:
                     if expected_error is not None:
                         report_error(
