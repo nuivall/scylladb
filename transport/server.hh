@@ -151,10 +151,12 @@ private:
         // server stats
         uint64_t connects = 0;
         uint64_t connections = 0;
+        uint64_t uninitialized_connections = 0;
         uint64_t requests_served = 0;
         uint32_t requests_serving = 0;
         uint64_t requests_blocked_memory = 0;
         uint64_t requests_shed = 0;
+        uint64_t connects_shed = 0;
 
         std::unordered_map<exceptions::exception_code, uint64_t> errors;
     };
@@ -167,6 +169,8 @@ private:
     cql_server_config _config;
     size_t _max_request_size;
     utils::updateable_value<uint32_t> _max_concurrent_requests;
+    //utils::updateable_value<uint32_t> _max_concurrent_new_connections = 100;
+    uint32_t _max_uninitialized_connections = 100;
     utils::updateable_value<bool> _cql_duplicate_bind_variable_names_refer_to_same_variable;
     semaphore& _memory_available;
     seastar::metrics::metric_groups _metrics;
@@ -281,13 +285,13 @@ private:
         std::unique_ptr<cql_server::response> make_function_failure_error(int16_t stream, exceptions::exception_code err, sstring msg, sstring ks_name, sstring func_name, std::vector<sstring> args, const tracing::trace_state_ptr& tr_state) const;
         std::unique_ptr<cql_server::response> make_rate_limit_error(int16_t stream, exceptions::exception_code err, sstring msg, db::operation_type op_type, bool rejected_by_coordinator, const tracing::trace_state_ptr& tr_state, const service::client_state& client_state) const;
         std::unique_ptr<cql_server::response> make_error(int16_t stream, exceptions::exception_code err, sstring msg, const tracing::trace_state_ptr& tr_state) const;
-        std::unique_ptr<cql_server::response> make_ready(int16_t stream, const tracing::trace_state_ptr& tr_state) const;
+        std::unique_ptr<cql_server::response> make_ready(int16_t stream, const tracing::trace_state_ptr& tr_state);
         std::unique_ptr<cql_server::response> make_supported(int16_t stream, const tracing::trace_state_ptr& tr_state) const;
         std::unique_ptr<cql_server::response> make_topology_change_event(const cql_transport::event::topology_change& event) const;
         std::unique_ptr<cql_server::response> make_status_change_event(const cql_transport::event::status_change& event) const;
         std::unique_ptr<cql_server::response> make_schema_change_event(const cql_transport::event::schema_change& event) const;
         std::unique_ptr<cql_server::response> make_autheticate(int16_t, std::string_view, const tracing::trace_state_ptr& tr_state) const;
-        std::unique_ptr<cql_server::response> make_auth_success(int16_t, bytes, const tracing::trace_state_ptr& tr_state) const;
+        std::unique_ptr<cql_server::response> make_auth_success(int16_t, bytes, const tracing::trace_state_ptr& tr_state);
         std::unique_ptr<cql_server::response> make_auth_challenge(int16_t, bytes, const tracing::trace_state_ptr& tr_state) const;
 
         cql3::dialect get_dialect() const;

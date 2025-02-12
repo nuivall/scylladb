@@ -15,6 +15,8 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/smp.hh>
 
+#include "exceptions/exceptions.hh"
+
 namespace generic_server {
 
 connection::connection(server& server, connected_socket&& fd)
@@ -73,6 +75,8 @@ static bool is_broken_pipe_or_connection_reset(std::exception_ptr ep) {
             || (e.code().category() == tls::error_category()
             && (e.code().value() == tls::ERROR_PREMATURE_TERMINATION))
             ;
+    } catch (const exceptions::overloaded_exception&) {
+        return true;
     } catch (...) {}
     return false;
 }

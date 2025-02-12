@@ -16,6 +16,7 @@
 
 #include "cql3/statements/batch_statement.hh"
 #include "cql3/statements/modification_statement.hh"
+#include "exceptions/exceptions.hh"
 #include "seastar/core/scheduling.hh"
 #include "types/collection.hh"
 #include "types/list.hh"
@@ -665,6 +666,8 @@ thread_local cql_server::connection::execution_stage_type
 void cql_server::connection::handle_error(future<>&& f) {
     try {
         f.get();
+    } catch (const exceptions::overloaded_exception& ex) {
+        throw; // this will cause connection close
     } catch (const exceptions::cassandra_exception& ex) {
         clogger.debug("{}: connection error, code {}, message [{}]", _client_state.get_remote_address(), ex.code(), ex.what());
         try { ++_server._stats.errors[ex.code()]; } catch(...) {}
@@ -722,6 +725,17 @@ future<> cql_server::connection::process_request() {
             return std::exchange(_ready_to_respond, make_ready_future<>())
                 .then([this] { return _read_buf.close(); })
                 .then([this] { return util::skip_entire_stream(_read_buf); });
+        }
+
+        if (op == uint8_t(cql_binary_opcode::STARTUP)) {
+            if (_server._stats.uninitialized_connections > _server._max_uninitialized_connections) {
+                ++_server._stats.requests_shed;
+                clogger.debug("{}: too many in-flight connection attempts (configured via max_uninitialized_connections): {}, connection dropped",
+                        _client_state.get_remote_address(),
+                        _server._stats.uninitialized_connections);
+                throw exceptions::overloaded_exception("too many in-flight connection attempts");
+            }
+            ++_server._stats.uninitialized_connections;
         }
 
         if (_server._stats.requests_serving > _server._max_concurrent_requests) {
@@ -942,7 +956,6 @@ future<std::unique_ptr<cql_server::response>> cql_server::connection::process_st
             res = make_autheticate(stream, a.qualified_java_name(), trace_state);
         }
     } else {
-        _ready = true;
         res = make_ready(stream, trace_state);
     }
 
@@ -975,7 +988,6 @@ future<std::unique_ptr<cql_server::response>> cql_server::connection::process_au
                 });
                 return f.then([this, stream, challenge = std::move(challenge), trace_state]() mutable {
                     _authenticating = false;
-                    _ready = true;
                     return make_ready_future<std::unique_ptr<cql_server::response>>(make_auth_success(stream, std::move(challenge), trace_state));
                 });
             });
@@ -1332,7 +1344,6 @@ cql_server::connection::process_register(uint16_t stream, request_reader in, ser
         auto et = parse_event_type(event_type);
         _server._notifier->register_event(et, this);
     }
-    _ready = true;
     return make_ready_future<std::unique_ptr<cql_server::response>>(make_ready(stream, std::move(trace_state)));
 }
 
@@ -1455,8 +1466,12 @@ std::unique_ptr<cql_server::response> cql_server::connection::make_error(int16_t
     return response;
 }
 
-std::unique_ptr<cql_server::response> cql_server::connection::make_ready(int16_t stream, const tracing::trace_state_ptr& tr_state) const
+std::unique_ptr<cql_server::response> cql_server::connection::make_ready(int16_t stream, const tracing::trace_state_ptr& tr_state)
 {
+    if (!_ready) {
+        _ready = true;
+        --_server._stats.uninitialized_connections;
+    }
     return std::make_unique<cql_server::response>(stream, cql_binary_opcode::READY, tr_state);
 }
 
@@ -1467,7 +1482,11 @@ std::unique_ptr<cql_server::response> cql_server::connection::make_autheticate(i
     return response;
 }
 
-std::unique_ptr<cql_server::response> cql_server::connection::make_auth_success(int16_t stream, bytes b, const tracing::trace_state_ptr& tr_state) const {
+std::unique_ptr<cql_server::response> cql_server::connection::make_auth_success(int16_t stream, bytes b, const tracing::trace_state_ptr& tr_state) {
+    if (!_ready) {
+        _ready = true;
+        --_server._stats.uninitialized_connections;
+    }
     auto response = std::make_unique<cql_server::response>(stream, cql_binary_opcode::AUTH_SUCCESS, tr_state);
     response->write_bytes(std::move(b));
     return response;
