@@ -15,14 +15,17 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/smp.hh>
 
+#include "db/config.hh"
+
 namespace generic_server {
 
-connection::connection(server& server, connected_socket&& fd)
+connection::connection(server& server, connected_socket&& fd, seastar::gate::holder&& holder)
     : _server{server}
     , _fd{std::move(fd)}
     , _read_buf(_fd.input())
     , _write_buf(_fd.output())
     , _hold_server(_server._gate)
+    , _hold_uninitialized(std::move(holder))
 {
     ++_server._total_connections;
     _server._connections_list.push_back(*this);
@@ -116,6 +119,11 @@ future<> connection::process()
     });
 }
 
+void connection::on_connection_ready()
+{
+    _hold_uninitialized.release();
+}
+
 void connection::on_connection_close()
 {
 }
@@ -130,9 +138,10 @@ future<> connection::shutdown()
     return make_ready_future<>();
 }
 
-server::server(const sstring& server_name, logging::logger& logger)
+server::server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg)
     : _server_name{server_name}
     , _logger{logger}
+    , _max_uninitialized_connections(db_cfg.max_uninitialized_connections_per_shard)
 {
 }
 
@@ -228,7 +237,17 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
             auto addr = std::move(cs_sa.remote_address);
             fd.set_nodelay(true);
             fd.set_keepalive(keepalive);
-            auto conn = make_connection(server_addr, std::move(fd), std::move(addr));
+            auto conn = make_connection(server_addr, std::move(fd), std::move(addr),
+                    seastar::gate::holder(_gate_uninitialized_conns));
+
+            if (size_t c =_gate_uninitialized_conns.get_count();
+                    c > _max_uninitialized_connections) {
+                _shed_connections++;
+                _logger.debug("too many in-flight connection attempts (configured via max_uninitialized_connections): {}, connection dropped", c);
+                conn->on_connection_close();
+                conn->shutdown().ignore_ready_future();
+                return stop_iteration::no;
+            }
             // Move the processing into the background.
             (void)futurize_invoke([this, conn] {
                 return advertise_new_connection(conn); // Notify any listeners about new connection.
