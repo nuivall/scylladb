@@ -251,7 +251,7 @@ cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& au
         service::memory_limiter& ml, cql_server_config config, const db::config& db_cfg,
         qos::service_level_controller& sl_controller, gms::gossiper& g, scheduling_group_key stats_key,
         maintenance_socket_enabled used_by_maintenance_socket)
-    : server("CQLServer", clogger)
+    : server("CQLServer", clogger, db_cfg)
     , _query_processor(qp)
     , _config(std::move(config))
     , _max_request_size(_config.max_request_size)
@@ -291,6 +291,9 @@ cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& au
                         sm::description(
                             seastar::format("Holds an incrementing counter with the requests that ever blocked due to reaching the memory quota limit ({}B). "
                                             "The first derivative of this value shows how often we block due to memory exhaustion in the \"CQL transport\" component.", _max_request_size))),
+        sm::make_counter("connections_shed", _shed_connections,
+                        sm::description("Holds an incrementing counter with the CQL connections that were shed due to overload (threshold configured via max_uninitialized_connections_per_shard). "
+                                            "The first derivative of this value shows how often we shed connections due to overload in the \"CQL transport\" component.")),
         sm::make_counter("requests_shed", _stats.requests_shed,
                         sm::description("Holds an incrementing counter with the requests that were shed due to overload (threshold configured via max_concurrent_requests_per_shard). "
                                             "The first derivative of this value shows how often we shed requests due to overload in the \"CQL transport\" component.")),
@@ -323,8 +326,8 @@ cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& au
 cql_server::~cql_server() = default;
 
 shared_ptr<generic_server::connection>
-cql_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) {
-    auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr));
+cql_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, seastar::gate::holder&& holder) {
+    auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr),std::move(holder));
     ++_stats.connects;
     ++_stats.connections;
     return conn;
@@ -342,7 +345,6 @@ cql_server::advertise_new_connection(shared_ptr<generic_server::connection> raw_
 
 future<>
 cql_server::unadvertise_connection(shared_ptr<generic_server::connection> raw_conn) {
-    --_stats.connections;
     if (auto conn = dynamic_pointer_cast<connection>(raw_conn)) {
         const auto ip = conn->get_client_state().get_client_address().addr();
         const auto port = conn->get_client_state().get_client_port();
@@ -614,8 +616,8 @@ future<foreign_ptr<std::unique_ptr<cql_server::response>>>
     });
 }
 
-cql_server::connection::connection(cql_server& server, socket_address server_addr, connected_socket&& fd, socket_address addr)
-    : generic_server::connection{server, std::move(fd)}
+cql_server::connection::connection(cql_server& server, socket_address server_addr, connected_socket&& fd, socket_address addr, seastar::gate::holder&& holder)
+    : generic_server::connection{server, std::move(fd), std::move(holder)}
     , _server(server)
     , _server_addr(server_addr)
     , _client_state(service::client_state::external_tag{}, server._auth_service, &server._sl_controller, server.timeout_config(), addr)
@@ -632,6 +634,7 @@ cql_server::connection::~connection() {
 
 void cql_server::connection::on_connection_close()
 {
+    --_server._stats.connections;
     _server._notifier->unregister_connection(this);
 }
 
@@ -942,7 +945,6 @@ future<std::unique_ptr<cql_server::response>> cql_server::connection::process_st
             res = make_autheticate(stream, a.qualified_java_name(), trace_state);
         }
     } else {
-        _ready = true;
         res = make_ready(stream, trace_state);
     }
 
@@ -975,7 +977,6 @@ future<std::unique_ptr<cql_server::response>> cql_server::connection::process_au
                 });
                 return f.then([this, stream, challenge = std::move(challenge), trace_state]() mutable {
                     _authenticating = false;
-                    _ready = true;
                     return make_ready_future<std::unique_ptr<cql_server::response>>(make_auth_success(stream, std::move(challenge), trace_state));
                 });
             });
@@ -1332,7 +1333,6 @@ cql_server::connection::process_register(uint16_t stream, request_reader in, ser
         auto et = parse_event_type(event_type);
         _server._notifier->register_event(et, this);
     }
-    _ready = true;
     return make_ready_future<std::unique_ptr<cql_server::response>>(make_ready(stream, std::move(trace_state)));
 }
 
@@ -1455,8 +1455,12 @@ std::unique_ptr<cql_server::response> cql_server::connection::make_error(int16_t
     return response;
 }
 
-std::unique_ptr<cql_server::response> cql_server::connection::make_ready(int16_t stream, const tracing::trace_state_ptr& tr_state) const
+std::unique_ptr<cql_server::response> cql_server::connection::make_ready(int16_t stream, const tracing::trace_state_ptr& tr_state)
 {
+    if (!_ready) {
+        _ready = true;
+        on_connection_ready();
+    }
     return std::make_unique<cql_server::response>(stream, cql_binary_opcode::READY, tr_state);
 }
 
@@ -1467,7 +1471,11 @@ std::unique_ptr<cql_server::response> cql_server::connection::make_autheticate(i
     return response;
 }
 
-std::unique_ptr<cql_server::response> cql_server::connection::make_auth_success(int16_t stream, bytes b, const tracing::trace_state_ptr& tr_state) const {
+std::unique_ptr<cql_server::response> cql_server::connection::make_auth_success(int16_t stream, bytes b, const tracing::trace_state_ptr& tr_state) {
+    if (!_ready) {
+        _ready = true;
+        on_connection_ready();
+    }
     auto response = std::make_unique<cql_server::response>(stream, cql_binary_opcode::AUTH_SUCCESS, tr_state);
     response->write_bytes(std::move(b));
     return response;
