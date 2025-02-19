@@ -7,6 +7,7 @@
  */
 
 #include "generic_server.hh"
+#include "seastar/core/iostream.hh"
 
 
 #include <fmt/ranges.h>
@@ -17,11 +18,64 @@
 
 namespace generic_server {
 
+class tracked_data_source_impl : public data_source_impl {
+    data_source _ds;
+public:
+    tracked_data_source_impl(data_source ds) : _ds(std::move(ds)) {};
+    virtual ~tracked_data_source_impl() = default;
+    virtual future<temporary_buffer<char>> get() override {
+        return _ds.get();
+    };
+    virtual future<temporary_buffer<char>> skip(uint64_t n) override {
+        return _ds.skip(n);
+    };
+    virtual future<> close() override {
+        return _ds.close();
+    };
+
+    void stop_tracking();
+    size_t count();
+};
+
+class tracked_data_sink_impl : public data_sink_impl {
+    data_sink _ds;
+public:
+    tracked_data_sink_impl(data_sink ds) : _ds(std::move(ds)) {};
+    virtual ~tracked_data_sink_impl() = default;
+    virtual temporary_buffer<char> allocate_buffer(size_t size) override {
+        return _ds.allocate_buffer(size);
+    }
+    virtual future<> put(net::packet data) override {
+        return _ds.put(std::move(data));
+    }
+    virtual future<> put(std::vector<temporary_buffer<char>> data)  override {
+        return _ds.put(std::move(data));
+    }
+    virtual future<> put(temporary_buffer<char> buf) override {
+        return _ds.put(std::move(buf));
+    }
+    virtual future<> flush() override {
+        return _ds.flush();
+    }
+    virtual future<> close() override {
+        return _ds.close();
+    }
+    virtual size_t buffer_size() const noexcept override {
+        return _ds.buffer_size();
+    }
+    virtual bool can_batch_flushes() const noexcept override {
+        return _ds.can_batch_flushes();
+    }
+    virtual void on_batch_flush_error() noexcept override {
+        _ds.on_batch_flush_error();
+    }
+};
+
 connection::connection(server& server, connected_socket&& fd)
     : _server{server}
     , _fd{std::move(fd)}
-    , _read_buf(_fd.input())
-    , _write_buf(_fd.output())
+    , _read_buf(data_source(std::make_unique<tracked_data_source_impl>(_fd.input().detach())))
+    , _write_buf(data_sink(std::make_unique<tracked_data_sink_impl>(_fd.output().detach())))
     , _hold_server(_server._gate)
 {
     ++_server._total_connections;

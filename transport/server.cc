@@ -16,6 +16,7 @@
 
 #include "cql3/statements/batch_statement.hh"
 #include "cql3/statements/modification_statement.hh"
+#include "seastar/core/iostream.hh"
 #include "seastar/core/scheduling.hh"
 #include "types/collection.hh"
 #include "types/list.hh"
@@ -613,6 +614,7 @@ future<foreign_ptr<std::unique_ptr<cql_server::response>>>
         })));
     });
 }
+
 
 cql_server::connection::connection(cql_server& server, socket_address server_addr, connected_socket&& fd, socket_address addr)
     : generic_server::connection{server, std::move(fd)}
