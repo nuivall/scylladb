@@ -12,7 +12,10 @@
 #include "redis/reply.hh"
 
 #include "db/consistency_level_type.hh"
+#include "seastar/core/semaphore.hh"
+#include "seastar/core/shared_ptr.hh"
 
+#include <limits>
 #include <seastar/core/future-util.hh>
 #include <seastar/core/seastar.hh>
 #include <seastar/net/byteorder.hh>
@@ -38,8 +41,12 @@ redis_server::redis_server(seastar::sharded<redis::query_processor>& qp, auth::s
 }
 
 shared_ptr<generic_server::connection>
-redis_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, seastar::gate::holder&& holder) {
-    auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr), std::move(holder));
+redis_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) {
+    // limiting new connections in redis is not implemented
+    static thread_local auto sem = make_lw_shared<named_semaphore>(
+            std::numeric_limits<size_t>::max(),
+            named_semaphore_exception_factory{"redis new connections"});
+    auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr), sem);
     ++_stats._connects;
     ++_stats._connections;
     return conn;

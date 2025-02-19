@@ -7,6 +7,7 @@
  */
 
 #include "generic_server.hh"
+#include "seastar/core/future.hh"
 #include "seastar/core/iostream.hh"
 
 
@@ -22,44 +23,97 @@ namespace generic_server {
 
 class counted_data_source_impl : public data_source_impl {
     data_source _ds;
-    named_semaphore& _sem;
+    lw_shared_ptr<named_semaphore> _sem;
+    const bool& _stop_counting;
 public:
-    counted_data_source_impl(data_source ds, named_semaphore& sem) : _ds(std::move(ds)), _sem(sem) {};
+    counted_data_source_impl(data_source ds, lw_shared_ptr<named_semaphore> sem, const bool& stop_counting) : _ds(std::move(ds)), _sem(sem), _stop_counting(stop_counting) {};
     virtual ~counted_data_source_impl() = default;
     virtual future<temporary_buffer<char>> get() override {
-        return _ds.get();
+        if (_stop_counting) {
+            return _ds.get();
+        }
+        return futurize_invoke([this] () {
+            _sem->signal();
+        }).then([this] () {
+            return _ds.get();
+        }).finally([this] () {
+            _sem->consume();
+        });
     };
     virtual future<temporary_buffer<char>> skip(uint64_t n) override {
-        return _ds.skip(n);
+        if (_stop_counting) {
+            return _ds.skip(n);
+        }
+        return futurize_invoke([this] () {
+            _sem->signal();
+        }).then([this] () {
+            return _ds.skip(n);
+        }).finally([this] () {
+            _sem->consume();
+        });
     };
     virtual future<> close() override {
         return _ds.close();
     };
-
-    void stop_tracking();
-    size_t count();
 };
 
 class counted_data_sink_impl : public data_sink_impl {
     data_sink _ds;
-    named_semaphore& _sem;
+    lw_shared_ptr<named_semaphore> _sem;
+    const bool& _stop_counting;
 public:
-    counted_data_sink_impl(data_sink ds, named_semaphore& sem) : _ds(std::move(ds)), _sem(sem) {};
+    counted_data_sink_impl(data_sink ds, lw_shared_ptr<named_semaphore> sem, const bool& stop_counting) : _ds(std::move(ds)), _sem(sem), _stop_counting(stop_counting) {};
     virtual ~counted_data_sink_impl() = default;
     virtual temporary_buffer<char> allocate_buffer(size_t size) override {
         return _ds.allocate_buffer(size);
     }
     virtual future<> put(net::packet data) override {
-        return _ds.put(std::move(data));
+        if (_stop_counting) {
+            return _ds.put(std::move(data));
+        }
+        return futurize_invoke([this] () {
+            _sem->signal();
+        }).then([this, &data] () {
+            return _ds.put(std::move(data));
+        }).finally([this] () {
+            _sem->consume();
+        });
     }
     virtual future<> put(std::vector<temporary_buffer<char>> data)  override {
-        return _ds.put(std::move(data));
+        if (_stop_counting) {
+            return _ds.put(std::move(data));
+        }
+        return futurize_invoke([this] () {
+            _sem->signal();
+        }).then([this, &data] () {
+            return _ds.put(std::move(data));
+        }).finally([this] () {
+            _sem->consume();
+        });
     }
     virtual future<> put(temporary_buffer<char> buf) override {
-        return _ds.put(std::move(buf));
+        if (_stop_counting) {
+            return _ds.put(std::move(buf));
+        }
+        return futurize_invoke([this] () {
+            _sem->signal();
+        }).then([this, &buf] () {
+            return _ds.put(std::move(buf));
+        }).finally([this] () {
+            _sem->consume();
+        });
     }
     virtual future<> flush() override {
-        return _ds.flush();
+        if (_stop_counting) {
+            return _ds.flush();
+        }
+        return futurize_invoke([this] () {
+            _sem->signal();
+        }).then([this] () {
+            return _ds.flush();
+        }).finally([this] () {
+            _sem->consume();
+        });
     }
     virtual future<> close() override {
         return _ds.close();
@@ -75,11 +129,11 @@ public:
     }
 };
 
-connection::connection(server& server, connected_socket&& fd, named_semaphore& sem)
+connection::connection(server& server, connected_socket&& fd, lw_shared_ptr<named_semaphore> sem, const bool &stop_counting)
     : _server{server}
     , _fd{std::move(fd)}
-    , _read_buf(data_source(std::make_unique<counted_data_source_impl>(_fd.input().detach(), sem)))
-    , _write_buf(data_sink(std::make_unique<counted_data_sink_impl>(_fd.output().detach(), sem)))
+    , _read_buf(data_source(std::make_unique<counted_data_source_impl>(_fd.input().detach(), sem, stop_counting)))
+    , _write_buf(data_sink(std::make_unique<counted_data_sink_impl>(_fd.output().detach(), sem, stop_counting)))
     , _hold_server(_server._gate)
 {
     ++_server._total_connections;
@@ -196,10 +250,14 @@ future<> connection::shutdown()
 server::server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg)
     : _server_name{server_name}
     , _logger{logger}
-    , _max_uninitialized_connections(db_cfg.max_uninitialized_connections_per_shard)
-    , _conn_cpu_limit_semaphore()
+    , _conns_cpu_concurrency(db_cfg.uninitialized_connections_semaphore_cpu_concurrency)
+    , _conns_cpu_concurrency_semaphore()
 {
-    _conn_cpu_limit_semaphore = named_semaphore(0, named_semaphore_exception_factory{"file_opening_limit_semaphore"});
+    auto setup_conns_sem = [this] (const unsigned int &concurrency) {
+        _conns_cpu_concurrency_semaphore = make_lw_shared<named_semaphore> (concurrency, named_semaphore_exception_factory{"connections cpu concurrency semaphore"});
+    };
+    setup_conns_sem(_conns_cpu_concurrency);
+    _conns_cpu_concurrency.observe(setup_conns_sem);
 }
 
 server::~server()

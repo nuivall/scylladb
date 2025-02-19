@@ -26,7 +26,7 @@ class test_server : public server {
 public:
     test_server(const db::config& cfg) : server("test_server", test_logger, cfg) {};
 protected:
-    [[noreturn]] shared_ptr<connection> make_connection(socket_address, connected_socket&&, socket_address, seastar::gate::holder&&) override {
+    [[noreturn]] shared_ptr<connection> make_connection(socket_address, connected_socket&&, socket_address) override {
         SCYLLA_ASSERT(false);
     }
 };

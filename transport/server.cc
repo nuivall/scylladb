@@ -292,9 +292,6 @@ cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& au
                         sm::description(
                             seastar::format("Holds an incrementing counter with the requests that ever blocked due to reaching the memory quota limit ({}B). "
                                             "The first derivative of this value shows how often we block due to memory exhaustion in the \"CQL transport\" component.", _max_request_size))),
-        sm::make_counter("connections_shed", _shed_connections,
-                        sm::description("Holds an incrementing counter with the CQL connections that were shed due to overload (threshold configured via max_uninitialized_connections_per_shard). "
-                                            "The first derivative of this value shows how often we shed connections due to overload in the \"CQL transport\" component.")),
         sm::make_counter("requests_shed", _stats.requests_shed,
                         sm::description("Holds an incrementing counter with the requests that were shed due to overload (threshold configured via max_concurrent_requests_per_shard). "
                                             "The first derivative of this value shows how often we shed requests due to overload in the \"CQL transport\" component.")),
@@ -327,8 +324,8 @@ cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& au
 cql_server::~cql_server() = default;
 
 shared_ptr<generic_server::connection>
-cql_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, seastar::gate::holder&& holder) {
-    auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr),std::move(holder));
+cql_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) {
+    auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr),_sem);
     ++_stats.connects;
     ++_stats.connections;
     return conn;

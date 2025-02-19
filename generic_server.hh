@@ -55,7 +55,7 @@ protected:
 private:
     future<> process_until_tenant_switch();
 public:
-    connection(server& server, connected_socket&& fd, named_semaphore& sem);
+    connection(server& server, connected_socket&& fd, lw_shared_ptr<named_semaphore> sem);
     virtual ~connection();
 
     virtual future<> process();
@@ -111,8 +111,8 @@ protected:
     std::vector<server_socket> _listeners;
     shared_ptr<seastar::tls::server_credentials> _credentials;
 private:
-    utils::updateable_value<uint32_t> _max_uninitialized_connections;
-    named_semaphore _conn_cpu_limit_semaphore;
+    utils::updateable_value<uint32_t> _conns_cpu_concurrency;
+    lw_shared_ptr<named_semaphore> _conns_cpu_concurrency_semaphore;
 public:
     server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg);
 
@@ -137,7 +137,7 @@ public:
     future<> do_accepts(int which, bool keepalive, socket_address server_addr);
 
 protected:
-    virtual seastar::shared_ptr<connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, seastar::gate::holder&& holder) = 0;
+    virtual seastar::shared_ptr<connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, lw_shared_ptr<named_semaphore> sem) = 0;
 
     virtual future<> advertise_new_connection(shared_ptr<connection> conn);
 
