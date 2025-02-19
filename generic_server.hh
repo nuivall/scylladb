@@ -8,9 +8,11 @@
 
 #pragma once
 
+#include "db/config.hh"
 #include "utils/log.hh"
 
 #include "seastarx.hh"
+#include "utils/updateable_value.hh"
 
 #include <list>
 
@@ -49,11 +51,12 @@ protected:
     future<> _ready_to_respond = make_ready_future<>();
     seastar::gate _pending_requests_gate;
     seastar::gate::holder _hold_server;
+    seastar::gate::holder _hold_uninitialized;
 
 private:
     future<> process_until_tenant_switch();
 public:
-    connection(server& server, connected_socket&& fd);
+    connection(server& server, connected_socket&& fd, seastar::gate::holder&& holder);
     virtual ~connection();
 
     virtual future<> process();
@@ -61,6 +64,8 @@ public:
     virtual void handle_error(future<>&& f) = 0;
 
     virtual future<> process_request() = 0;
+
+    void on_connection_ready();
 
     virtual void on_connection_close();
 
@@ -91,8 +96,10 @@ protected:
     sstring _server_name;
     logging::logger& _logger;
     seastar::gate _gate;
+    seastar::gate _gate_uninitialized_conns;
     future<> _all_connections_stopped = make_ready_future<>();
     uint64_t _total_connections = 0;
+    uint64_t _shed_connections = 0;
     future<> _listeners_stopped = make_ready_future<>();
     using connections_list_t = boost::intrusive::list<connection>;
     connections_list_t _connections_list;
@@ -105,9 +112,10 @@ protected:
     std::list<gentle_iterator> _gentle_iterators;
     std::vector<server_socket> _listeners;
     shared_ptr<seastar::tls::server_credentials> _credentials;
-
+private:
+    utils::updateable_value<uint32_t> _max_uninitialized_connections;
 public:
-    server(const sstring& server_name, logging::logger& logger);
+    server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg);
 
     virtual ~server();
 
@@ -130,7 +138,7 @@ public:
     future<> do_accepts(int which, bool keepalive, socket_address server_addr);
 
 protected:
-    virtual seastar::shared_ptr<connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) = 0;
+    virtual seastar::shared_ptr<connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, seastar::gate::holder&& holder) = 0;
 
     virtual future<> advertise_new_connection(shared_ptr<connection> conn);
 
