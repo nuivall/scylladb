@@ -51,12 +51,11 @@ protected:
     future<> _ready_to_respond = make_ready_future<>();
     seastar::gate _pending_requests_gate;
     seastar::gate::holder _hold_server;
-    seastar::gate::holder _hold_uninitialized;
 
 private:
     future<> process_until_tenant_switch();
 public:
-    connection(server& server, connected_socket&& fd, seastar::gate::holder&& holder);
+    connection(server& server, connected_socket&& fd, named_semaphore& sem);
     virtual ~connection();
 
     virtual future<> process();
@@ -96,7 +95,6 @@ protected:
     sstring _server_name;
     logging::logger& _logger;
     seastar::gate _gate;
-    seastar::gate _gate_uninitialized_conns;
     future<> _all_connections_stopped = make_ready_future<>();
     uint64_t _total_connections = 0;
     uint64_t _shed_connections = 0;
@@ -114,6 +112,7 @@ protected:
     shared_ptr<seastar::tls::server_credentials> _credentials;
 private:
     utils::updateable_value<uint32_t> _max_uninitialized_connections;
+    named_semaphore _conn_cpu_limit_semaphore;
 public:
     server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg);
 

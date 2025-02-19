@@ -20,12 +20,12 @@
 
 namespace generic_server {
 
-class tracked_data_source_impl : public data_source_impl {
-connection::connection(server& server, connected_socket&& fd, seastar::gate::holder&& holder)
+class counted_data_source_impl : public data_source_impl {
     data_source _ds;
+    named_semaphore& _sem;
 public:
-    tracked_data_source_impl(data_source ds) : _ds(std::move(ds)) {};
-    virtual ~tracked_data_source_impl() = default;
+    counted_data_source_impl(data_source ds, named_semaphore& sem) : _ds(std::move(ds)), _sem(sem) {};
+    virtual ~counted_data_source_impl() = default;
     virtual future<temporary_buffer<char>> get() override {
         return _ds.get();
     };
@@ -40,11 +40,12 @@ public:
     size_t count();
 };
 
-class tracked_data_sink_impl : public data_sink_impl {
+class counted_data_sink_impl : public data_sink_impl {
     data_sink _ds;
+    named_semaphore& _sem;
 public:
-    tracked_data_sink_impl(data_sink ds) : _ds(std::move(ds)) {};
-    virtual ~tracked_data_sink_impl() = default;
+    counted_data_sink_impl(data_sink ds, named_semaphore& sem) : _ds(std::move(ds)), _sem(sem) {};
+    virtual ~counted_data_sink_impl() = default;
     virtual temporary_buffer<char> allocate_buffer(size_t size) override {
         return _ds.allocate_buffer(size);
     }
@@ -74,12 +75,12 @@ public:
     }
 };
 
+connection::connection(server& server, connected_socket&& fd, named_semaphore& sem)
     : _server{server}
     , _fd{std::move(fd)}
-    , _read_buf(data_source(std::make_unique<tracked_data_source_impl>(_fd.input().detach())))
-    , _write_buf(data_sink(std::make_unique<tracked_data_sink_impl>(_fd.output().detach())))
+    , _read_buf(data_source(std::make_unique<counted_data_source_impl>(_fd.input().detach(), sem)))
+    , _write_buf(data_sink(std::make_unique<counted_data_sink_impl>(_fd.output().detach(), sem)))
     , _hold_server(_server._gate)
-    , _hold_uninitialized(std::move(holder))
 {
     ++_server._total_connections;
     _server._connections_list.push_back(*this);
@@ -196,7 +197,9 @@ server::server(const sstring& server_name, logging::logger& logger, const db::co
     : _server_name{server_name}
     , _logger{logger}
     , _max_uninitialized_connections(db_cfg.max_uninitialized_connections_per_shard)
+    , _conn_cpu_limit_semaphore()
 {
+    _conn_cpu_limit_semaphore = named_semaphore(0, named_semaphore_exception_factory{"file_opening_limit_semaphore"});
 }
 
 server::~server()
@@ -294,14 +297,15 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
             auto conn = make_connection(server_addr, std::move(fd), std::move(addr),
                     seastar::gate::holder(_gate_uninitialized_conns));
 
-            if (size_t c =_gate_uninitialized_conns.get_count();
-                    c > _max_uninitialized_connections) {
-                _shed_connections++;
-                _logger.debug("too many in-flight connection attempts (configured via max_uninitialized_connections): {}, connection dropped", c);
-                conn->on_connection_close();
-                conn->shutdown().ignore_ready_future();
-                return stop_iteration::no;
-            }
+            // TODO
+            // if (size_t c =_gate_uninitialized_conns.get_count();
+            //         c > _max_uninitialized_connections) {
+            //     _shed_connections++;
+            //     _logger.debug("too many in-flight connection attempts (configured via max_uninitialized_connections): {}, connection dropped", c);
+            //     conn->on_connection_close();
+            //     conn->shutdown().ignore_ready_future();
+            //     return stop_iteration::no;
+            // }
             // Move the processing into the background.
             (void)futurize_invoke([this, conn] {
                 return advertise_new_connection(conn); // Notify any listeners about new connection.
