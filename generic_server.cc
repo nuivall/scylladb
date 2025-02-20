@@ -15,6 +15,8 @@
 #include <seastar/core/reactor.hh>
 #include <seastar/core/smp.hh>
 
+#include "db/config.hh"
+
 namespace generic_server {
 
 connection::connection(server& server, connected_socket&& fd)
@@ -134,7 +136,7 @@ future<> connection::shutdown()
     return make_ready_future<>();
 }
 
-server::server(const sstring& server_name, logging::logger& logger)
+server::server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg)
     : _server_name{server_name}
     , _logger{logger}
 {

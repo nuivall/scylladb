@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include "db/config.hh"
 #include "utils/log.hh"
 
 #include "seastarx.hh"
@@ -109,7 +110,7 @@ protected:
     shared_ptr<seastar::tls::server_credentials> _credentials;
 
 public:
-    server(const sstring& server_name, logging::logger& logger);
+    server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg);
 
     virtual ~server();
 
