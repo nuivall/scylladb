@@ -116,6 +116,10 @@ future<> connection::process()
     });
 }
 
+void connection::on_connection_ready()
+{
+}
+
 void connection::on_connection_close()
 {
 }

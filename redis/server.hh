@@ -94,12 +94,12 @@ private:
         void handle_error(future<>&& f) override;
         void write_reply(const redis_exception&);
         void write_reply(redis_server::result result);
+        virtual void on_connection_close() override;
     private:
         future<result> process_request_one(redis::request&& request, redis::redis_options&, service_permit permit);
         future<result> process_request_internal();
     };
 
     virtual shared_ptr<generic_server::connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) override;
-    future<> unadvertise_connection(shared_ptr<generic_server::connection> conn) override;
 };
 }

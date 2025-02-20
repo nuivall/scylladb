@@ -342,7 +342,6 @@ cql_server::advertise_new_connection(shared_ptr<generic_server::connection> raw_
 
 future<>
 cql_server::unadvertise_connection(shared_ptr<generic_server::connection> raw_conn) {
-    --_stats.connections;
     if (auto conn = dynamic_pointer_cast<connection>(raw_conn)) {
         const auto ip = conn->get_client_state().get_client_address().addr();
         const auto port = conn->get_client_state().get_client_port();
@@ -632,6 +631,7 @@ cql_server::connection::~connection() {
 
 void cql_server::connection::on_connection_close()
 {
+    --_server._stats.connections;
     _server._notifier->unregister_connection(this);
 }
 
@@ -942,7 +942,6 @@ future<std::unique_ptr<cql_server::response>> cql_server::connection::process_st
             res = make_autheticate(stream, a.qualified_java_name(), trace_state);
         }
     } else {
-        _ready = true;
         res = make_ready(stream, trace_state);
     }
 
@@ -975,7 +974,6 @@ future<std::unique_ptr<cql_server::response>> cql_server::connection::process_au
                 });
                 return f.then([this, stream, challenge = std::move(challenge), trace_state]() mutable {
                     _authenticating = false;
-                    _ready = true;
                     return make_ready_future<std::unique_ptr<cql_server::response>>(make_auth_success(stream, std::move(challenge), trace_state));
                 });
             });
@@ -1332,7 +1330,6 @@ cql_server::connection::process_register(uint16_t stream, request_reader in, ser
         auto et = parse_event_type(event_type);
         _server._notifier->register_event(et, this);
     }
-    _ready = true;
     return make_ready_future<std::unique_ptr<cql_server::response>>(make_ready(stream, std::move(trace_state)));
 }
 
@@ -1455,8 +1452,12 @@ std::unique_ptr<cql_server::response> cql_server::connection::make_error(int16_t
     return response;
 }
 
-std::unique_ptr<cql_server::response> cql_server::connection::make_ready(int16_t stream, const tracing::trace_state_ptr& tr_state) const
+std::unique_ptr<cql_server::response> cql_server::connection::make_ready(int16_t stream, const tracing::trace_state_ptr& tr_state)
 {
+    if (!_ready) {
+        _ready = true;
+        on_connection_ready();
+    }
     return std::make_unique<cql_server::response>(stream, cql_binary_opcode::READY, tr_state);
 }
 
@@ -1467,7 +1468,11 @@ std::unique_ptr<cql_server::response> cql_server::connection::make_autheticate(i
     return response;
 }
 
-std::unique_ptr<cql_server::response> cql_server::connection::make_auth_success(int16_t stream, bytes b, const tracing::trace_state_ptr& tr_state) const {
+std::unique_ptr<cql_server::response> cql_server::connection::make_auth_success(int16_t stream, bytes b, const tracing::trace_state_ptr& tr_state) {
+    if (!_ready) {
+        _ready = true;
+        on_connection_ready();
+    }
     auto response = std::make_unique<cql_server::response>(stream, cql_binary_opcode::AUTH_SUCCESS, tr_state);
     response->write_bytes(std::move(b));
     return response;
