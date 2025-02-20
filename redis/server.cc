@@ -45,10 +45,9 @@ redis_server::make_connection(socket_address server_addr, connected_socket&& fd,
     return conn;
 }
 
-future<>
-redis_server::unadvertise_connection(shared_ptr<generic_server::connection> raw_conn) {
-    --_stats._connections;
-    return make_ready_future<>();
+void
+redis_server::connection::on_connection_close() {
+    --_server._stats._connections;
 }
 
 future<redis_server::result> redis_server::connection::process_request_one(redis::request&& request, redis::redis_options& opts, service_permit permit) {
@@ -108,6 +107,7 @@ future<> redis_server::connection::process_request() {
         _pending_requests_gate.enter();
         utils::latency_counter lc;
         lc.start();
+        on_connection_ready();
         auto leave = defer([this] () noexcept { _pending_requests_gate.leave(); });
         return process_request_internal().then([this, leave = std::move(leave), lc = std::move(lc)] (auto&& result) mutable {
             --_server._stats._requests_serving;
