@@ -9,6 +9,7 @@
 #include "generic_server.hh"
 
 
+#include <exception>
 #include <fmt/ranges.h>
 #include <seastar/core/when_all.hh>
 #include <seastar/coroutine/parallel_for_each.hh>
@@ -131,8 +132,8 @@ connection::connection(server& server, connected_socket&& fd, lw_shared_ptr<name
     : _conns_cpu_concurrency_semaphore(sem)
     , _server{server}
     , _fd{std::move(fd)}
-    , _read_buf(_fd.input())
-    , _write_buf(_fd.output())
+    , _read_buf(data_source(std::make_unique<counted_data_source_impl>(_fd.input().detach(), sem, _stop_counting)))
+    , _write_buf(output_stream<char>(data_sink(std::make_unique<counted_data_sink_impl>(_fd.output().detach(), sem, _stop_counting)), 8192, output_stream_options{.batch_flushes = true}))
     , _hold_server(_server._gate)
 {
     ++_server._total_connections;
@@ -229,10 +230,17 @@ future<> connection::process()
 
 void connection::on_connection_ready()
 {
+    _stop_counting = true;
+    _conns_cpu_concurrency_semaphore->signal();
 }
 
 void connection::on_connection_close()
 {
+    if (!_stop_counting) {
+        // closing connection before it went to ready state
+        _stop_counting = true;
+        _conns_cpu_concurrency_semaphore->signal();
+    }
 }
 
 future<> connection::shutdown()
@@ -339,7 +347,16 @@ server::listen(socket_address addr, std::shared_ptr<seastar::tls::credentials_bu
 future<> server::do_accepts(int which, bool keepalive, socket_address server_addr) {
     return repeat([this, which, keepalive, server_addr] {
         seastar::gate::holder holder(_gate);
-        return _listeners[which].accept().then_wrapped([this, keepalive, server_addr, holder = std::move(holder)] (future<accept_result> f_cs_sa) mutable {
+        return futurize_invoke([this] () {
+            if (_conns_cpu_concurrency > 0 &&
+                    !_conns_cpu_concurrency_semaphore->try_wait()) {
+                _blocked_connections++;
+                return _conns_cpu_concurrency_semaphore->wait(std::chrono::minutes(5));
+            }
+            return make_ready_future<>();
+        }).then([this, which] () {
+                return _listeners[which].accept();
+        }).then_wrapped([this, keepalive, server_addr, holder = std::move(holder)] (future<accept_result> f_cs_sa) mutable {
             if (_gate.is_closed()) {
                 f_cs_sa.ignore_ready_future();
                 return stop_iteration::yes;
@@ -378,6 +395,12 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
             });
             return stop_iteration::no;
         }).handle_exception([this] (auto ep) {
+            try {
+                std::rethrow_exception(ep);
+            } catch(const semaphore_timed_out&) {
+                _shed_connections++;
+            } catch(...) {
+            }
             _logger.debug("accept failed: {}", ep);
             return stop_iteration::no;
         });

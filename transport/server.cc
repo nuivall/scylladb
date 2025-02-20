@@ -638,6 +638,7 @@ cql_server::connection::~connection() {
 
 void cql_server::connection::on_connection_close()
 {
+    generic_server::connection::on_connection_close();
     --_server._stats.connections;
     _server._notifier->unregister_connection(this);
 }
