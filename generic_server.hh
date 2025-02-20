@@ -12,6 +12,7 @@
 #include "utils/log.hh"
 
 #include "seastarx.hh"
+#include "utils/updateable_value.hh"
 
 #include <list>
 
@@ -41,6 +42,7 @@ public:
     using connection_process_loop = noncopyable_function<future<> ()>;
     using execute_under_tenant_type = noncopyable_function<future<> (connection_process_loop)>;
     bool _tenant_switch = false;
+    lw_shared_ptr<named_semaphore> _conns_cpu_concurrency_semaphore;
     execute_under_tenant_type _execute_under_current_tenant = no_tenant();
 protected:
     server& _server;
@@ -54,7 +56,7 @@ protected:
 private:
     future<> process_until_tenant_switch();
 public:
-    connection(server& server, connected_socket&& fd);
+    connection(server& server, connected_socket&& fd, lw_shared_ptr<named_semaphore> sem);
     virtual ~connection();
 
     virtual future<> process();
@@ -110,7 +112,9 @@ protected:
     std::list<gentle_iterator> _gentle_iterators;
     std::vector<server_socket> _listeners;
     shared_ptr<seastar::tls::server_credentials> _credentials;
-
+private:
+    utils::updateable_value<uint32_t> _conns_cpu_concurrency;
+    lw_shared_ptr<named_semaphore> _conns_cpu_concurrency_semaphore;
 public:
     server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg);
 
@@ -135,7 +139,7 @@ public:
     future<> do_accepts(int which, bool keepalive, socket_address server_addr);
 
 protected:
-    virtual seastar::shared_ptr<connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) = 0;
+    virtual seastar::shared_ptr<connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, lw_shared_ptr<named_semaphore> sem) = 0;
 
     virtual future<> advertise_new_connection(shared_ptr<connection> conn);
 
