@@ -41,11 +41,7 @@ redis_server::redis_server(seastar::sharded<redis::query_processor>& qp, auth::s
 }
 
 shared_ptr<generic_server::connection>
-redis_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) {
-    // limiting new connections in redis is not implemented
-    static thread_local auto sem = make_lw_shared<named_semaphore>(
-            std::numeric_limits<size_t>::max(),
-            named_semaphore_exception_factory{"redis new connections"});
+redis_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, lw_shared_ptr<named_semaphore> sem) {
     auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr), sem);
     ++_stats._connects;
     ++_stats._connections;
@@ -65,8 +61,8 @@ future<redis_server::result> redis_server::connection::process_request_one(redis
     });
 }
 
-redis_server::connection::connection(redis_server& server, socket_address server_addr, connected_socket&& fd, socket_address addr, seastar::gate::holder&& holder)
-    : generic_server::connection(server, std::move(fd), std::move(holder))
+redis_server::connection::connection(redis_server& server, socket_address server_addr, connected_socket&& fd, socket_address addr, lw_shared_ptr<named_semaphore> sem)
+    : generic_server::connection(server, std::move(fd), sem)
     , _server(server)
     , _server_addr(server_addr)
     , _options(server._config._read_consistency_level, server._config._write_consistency_level, server._config._timeout_config, server._auth_service, addr, server._total_redis_db_count)

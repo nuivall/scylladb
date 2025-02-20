@@ -11,6 +11,7 @@
 #include "seastar/core/iostream.hh"
 
 
+#include <exception>
 #include <fmt/ranges.h>
 #include <seastar/core/when_all.hh>
 #include <seastar/coroutine/parallel_for_each.hh>
@@ -129,11 +130,12 @@ public:
     }
 };
 
-connection::connection(server& server, connected_socket&& fd, lw_shared_ptr<named_semaphore> sem, const bool &stop_counting)
-    : _server{server}
+connection::connection(server& server, connected_socket&& fd, lw_shared_ptr<named_semaphore> sem)
+    : _conns_cpu_concurrency_semaphore(sem)
+    , _server{server}
     , _fd{std::move(fd)}
-    , _read_buf(data_source(std::make_unique<counted_data_source_impl>(_fd.input().detach(), sem, stop_counting)))
-    , _write_buf(data_sink(std::make_unique<counted_data_sink_impl>(_fd.output().detach(), sem, stop_counting)))
+    , _read_buf(data_source(std::make_unique<counted_data_source_impl>(_fd.input().detach(), sem, _stop_counting)))
+    , _write_buf(data_sink(std::make_unique<counted_data_sink_impl>(_fd.output().detach(), sem, _stop_counting)))
     , _hold_server(_server._gate)
 {
     ++_server._total_connections;
@@ -230,11 +232,17 @@ future<> connection::process()
 
 void connection::on_connection_ready()
 {
-    _hold_uninitialized.release();
+    _stop_counting = true;
+    _conns_cpu_concurrency_semaphore->signal();
 }
 
 void connection::on_connection_close()
 {
+    if (!_stop_counting) {
+        // closing connection before it went to ready state
+        _stop_counting = true;
+        _conns_cpu_concurrency_semaphore->signal();
+    }
 }
 
 future<> connection::shutdown()
@@ -342,7 +350,16 @@ server::listen(socket_address addr, std::shared_ptr<seastar::tls::credentials_bu
 future<> server::do_accepts(int which, bool keepalive, socket_address server_addr) {
     return repeat([this, which, keepalive, server_addr] {
         seastar::gate::holder holder(_gate);
-        return _listeners[which].accept().then_wrapped([this, keepalive, server_addr, holder = std::move(holder)] (future<accept_result> f_cs_sa) mutable {
+        return futurize_invoke([this] () {
+                if (_conns_cpu_concurrency > 0 &&
+                        !_conns_cpu_concurrency_semaphore->try_wait()) {
+                    // TODO metrics
+                    return _conns_cpu_concurrency_semaphore->wait(std::chrono::minutes(5));
+                }
+                return make_ready_future<>();
+            }).then([this, which] () {
+                return _listeners[which].accept();
+            }).then_wrapped([this, keepalive, server_addr, holder = std::move(holder)] (future<accept_result> f_cs_sa) mutable {
             if (_gate.is_closed()) {
                 f_cs_sa.ignore_ready_future();
                 return stop_iteration::yes;
@@ -353,17 +370,8 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
             fd.set_nodelay(true);
             fd.set_keepalive(keepalive);
             auto conn = make_connection(server_addr, std::move(fd), std::move(addr),
-                    seastar::gate::holder(_gate_uninitialized_conns));
+                    _conns_cpu_concurrency_semaphore);
 
-            // TODO
-            // if (size_t c =_gate_uninitialized_conns.get_count();
-            //         c > _max_uninitialized_connections) {
-            //     _shed_connections++;
-            //     _logger.debug("too many in-flight connection attempts (configured via max_uninitialized_connections): {}, connection dropped", c);
-            //     conn->on_connection_close();
-            //     conn->shutdown().ignore_ready_future();
-            //     return stop_iteration::no;
-            // }
             // Move the processing into the background.
             (void)futurize_invoke([this, conn] {
                 return advertise_new_connection(conn); // Notify any listeners about new connection.
@@ -390,6 +398,12 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
             });
             return stop_iteration::no;
         }).handle_exception([this] (auto ep) {
+            try {
+                std::rethrow_exception(ep);
+            } catch(const semaphore_timed_out&) {
+                // TODO: metrics
+            } catch(...) {
+            }
             _logger.debug("accept failed: {}", ep);
             return stop_iteration::no;
         });

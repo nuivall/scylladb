@@ -243,7 +243,7 @@ private:
                 service_permit>;
         static thread_local execution_stage_type _process_request_stage;
     public:
-        connection(cql_server& server, socket_address server_addr, connected_socket&& fd, socket_address addr, seastar::gate::holder&& holder);
+        connection(cql_server& server, socket_address server_addr, connected_socket&& fd, socket_address addr, lw_shared_ptr<named_semaphore> sem);
         virtual ~connection();
         future<> process_request() override;
         void handle_error(future<>&& f) override;
@@ -335,7 +335,7 @@ private:
     friend class type_codec;
 
 private:
-    virtual shared_ptr<generic_server::connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) override;
+    virtual shared_ptr<generic_server::connection> make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, lw_shared_ptr<named_semaphore> sem) override;
     future<> advertise_new_connection(shared_ptr<generic_server::connection> conn) override;
     future<> unadvertise_connection(shared_ptr<generic_server::connection> conn) override;
 

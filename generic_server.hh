@@ -42,6 +42,8 @@ public:
     using connection_process_loop = noncopyable_function<future<> ()>;
     using execute_under_tenant_type = noncopyable_function<future<> (connection_process_loop)>;
     bool _tenant_switch = false;
+    bool _stop_counting = false;
+    lw_shared_ptr<named_semaphore> _conns_cpu_concurrency_semaphore;
     execute_under_tenant_type _execute_under_current_tenant = no_tenant();
 protected:
     server& _server;
@@ -64,7 +66,7 @@ public:
 
     virtual future<> process_request() = 0;
 
-    void on_connection_ready();
+    virtual void on_connection_ready();
 
     virtual void on_connection_close();
 

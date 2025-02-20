@@ -324,8 +324,8 @@ cql_server::cql_server(distributed<cql3::query_processor>& qp, auth::service& au
 cql_server::~cql_server() = default;
 
 shared_ptr<generic_server::connection>
-cql_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr) {
-    auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr),_sem);
+cql_server::make_connection(socket_address server_addr, connected_socket&& fd, socket_address addr, lw_shared_ptr<named_semaphore> sem) {
+    auto conn = make_shared<connection>(*this, server_addr, std::move(fd), std::move(addr),sem);
     ++_stats.connects;
     ++_stats.connections;
     return conn;
@@ -633,6 +633,7 @@ cql_server::connection::~connection() {
 
 void cql_server::connection::on_connection_close()
 {
+    generic_server::connection::on_connection_close();
     --_server._stats.connections;
     _server._notifier->unregister_connection(this);
 }
