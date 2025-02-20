@@ -19,8 +19,9 @@
 
 namespace generic_server {
 
-connection::connection(server& server, connected_socket&& fd)
-    : _server{server}
+connection::connection(server& server, connected_socket&& fd, lw_shared_ptr<named_semaphore> sem)
+    : _conns_cpu_concurrency_semaphore(sem)
+    , _server{server}
     , _fd{std::move(fd)}
     , _read_buf(_fd.input())
     , _write_buf(_fd.output())
@@ -139,7 +140,13 @@ future<> connection::shutdown()
 server::server(const sstring& server_name, logging::logger& logger, const db::config& db_cfg)
     : _server_name{server_name}
     , _logger{logger}
+    , _conns_cpu_concurrency(db_cfg.uninitialized_connections_semaphore_cpu_concurrency)
 {
+    auto setup_conns_sem = [this] (const unsigned int &concurrency) {
+        _conns_cpu_concurrency_semaphore = make_lw_shared<named_semaphore>(concurrency, named_semaphore_exception_factory{"connections cpu concurrency semaphore"});
+    };
+    setup_conns_sem(_conns_cpu_concurrency);
+    _conns_cpu_concurrency.observe(setup_conns_sem);
 }
 
 server::~server()
@@ -234,7 +241,9 @@ future<> server::do_accepts(int which, bool keepalive, socket_address server_add
             auto addr = std::move(cs_sa.remote_address);
             fd.set_nodelay(true);
             fd.set_keepalive(keepalive);
-            auto conn = make_connection(server_addr, std::move(fd), std::move(addr));
+            auto conn = make_connection(server_addr, std::move(fd), std::move(addr),
+                    _conns_cpu_concurrency_semaphore, std::move(units));
+
             // Move the processing into the background.
             (void)futurize_invoke([this, conn] {
                 return advertise_new_connection(conn); // Notify any listeners about new connection.
