@@ -255,7 +255,7 @@ bool audit::should_log_table(const sstring& keyspace, const sstring& name) const
 
 bool audit::should_log(const audit_info* audit_info) const {
     return _audited_categories.contains(audit_info->category())
-           && (_audited_keyspaces.find(audit_info->keyspace()) != _audited_keyspaces.cend()
+           && (_audited_keyspaces.contains(audit_info->keyspace())
                          || should_log_table(audit_info->keyspace(), audit_info->table())
                          || audit_info->category() == statement_category::AUTH
                          || audit_info->category() == statement_category::ADMIN
