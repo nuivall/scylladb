@@ -579,6 +579,9 @@ commitlog_total_space_in_mb: -1
 # List of tables that should be audited.
 # audit_tables: "<keyspace_name>.<table_name>,<keyspace_name>.<table_name>"
 #
+# List of alternator tables that should be audited. Empty means that all tables are audited.
+# alternator_audit_tables: "<table_name>,<table_name>"
+#
 # List of keyspaces that should be fully audited.
 # All tables in those keyspaces will be audited
 # audit_keyspaces: "<keyspace_name>,<keyspace_name>"
