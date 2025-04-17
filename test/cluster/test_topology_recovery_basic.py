@@ -47,21 +47,6 @@ async def test_topology_recovery_basic(request, build_mode: str, manager: Manage
              cql_zero_token.hosts[0],
              cql_normal.hosts[1] if cql_normal.hosts[0].address == servers[0].ip_addr else cql_normal.hosts[0]]
 
-    # We don't want to use ManagerClient.rolling_restart. Waiting for CQL of the zero-token node would time out.
-    async def rolling_restart():
-        for idx, s in enumerate(servers):
-            await manager.server_stop_gracefully(s.server_id)
-
-            for idx2 in range(len(servers)):
-                if idx2 != idx:
-                    await manager.server_not_sees_other_server(servers[idx2].ip_addr, s.ip_addr)
-
-            await manager.server_start(s.server_id)
-
-            for idx2 in range(len(servers)):
-                if idx2 != idx:
-                    await manager.server_sees_other_server(servers[idx2].ip_addr, s.ip_addr)
-
     logging.info("Waiting until driver connects to every server")
     await asyncio.gather(*(wait_for_cql(cql, h, time.time() + 60) for cql, h in zip(cqls, hosts)))
 
@@ -80,7 +65,7 @@ async def test_topology_recovery_basic(request, build_mode: str, manager: Manage
 
     # Restart sequentially, as it tests how nodes operating in legacy mode
     # react to raft topology mode nodes and vice versa
-    await rolling_restart()
+    await manager.rolling_restart(servers, wait_for_cql=False)
 
     await stop_writes_and_verify()
 
@@ -109,7 +94,7 @@ async def test_topology_recovery_basic(request, build_mode: str, manager: Manage
     await asyncio.gather(*(delete_raft_data_and_upgrade_state(cql, h) for cql, h in zip(cqls, hosts)))
 
     logging.info(f"Restarting hosts {hosts}")
-    await rolling_restart()
+    await manager.rolling_restart(servers, wait_for_cql=False)
 
     # FIXME: We must reconnect the driver before performing CQL queries below, for example
     # in wait_until_schema_upgrade_finishes. Unfortunately, it forces us to stop writing to
