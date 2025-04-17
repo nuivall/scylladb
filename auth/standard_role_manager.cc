@@ -178,7 +178,7 @@ future<> standard_role_manager::create_legacy_metadata_tables_if_missing() const
                     _migration_manager)).discard_result();
 }
 
-future<> standard_role_manager::create_default_role_if_missing() {
+future<> standard_role_manager::legacy_create_default_role_if_missing() {
     try {
         const auto exists = co_await default_role_row_satisfies(_qp, &has_can_login, _superuser);
         if (exists) {
@@ -195,13 +195,56 @@ future<> standard_role_manager::create_default_role_if_missing() {
                     internal_distributed_query_state(),
                     {_superuser},
                     cql3::query_processor::cache_internal::no).discard_result();
-        } else {
-            co_await announce_mutations(_qp, _group0_client, query, {_superuser}, _as, ::service::raft_timeout{});
         }
         log.info("Created default superuser role '{}'.", _superuser);
     } catch(const exceptions::unavailable_exception& e) {
         log.warn("Skipped default role setup: some nodes were not ready; will retry");
         throw e;
+    }
+}
+
+future<> standard_role_manager::maybe_create_default_role() {
+    ::service::group0_batch batch(co_await _group0_client.start_operation(_as,
+            get_raft_timeout()));
+
+    const sstring query = seastar::format("SELECT * FROM {}.{} WHERE is_superuser = true ALLOW FILTERING", get_auth_ks_name(_qp), meta::roles_table::name);
+    for (auto cl : {db::consistency_level::LOCAL_ONE, db::consistency_level::QUORUM}) {
+        auto results = co_await _qp.execute_internal(query, cl,
+                internal_distributed_query_state(), cql3::query_processor::cache_internal::no);
+        for(auto& result : *results) {
+            if (has_can_login(result)) {
+                co_return;
+            }
+        }
+    }
+    // There is no superuser which has can_login field - create default role.
+    // Note that we don't check if can_login is set to true.
+    const sstring insert_query = seastar::format("INSERT INTO {}.{} ({}, is_superuser, can_login) VALUES (?, true, true)",
+            get_auth_ks_name(_qp),
+            meta::roles_table::name,
+            meta::roles_table::role_col_name);
+    co_await collect_mutations(_qp, batch, insert_query, {_superuser});
+    co_await std::move(batch).commit(_group0_client, _as, get_raft_timeout());
+    log.info("Created default superuser role '{}'.", _superuser);
+}
+
+future<> standard_role_manager::maybe_create_default_role_with_retries() {
+    size_t retries = _migration_manager.get_concurrent_ddl_retries();
+    while (true)  {
+        try {
+            co_return co_await maybe_create_default_role();
+        } catch (const ::service::group0_concurrent_modification& ex) {
+            log.warn("Failed to execute maybe_create_default_role due to guard conflict.{}.", retries ? " Retrying" : " Number of retries exceeded, giving up");
+            if (retries--) {
+                continue;
+            }
+            // Log error but don't crash the whole node startup sequence.
+            log.error("Failed to create default superuser role due to guard conflict.");
+            co_return;
+        } catch (const ::service::raft_operation_timeout_error& ex) {
+            log.error("Failed to create default superuser role due to exception: {}", ex.what());
+            co_return;
+        }
     }
 }
 
@@ -266,9 +309,10 @@ future<> standard_role_manager::start() {
                     co_await migrate_legacy_metadata();
                     co_return;
                 }
+                co_await legacy_create_default_role_if_missing();
             }
-            co_await create_default_role_if_missing();
             if (!legacy) {
+                co_await maybe_create_default_role_with_retries();
                 _superuser_created_promise.set_value();
             }
         };
