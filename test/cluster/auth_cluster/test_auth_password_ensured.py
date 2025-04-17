@@ -11,8 +11,9 @@ import time
 from cassandra.cluster import NoHostAvailable
 from test.cluster.conftest import skip_mode
 from test.pylib.manager_client import ManagerClient, ServerUpState
-from test.pylib.util import wait_for
+from test.pylib.util import wait_for, unique_name
 from test.cluster.auth_cluster import extra_scylla_config_options as auth_config
+from cassandra.auth import PlainTextAuthProvider
 
 
 async def repeat_if_host_unavailable(f):
@@ -54,3 +55,29 @@ async def test_auth_password_ensured(manager: ManagerClient) -> None:
     logging.info("Run CREATE USER to confirm successful superuser authentication")
     await cql.run_async("CREATE USER normal WITH PASSWORD '123456' NOSUPERUSER")
 
+
+async def test_auth_default_superuser_replaced(manager: ManagerClient) -> None:
+    servers = await manager.servers_add(3, config=auth_config, auto_rack_dc="dc1")
+    cql, _ = await manager.get_ready_cql(servers)
+
+    logging.info("Creating non default superuser")
+    role = "r" + unique_name()
+    await cql.run_async(f"CREATE ROLE {role} WITH SUPERUSER = true AND PASSWORD = '{role}' AND LOGIN = true")
+
+    logging.info("Removing default superuser")
+    await manager.driver_connect(server=servers[0],
+        auth_provider=PlainTextAuthProvider(username=role, password=role))
+    cql = manager.get_cql()
+    await cql.run_async(f"DROP ROLE cassandra")
+
+    logging.info("Rolling restart")
+    await manager.rolling_restart(servers, wait_for_cql=False)
+
+    for s in servers:
+        logging.info("Checking if default removed superuser is not present")
+        with pytest.raises(NoHostAvailable, match="Bad credentials"):
+            await manager.driver_connect(server=s,
+                auth_provider=PlainTextAuthProvider(username='cassandra', password='cassandra'))
+        logging.info("Checking if added superuser works")
+        await manager.driver_connect(server=s,
+            auth_provider=PlainTextAuthProvider(username=role, password=role))
