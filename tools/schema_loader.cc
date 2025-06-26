@@ -218,7 +218,7 @@ public:
                 return ks.metadata->user_types();
             }
         }
-        throw data_dictionary::no_such_keyspace(name);
+        throw_with_backtrace<data_dictionary::no_such_keyspace>(name);
     }
 };
 

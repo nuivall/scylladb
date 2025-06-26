@@ -1112,6 +1112,7 @@ static future<> do_merge_schema(distributed<service::storage_proxy>& proxy,  dis
          co_await execute_do_merge_schema(proxy, ap, std::move(mutations));
     } catch (...) {
         ex = std::current_exception();
+        slogger.error("exception do_merge_schema: {}", ex);
     }
     co_await ap.destroy();
     if (ex) {

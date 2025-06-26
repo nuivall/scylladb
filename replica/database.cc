@@ -1238,7 +1238,7 @@ keyspace& database::find_keyspace(std::string_view name) {
     try {
         return _keyspaces.at(name);
     } catch (std::out_of_range&) {
-        throw no_such_keyspace(name);
+        throw_with_backtrace<no_such_keyspace>(name);
     }
 }
 
@@ -1246,7 +1246,7 @@ const keyspace& database::find_keyspace(std::string_view name) const {
     try {
         return _keyspaces.at(name);
     } catch (std::out_of_range&) {
-        throw no_such_keyspace(name);
+        throw_with_backtrace<no_such_keyspace>(name);
     }
 }
 

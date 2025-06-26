@@ -84,7 +84,7 @@ keyspace
 database::find_keyspace(std::string_view name) const {
     auto ks = try_find_keyspace(name);
     if (!ks) {
-        throw no_such_keyspace(name);
+        throw_with_backtrace<no_such_keyspace>(name);
     }
     return *ks;
 }
