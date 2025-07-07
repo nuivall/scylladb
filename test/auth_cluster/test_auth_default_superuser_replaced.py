@@ -11,7 +11,6 @@ from cassandra.cluster import NoHostAvailable
 from test.pylib.manager_client import ManagerClient
 from test.pylib.util import unique_name
 from cassandra.auth import PlainTextAuthProvider
-from test.cluster.auth_cluster import extra_scylla_config_options as auth_config
 
 
 """
@@ -19,7 +18,11 @@ Checks whether the default superuser is replaced by a custom one,
 and that the default superuser is not present in the system.
 """
 async def test_auth_default_superuser_replaced(manager: ManagerClient) -> None:
-    servers = await manager.servers_add(3, config=auth_config)
+    config = {
+        "authenticator": "PasswordAuthenticator",
+        "authorizer": "CassandraAuthorizer",
+    }
+    servers = await manager.servers_add(3, config=config)
     cql, _ = await manager.get_ready_cql(servers)
 
     logging.info("Creating non default superuser")

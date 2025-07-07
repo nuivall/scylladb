@@ -1145,7 +1145,7 @@ class ScyllaCluster:
         self.removed.add(server_id)
 
     async def server_start(self, server_id: ServerNum, expected_error: Optional[str] = None,
-                           seeds: Optional[List[IPAddress]] = None, connect_driver = True, auth_provider: Optional[dict] = None) -> None:
+                           seeds: Optional[List[IPAddress]] = None, connect_driver = True, expected_server_up_state: ServerUpState = ServerUpState.CQL_QUERIED, auth_provider: Optional[dict] = None) -> None:
         """Start a server. No-op if already running."""
         if server_id in self.running:
             return
