@@ -130,11 +130,13 @@ struct schema_diff_per_shard {
 };
 
 
-class new_token_metadata {
+class pending_token_metadata {
     std::vector<locator::mutable_token_metadata_ptr> shards{smp::count};
 public:
+    future<> assign(locator::mutable_token_metadata_ptr&& new_token_metadata);
     locator::mutable_token_metadata_ptr& local();
     future<> destroy();
+    bool updated = false;
 };
 
 struct affected_tables_and_views_per_shard {
@@ -149,7 +151,7 @@ struct affected_tables_and_views {
     std::unique_ptr<replica::tables_metadata_lock_on_all_shards> locks;
     std::unordered_map<table_id, replica::global_table_ptr> table_shards;
 
-    new_token_metadata new_token_metadata; // represents token metadata after updating tablets metadata, nullptr if there was no change
+    pending_token_metadata pending_token_metadata;
 };
 
 // We wrap it with pointer because change_batch needs to be constructed and destructed
