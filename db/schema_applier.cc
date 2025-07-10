@@ -679,12 +679,8 @@ static future<> merge_tables_and_views(distributed<service::storage_proxy>& prox
     if (tablet_hint) {
         slogger.info("Tablet metadata changed");
         auto new_token_metadata = co_await ss.local().prepare_tablet_metadata(tablet_hint);
-        co_await smp::invoke_on_others([&db, &diff, &new_token_metadata] () -> future<> {
-            auto& shared_metadata = db.local().get_shared_token_metadata();
-            diff.new_token_metadata.local() = shared_metadata.make_token_metadata_ptr(
-                    co_await new_token_metadata->clone_async());
-        });
-        diff.new_token_metadata.local() = std::move(new_token_metadata);
+        co_await diff.pending_token_metadata.assign(std::move(new_token_metadata));
+        diff.pending_token_metadata.updated = true;
     }
 }
 
@@ -733,11 +729,20 @@ future<schema_diff_per_shard> schema_diff_per_shard::copy_from(replica::database
     co_return result;
 }
 
- locator::mutable_token_metadata_ptr& new_token_metadata::local() {
-    return shards[this_shard_id()];
- }
+future<> pending_token_metadata::assign(locator::mutable_token_metadata_ptr&& new_token_metadata) {
+    co_await smp::invoke_on_others([this, &new_token_metadata] () -> future<> {
+        auto& shared_metadata = new_token_metadata->get_shared_token_metadata();
+        local() = shared_metadata.make_token_metadata_ptr(
+            co_await new_token_metadata->clone_async());
+    });
+    local() = std::move(new_token_metadata);
+}
 
-future<> new_token_metadata::destroy() {
+locator::mutable_token_metadata_ptr& pending_token_metadata::local() {
+    return shards[this_shard_id()];
+}
+
+future<> pending_token_metadata::destroy() {
     return smp::invoke_on_all([this] () {
         shards[this_shard_id()] = nullptr;
     });
@@ -917,12 +922,12 @@ void schema_applier::commit_tables_and_views() {
 
     for (auto& schema : tables.created) {
         auto& ks = db.find_keyspace(schema->ks_name());
-        db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.new_token_metadata.local());
+        db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.pending_token_metadata.local());
     }
 
     for (auto& schema : views.created) {
         auto& ks = db.find_keyspace(schema->ks_name());
-        db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.new_token_metadata.local());
+        db.add_column_family(ks, schema, ks.make_column_family_config(*schema, db), replica::database::is_new_cf::yes, diff.pending_token_metadata.local());
     }
 
     diff.tables_and_views.local().columns_changed.reserve(tables.altered.size() + views.altered.size());
@@ -1004,8 +1009,8 @@ future<> schema_applier::finalize_tables_and_views() {
     // We must do it after tables are dropped so that table snapshot doesn't experience missing tablet map,
     // and so that compaction groups are not destroyed altogether.
     // TODO: maybe untangle this dependency
-    if (diff.new_token_metadata.local()) {
-        co_await _ss.local().commit_tablet_metadata(diff.new_token_metadata.local());
+    if (diff.pending_token_metadata.updated) {
+        co_await _ss.local().commit_tablet_metadata(diff.pending_token_metadata.local());
     }
 
     co_await sharded_db.invoke_on_all([&diff] (replica::database& db) -> future<> {
@@ -1086,7 +1091,7 @@ future<> schema_applier::post_commit() {
 future<> schema_applier::destroy() {
     co_await _affected_user_types.stop();
     co_await _affected_tables_and_views.tables_and_views.stop();
-    co_await _affected_tables_and_views.new_token_metadata.destroy();
+    co_await _affected_tables_and_views.pending_token_metadata.destroy();
     co_await _functions_batch.stop();
 }
 
