@@ -173,7 +173,7 @@ class schema_applier {
     // Copy of token metadata used for schema change, it has two purposes:
     // - makes sure all updated schema entities use the same metadata
     // - allows to change tablets metadata without immediately committing it.
-    pending_token_metadata _pending_token_metadata;
+    locator::pending_token_metadata _pending_token_metadata;
     locator::tablet_metadata_change_hint _tablet_hint;
 
     schema_persisted_state _before;

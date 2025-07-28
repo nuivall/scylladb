@@ -281,7 +281,7 @@ future<> schema_applier::merge_keyspaces()
                 schema_result_value_type{name, _after.keyspaces.at(name)}, sk_after_v);
         _affected_keyspaces.created.push_back(
                 co_await replica::database::prepare_create_keyspace_on_all_shards(
-                        sharded_db, _proxy, *ksm, _pending_token_metadata.local()));
+                        sharded_db, _proxy, *ksm, _pending_token_metadata));
         _affected_keyspaces.names.created.insert(name);
     }
     for (auto& name : altered) {
@@ -291,7 +291,7 @@ future<> schema_applier::merge_keyspaces()
                 schema_result_value_type{name, _after.keyspaces.at(name)}, sk_after_v);
         _affected_keyspaces.altered.push_back(
                 co_await replica::database::prepare_update_keyspace_on_all_shards(
-                        sharded_db, *tmp_ksm, _pending_token_metadata.local()));
+                        sharded_db, *tmp_ksm, _pending_token_metadata));
         _affected_keyspaces.names.altered.insert(name);
     }
     for (auto& key : _affected_keyspaces.names.dropped) {
@@ -716,25 +716,6 @@ future<schema_diff_per_shard> schema_diff_per_shard::copy_from(replica::database
     co_return result;
 }
 
-future<> pending_token_metadata::assign(locator::mutable_token_metadata_ptr&& new_token_metadata) {
-    co_await smp::invoke_on_others([this, &new_token_metadata] () -> future<> {
-        auto& shared_metadata = new_token_metadata->get_shared_token_metadata();
-        local() = shared_metadata.make_token_metadata_ptr(
-            co_await new_token_metadata->clone_async());
-    });
-    local() = std::move(new_token_metadata);
-}
-
-locator::mutable_token_metadata_ptr& pending_token_metadata::local() {
-    return shards[this_shard_id()];
-}
-
-future<> pending_token_metadata::destroy() {
-    return smp::invoke_on_all([this] () {
-        shards[this_shard_id()] = nullptr;
-    });
-}
-
 static future<> notify_tables_and_views(service::migration_notifier& notifier, const affected_tables_and_views& diff) {
     auto it = diff.tables_and_views.local().columns_changed.cbegin();
     auto notify = [&] (auto& r, auto&& f) -> future<> {
@@ -871,6 +852,8 @@ future<> schema_applier::prepare(utils::chunked_vector<mutation>& muts) {
 }
 
 future<> schema_applier::update() {
+    assert(_ss.local_is_initialized());
+
     _after = co_await get_schema_persisted_state();
 
     co_await _pending_token_metadata.assign(
