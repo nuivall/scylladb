@@ -714,25 +714,6 @@ future<schema_diff_per_shard> schema_diff_per_shard::copy_from(replica::database
     co_return result;
 }
 
-future<> pending_token_metadata::assign(locator::mutable_token_metadata_ptr new_token_metadata) {
-    auto& sharded_token_metadata = new_token_metadata->get_shared_token_metadata().container();
-    // clone a local copy of new_token_metadata on all other shards
-    co_await smp::invoke_on_others([this, &new_token_metadata, &sharded_token_metadata] () -> future<> {
-        local() = sharded_token_metadata.local().make_token_metadata_ptr(co_await new_token_metadata->clone_async());
-    });
-    local() = std::move(new_token_metadata);
-}
-
-locator::mutable_token_metadata_ptr& pending_token_metadata::local() {
-    return shards[this_shard_id()];
-}
-
-future<> pending_token_metadata::destroy() {
-    return smp::invoke_on_all([this] () {
-        shards[this_shard_id()] = nullptr;
-    });
-}
-
 static future<> notify_tables_and_views(service::migration_notifier& notifier, const affected_tables_and_views& diff) {
     auto it = diff.tables_and_views.local().columns_changed.cbegin();
     auto notify = [&] (auto& r, auto&& f) -> future<> {
