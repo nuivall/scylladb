@@ -3268,16 +3268,16 @@ future<token_metadata_change> storage_service::prepare_token_metadata_change(mut
         // Prepare per-table erms.
         co_await container().invoke_on_all([&] (storage_service& ss) -> future<> {
             auto tmptr = change.pending_token_metadata_ptr[this_shard_id()];
-            auto keyspaces = schema_getter.get_keyspaces();
-            co_await schema_getter.for_each_table_gently([&] (table_id id, lw_shared_ptr<replica::table> table) {
-                auto rs = keyspaces.at(table->schema()->ks_name())->get_replication_strategy_ptr();
+            auto replications = schema_getter.get_keyspaces_replication();
+            co_await schema_getter.for_each_table_schema_gently([&] (table_id id, schema_ptr table_schema) {
+                auto rs = replications.at(table_schema->ks_name());
                 locator::effective_replication_map_ptr erm;
                 if (auto pt_rs = rs->maybe_as_per_table()) {
                     erm = pt_rs->make_replication_map(id, tmptr);
                 } else {
-                    erm = change.pending_effective_replication_maps[this_shard_id()][table->schema()->ks_name()];
+                    erm = change.pending_effective_replication_maps[this_shard_id()][table_schema->ks_name()];
                 }
-                if (table->schema()->is_view()) {
+                if (table_schema->is_view()) {
                     change.pending_view_erms[this_shard_id()].emplace(id, std::move(erm));
                 } else {
                     change.pending_table_erms[this_shard_id()].emplace(id, std::move(erm));
@@ -5754,15 +5754,15 @@ future<locator::mutable_token_metadata_ptr> storage_service::prepare_tablet_meta
     co_return pending_token_metadata;
 }
 
-future<> storage_service::commit_tablet_metadata(locator::mutable_token_metadata_ptr tmptr) {
-    co_await replicate_to_all_cores(std::move(tmptr));
+void storage_service::wake_up_topology_state_machine() noexcept {
     _topology_state_machine.event.broadcast();
 }
 
 future<> storage_service::update_tablet_metadata(const locator::tablet_metadata_change_hint& hint) {
-    co_await commit_tablet_metadata(
-            co_await prepare_tablet_metadata(hint,
-                    co_await get_mutable_token_metadata_ptr()));
+    auto change = co_await prepare_tablet_metadata(hint,
+            co_await get_mutable_token_metadata_ptr());
+    co_await replicate_to_all_cores(std::move(change));
+    wake_up_topology_state_machine();
 }
 
 future<> storage_service::process_tablet_split_candidate(table_id table) noexcept {
