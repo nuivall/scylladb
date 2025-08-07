@@ -3105,6 +3105,7 @@ size_t database::tables_metadata::size() const noexcept {
 }
 
 future<rwlock::holder> database::tables_metadata::hold_write_lock() {
+    dblog.warn("database::tables_metadata::hold_write_lock bt {}", current_backtrace());
     co_return co_await _cf_lock.hold_write_lock();
 }
 
@@ -3167,7 +3168,9 @@ void database::tables_metadata::for_each_table_id(std::function<void(const ks_cf
 }
 
 future<> database::tables_metadata::for_each_table_gently(std::function<future<>(table_id, lw_shared_ptr<table>)> f) {
+    dblog.warn("for_each_table_gently pre lock");
     auto holder = co_await _cf_lock.hold_read_lock();
+    dblog.warn("for_each_table_gently post lock");
     for (auto& [id, table]: _column_families) {
         co_await f(id, table);
     }

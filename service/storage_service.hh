@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <exception>
 #include <variant>
 #include <seastar/core/shared_future.hh>
 #include "absl-flat_hash_map.hh"
@@ -144,11 +145,15 @@ struct token_metadata_change {
     std::vector<std::unordered_map<sstring, locator::vnode_effective_replication_map_ptr>> pending_effective_replication_maps{smp::count};
     std::vector<std::unordered_map<table_id, locator::effective_replication_map_ptr>> pending_table_erms{smp::count};
     std::vector<std::unordered_map<table_id, locator::effective_replication_map_ptr>> pending_view_erms{smp::count};
+
+    future<> destroy();
 };
 
 class schema_getter {
 public:
-    virtual replica::column_family& find_column_family(const table_id& uuid) const = 0;
+    // find_column_family returns nullptr only when table was deleted
+    // during pending schema change.
+    virtual replica::column_family* find_column_family(const table_id& uuid) const = 0;
     virtual flat_hash_map<sstring, replica::keyspace*> get_keyspaces() const = 0;
     virtual future<> for_each_table_gently(std::function<future<>(table_id, lw_shared_ptr<replica::table>)> f) const = 0;
 };
