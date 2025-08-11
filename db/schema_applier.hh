@@ -224,6 +224,7 @@ private:
     future<> merge_keyspaces();
     future<> merge_types();
     future<> merge_tables_and_views();
+    future<> update_tablets();
     future<> merge_functions();
     future<> merge_aggregates();
 

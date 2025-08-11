@@ -650,10 +650,6 @@ future<> schema_applier::merge_tables_and_views()
     });
 
     auto& db = _proxy.local().get_db();
-    // adding and dropping uses this locking mechanism
-    _affected_tables_and_views.locks = std::make_unique<replica::tables_metadata_lock_on_all_shards>(
-            co_await replica::database::prepare_tables_metadata_change_on_all_shards(db));
-
     co_await max_concurrent_for_each(local_views.dropped, max_concurrent, [&db, this] (schema_ptr& dt) -> future<> {
         auto uuid = dt->id();
         _affected_tables_and_views.table_shards.insert({uuid,
@@ -908,18 +904,25 @@ public:
     };
 };
 
+future<> schema_applier::update_tablets() {
+    // Has to be after tablets and views change is prepared
+    // otherwise this preparation will generate orphaned erms.
+    if (_tablet_hint) {
+        slogger.info("Tablet metadata changed");
+        pending_schema_getter getter{*this};
+        _token_metadata_change = co_await _ss.local().prepare_token_metadata_change(
+                _pending_token_metadata.local(), getter);
+    }
+}
+
 // Loads metadata into a single source of truth to ensure consistency.
 // It will be committed later if required by the current schema change.
 future<> schema_applier::load_mutable_token_metadata() {
     locator::mutable_token_metadata_ptr new_token_metadata = nullptr;
     locator::mutable_token_metadata_ptr current_token_metadata = co_await _ss.local().get_mutable_token_metadata_ptr();
     if (_tablet_hint) {
-        slogger.info("Tablet metadata changed");
         new_token_metadata = co_await _ss.local().prepare_token_metadata_with_tablets_change(
                 _tablet_hint, current_token_metadata);
-        pending_schema_getter getter{*this};
-        _token_metadata_change = co_await _ss.local().prepare_token_metadata_change(
-                new_token_metadata, getter);
         co_return co_await _pending_token_metadata.assign(new_token_metadata);
     }
     co_await _pending_token_metadata.assign(current_token_metadata);
@@ -931,6 +934,14 @@ future<> schema_applier::update() {
     co_await merge_keyspaces();
     co_await merge_types();
     co_await merge_tables_and_views();
+    co_await update_tablets();
+
+        auto& db = _proxy.local().get_db();
+    // adding and dropping tables and changing token_metadata uses this locking mechanism
+    _affected_tables_and_views.locks = std::make_unique<replica::tables_metadata_lock_on_all_shards>(
+            co_await replica::database::prepare_tables_metadata_change_on_all_shards(db));
+
+
     co_await merge_functions();
     co_await merge_aggregates();
 }
@@ -1132,6 +1143,7 @@ future<> schema_applier::destroy() {
     co_await _affected_user_types.stop();
     co_await _affected_tables_and_views.tables_and_views.stop();
     co_await _pending_token_metadata.destroy();
+    co_await _token_metadata_change.destroy();
     co_await _functions_batch.stop();
 }
 
