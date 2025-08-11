@@ -3300,8 +3300,8 @@ future<> storage_service::replicate_to_all_cores(mutable_token_metadata_ptr tmpt
     public:
         db_schema_getter(distributed<replica::database>& db) : _db(db) {};
 
-        virtual replica::column_family& find_column_family(const table_id& uuid) const {
-            return _db.local().find_column_family(uuid);
+        virtual replica::column_family* find_column_family(const table_id& uuid) const {
+            return &_db.local().find_column_family(uuid);
         };
         virtual flat_hash_map<sstring, replica::keyspace*> get_keyspaces() const {
             flat_hash_map<sstring, replica::keyspace*> out;
