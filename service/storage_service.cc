@@ -3116,6 +3116,25 @@ future<token_metadata_change> storage_service::prepare_token_metadata_change(mut
     std::exception_ptr ex;
     token_metadata_change change;
 
+    // Collect open sessions
+    {
+        auto session = _topology_state_machine._topology.session;
+        if (session) {
+            change.open_sessions.insert(session);
+        }
+
+        auto token_metadata = tmptr;
+        for (auto&& [table, tables] : token_metadata->tablets().all_table_groups()) {
+            const auto& tmap = token_metadata->tablets().get_tablet_map(table);
+            for (auto&& [tid, trinfo]: tmap.transitions()) {
+                if (trinfo.session_id) {
+                    auto id = session_id(trinfo.session_id);
+                    change.open_sessions.insert(id);
+                }
+            }
+        }
+    }
+
     try {
         auto base_shard = this_shard_id();
         change.pending_token_metadata_ptr[base_shard] = tmptr;
@@ -3202,25 +3221,6 @@ future<token_metadata_change> storage_service::prepare_token_metadata_change(mut
 
 void storage_service::commit_token_metadata_change(token_metadata_change& change, const schema_getter& schema_getter) noexcept {
     slogger.debug("Replicating token_metadata");
-    std::unordered_set<session_id> open_sessions;
-    // Collect open sessions
-    {
-        auto session = _topology_state_machine._topology.session;
-        if (session) {
-            open_sessions.insert(session);
-        }
-
-        auto token_metadata = change.pending_token_metadata_ptr[this_shard_id()];
-        for (auto&& [table, tables] : token_metadata->tablets().all_table_groups()) {
-            const auto& tmap = token_metadata->tablets().get_tablet_map(table);
-            for (auto&& [tid, trinfo]: tmap.transitions()) {
-                if (trinfo.session_id) {
-                    auto id = session_id(trinfo.session_id);
-                    open_sessions.insert(id);
-                }
-            }
-        }
-    }
 
     // Apply changes on a single shard
     try {
@@ -3269,8 +3269,8 @@ void storage_service::commit_token_metadata_change(token_metadata_change& change
         }
 
         auto& session_mgr = get_topology_session_manager();
-        session_mgr.initiate_close_of_sessions_except(open_sessions);
-        for (auto id : open_sessions) {
+        session_mgr.initiate_close_of_sessions_except(change.open_sessions);
+        for (auto id : change.open_sessions) {
             session_mgr.create_session(id);
         }
     } catch (...) {
@@ -3279,6 +3279,15 @@ void storage_service::commit_token_metadata_change(token_metadata_change& change
         slogger.error("Failed to apply token_metadata changes: {}. Aborting.", std::current_exception());
         abort();
     }
+}
+
+ future<> token_metadata_change::destroy() {
+    return smp::invoke_on_all([this] () {
+        pending_token_metadata_ptr[this_shard_id()] = nullptr;
+        pending_effective_replication_maps[this_shard_id()] = {};
+        pending_table_erms[this_shard_id()] = {};
+        pending_view_erms[this_shard_id()] = {};
+    });
 }
 
 future<> storage_service::replicate_to_all_cores(mutable_token_metadata_ptr tmptr) noexcept {

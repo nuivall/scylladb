@@ -144,6 +144,9 @@ struct token_metadata_change {
     std::vector<std::unordered_map<sstring, locator::static_effective_replication_map_ptr>> pending_effective_replication_maps{smp::count};
     std::vector<std::unordered_map<table_id, locator::effective_replication_map_ptr>> pending_table_erms{smp::count};
     std::vector<std::unordered_map<table_id, locator::effective_replication_map_ptr>> pending_view_erms{smp::count};
+    std::unordered_set<session_id> open_sessions;
+
+    future<> destroy();
 };
 
 class schema_getter {
