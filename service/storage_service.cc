@@ -3237,22 +3237,28 @@ void storage_service::commit_token_metadata_change(token_metadata_change& change
         auto& view_erms = change.pending_view_erms[this_shard_id()];
         for (auto it = table_erms.begin(); it != table_erms.end(); ) {
             // Update base/views effective_replication_maps atomically.
-            auto& cf = schema_getter.find_column_family(it->first);
-            cf.update_effective_replication_map(std::move(it->second));
-            for (const auto& view_ptr : cf.views()) {
+            auto cf = schema_getter.find_column_family(it->first);
+            cf->update_effective_replication_map(std::move(it->second));
+            for (const auto& view_ptr : cf->views()) {
                 const auto& view_id = view_ptr->id();
+                auto view = schema_getter.find_column_family(view_id);
+                if (!view) {
+                    // During pending schema change view may be deleted
+                    // but cf->views returns it as change is not commited yet
+                    // so we check with schema_getter which takes this into account.
+                    continue;
+                }
                 auto view_it = view_erms.find(view_id);
                 if (view_it == view_erms.end()) {
                     throw std::runtime_error(format("Could not find pending effective_replication_map for view {}.{} id={}", view_ptr->ks_name(), view_ptr->cf_name(), view_id));
                 }
-                auto& view = schema_getter.find_column_family(view_id);
-                view.update_effective_replication_map(std::move(view_it->second));
-                if (view.uses_tablets()) {
+                view->update_effective_replication_map(std::move(view_it->second));
+                if (view->uses_tablets()) {
                     register_tablet_split_candidate(view_it->first);
                 }
                 view_erms.erase(view_it);
             }
-            if (cf.uses_tablets()) {
+            if (cf->uses_tablets()) {
                 register_tablet_split_candidate(it->first);
             }
             it = table_erms.erase(it);

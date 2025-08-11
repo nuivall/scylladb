@@ -856,14 +856,23 @@ public:
             _sa(sa), _db(sa._proxy.local().get_db()) {
     };
 
-    virtual replica::column_family& find_column_family(const table_id& uuid) const {
-        // Technically we should exclude tables which are about to be dropped
-        // but since they will be gone anyway it doesn't matter if we update them or not.
+    virtual replica::column_family* find_column_family(const table_id& uuid) const {
+        auto & tables_and_views = _sa._affected_tables_and_views.tables_and_views.local();
+        for (auto& schema : tables_and_views.tables.dropped) {
+            if (schema->id() == uuid) {
+                return nullptr;
+            }
+        }
+        for (auto& schema : tables_and_views.views.dropped) {
+            if (schema->id() == uuid) {
+                return nullptr;
+            }
+        }
         auto cf_it = _sa._affected_tables_and_views.table_shards.find(uuid);
         if (cf_it != _sa._affected_tables_and_views.table_shards.end()) {
-            return *cf_it->second;
+            return &(*cf_it->second);
         }
-        return _db.local().find_column_family(uuid);
+        return &_db.local().find_column_family(uuid);
     };
 
     virtual flat_hash_map<sstring, replica::keyspace*> get_keyspaces() const {
@@ -890,7 +899,12 @@ public:
     };
 
     virtual future<> for_each_table_gently(std::function<future<>(table_id, lw_shared_ptr<replica::table>)> f) const {
-        return _db.local().get_tables_metadata().for_each_table_gently(f);
+        auto ff = [this, &f](table_id id, lw_shared_ptr<replica::table> t) -> future<> {
+            if (find_column_family(id)) {
+                  co_await f(id, t);
+            }
+        };
+        return _db.local().get_tables_metadata().for_each_table_gently(ff);
     };
 };
 
