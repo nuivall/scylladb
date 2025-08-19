@@ -9,6 +9,7 @@
  */
 
 #include <algorithm>
+#include <exception>
 #include <ranges>
 #include <seastar/core/sleep.hh>
 #include <seastar/core/coroutine.hh>
@@ -120,12 +121,14 @@ void migration_manager::init_messaging_service()
                 }
                 co_await seastar::sleep_abortable(10ms, _as);
             }
-            co_await reload_schema().handle_exception([] (std::exception_ptr ep) {
+            try {
+                co_await reload_schema();
+            } catch (...) {
                 // Due to features being unordered, reload might fail because
                 // some tables still have the wrong version and looking up e.g.
                 // the base-table of a view will fail.
-                mlogger.debug("Failed to reload schema: {}", ep);
-            });
+                mlogger.debug("Failed to reload schema: {}", std::current_exception());
+            }
         });
     };
 

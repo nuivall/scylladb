@@ -156,6 +156,7 @@ public:
     virtual replica::column_family* find_column_family(const table_id& uuid) const = 0;
     virtual flat_hash_map<sstring, replica::keyspace*> get_keyspaces() const = 0;
     virtual future<> for_each_table_gently(std::function<future<>(table_id, lw_shared_ptr<replica::table>)> f) const = 0;
+    virtual ~schema_getter() {};
 };
 
 /**
