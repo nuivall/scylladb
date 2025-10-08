@@ -261,7 +261,7 @@ public:
 };
 
 static future<> ensure_schema(raw_cql_connection& conn) {
-    co_await conn.query_simple("CREATE KEYSPACE IF NOT EXISTS ks WITH replication={'class': 'NetworkTopologyStrategy'}");
+    co_await conn.query_simple("CREATE KEYSPACE IF NOT EXISTS ks WITH replication={'class': 'NetworkTopologyStrategy', 'replication_factor': 1}");
     co_await conn.query_simple("CREATE TABLE IF NOT EXISTS ks.cf (pk blob primary key, c0 blob, c1 blob, c2 blob, c3 blob, c4 blob)");
 }
 
@@ -313,9 +313,15 @@ static future<> run_one_with_new_connection(const raw_cql_test_config& cfg) {
     if (!cs) {
         throw std::runtime_error("Failed to connect (per-request mode, single attempt)");
     }
+    // struct linger lg;
+    // lg.l_onoff  = 1;
+    // lg.l_linger = 0;
+    // cs.set_sockopt(SOL_SOCKET, SO_LINGER, &lg, sizeof(lg));
+
     raw_cql_connection c(std::move(cs), sstring(cfg.username), sstring(cfg.password));
     co_await c.startup();
-    co_await do_request(c, cfg);
+    while (1) {sleep(5);};
+    //co_await do_request(c, cfg);
 }
 
 // Poll the REST API /compaction_manager/compactions until it returns an empty JSON array
@@ -459,7 +465,7 @@ static void workload_main(raw_cql_test_config cfg) {
     }
     auto results = time_parallel([cfg] () -> future<> {
         if (cfg.connection_per_request) {
-            co_await run_one_with_new_connection(cfg);
+            (void)run_one_with_new_connection(cfg);
         } else {
             static thread_local size_t idx = 0;
             auto& c = *tl_conns[idx++ % tl_conns.size()];
