@@ -34,11 +34,6 @@ std::string_view default_authorizer::qualified_java_name() const {
     return "org.apache.cassandra.auth.CassandraAuthorizer";
 }
 
-static constexpr std::string_view ROLE_NAME = "role";
-static constexpr std::string_view RESOURCE_NAME = "resource";
-static constexpr std::string_view PERMISSIONS_NAME = "permissions";
-static constexpr std::string_view PERMISSIONS_CF = "role_permissions";
-
 static logging::logger alogger("default_authorizer");
 
 // To ensure correct initialization order, we unfortunately need to use a string literal.
