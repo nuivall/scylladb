@@ -118,6 +118,7 @@
 #include "message/dictionary_service.hh"
 #include "sstable_dict_autotrainer.hh"
 #include "utils/disk_space_monitor.hh"
+#include "auth/cache.hh"
 #include "utils/labels.hh"
 #include "tools/utils.hh"
 
@@ -727,6 +728,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
     seastar::sharded<service::cache_hitrate_calculator> cf_cache_hitrate_calculator;
     service::load_meter load_meter;
     sharded<service::storage_proxy> proxy;
+    sharded<auth::cache> auth_cache;
     sharded<service::storage_service> ss;
     sharded<service::migration_manager> mm;
     sharded<tasks::task_manager> task_manager;
@@ -789,7 +791,7 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
         return seastar::async([&app, cfg, ext, &disk_space_monitor_shard0, &cm, &sstm, &db, &qp, &bm, &proxy, &mapreduce_service, &mm, &mm_notifier, &ctx, &opts, &dirs,
                 &prometheus_server, &cf_cache_hitrate_calculator, &load_meter, &feature_service, &gossiper, &snitch,
                 &token_metadata, &erm_factory, &snapshot_ctl, &messaging, &sst_dir_semaphore, &raft_gr, &service_memory_limiter,
-                &repair, &sst_loader, &ss, &lifecycle_notifier, &stream_manager, &task_manager, &rpc_dict_training_worker,
+                &repair, &sst_loader, &auth_cache, &ss, &lifecycle_notifier, &stream_manager, &task_manager, &rpc_dict_training_worker,
                 &hashing_worker, &vector_store_client] {
           try {
               if (opts.contains("relabel-config-file") && !opts["relabel-config-file"].as<sstring>().empty()) {
@@ -1802,6 +1804,9 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
                 api::unset_server_stream_manager(ctx).get();
             });
 
+            checkpoint(stop_signal, "starting auth cache");
+            auth_cache.start(std::ref(qp)).get();
+
             checkpoint(stop_signal, "initializing storage service");
             debug::the_storage_service = &ss;
             ss.start(std::ref(stop_signal.as_sharded_abort_source()),
@@ -2041,12 +2046,13 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             perm_cache_config.expiry = std::chrono::milliseconds(cfg->permissions_validity_in_ms());
             perm_cache_config.refresh = std::chrono::milliseconds(cfg->permissions_update_interval_in_ms());
 
-            auto start_auth_service = [&mm] (sharded<auth::service>& auth_service, std::any& stop_auth_service, const char* what) {
+            auto start_auth_service = [&mm, &auth_cache] (sharded<auth::service>& auth_service, std::any& stop_auth_service, const char* what) {
                 supervisor::notify(fmt::format("starting {}", what));
                 auth_service.invoke_on_all(&auth::service::start, std::ref(mm), std::ref(sys_ks)).get();
 
-                stop_auth_service = defer_verbose_shutdown(what, [&auth_service] {
+                stop_auth_service = defer_verbose_shutdown(what, [&auth_service, &auth_cache] {
                     auth_service.stop().get();
+                    auth_cache.stop().get();
                 });
             };
 
