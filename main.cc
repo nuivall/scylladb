@@ -1703,9 +1703,6 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             checkpoint(stop_signal, "starting migration manager");
             debug::the_migration_manager = &mm;
             mm.start(std::ref(mm_notifier), std::ref(feature_service), std::ref(messaging), std::ref(proxy), std::ref(ss), std::ref(gossiper), std::ref(group0_client), std::ref(sys_ks)).get();
-            auto stop_migration_manager = defer_verbose_shutdown("migration manager", [&mm] {
-                mm.stop().get();
-            });
 
             utils::get_local_injector().inject("stop_after_starting_migration_manager",
                 [] { std::raise(SIGSTOP); });
@@ -1823,6 +1820,12 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
 
             auto stop_storage_service = defer_verbose_shutdown("storage_service", [&] {
                 ss.stop().get();
+            });
+
+            // Stop migration manager before storage service shutdown, it may have
+            // background tasks using the storage service.
+            auto stop_migration_manager = defer_verbose_shutdown("migration manager", [&mm] {
+                mm.stop().get();
             });
 
             api::set_server_storage_service(ctx, ss, group0_client).get();
