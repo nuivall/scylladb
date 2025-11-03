@@ -718,9 +718,11 @@ future<bool> standard_role_manager::is_superuser(std::string_view role_name) {
 }
 
 future<bool> standard_role_manager::can_login(std::string_view role_name) {
-    return require_record(_qp, role_name).then([](record r) {
-        return r.can_login;
-    });
+    auto role = _cache.get(sstring(role_name));
+    if (!role) {
+        throw nonexistant_role(role_name);
+    }
+    co_return role->can_login;
 }
 
 future<std::optional<sstring>> standard_role_manager::get_attribute(std::string_view role_name, std::string_view attribute_name, ::service::query_state& qs) {
