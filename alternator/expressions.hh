@@ -19,6 +19,7 @@
 #include "expressions_types.hh"
 #include "utils/rjson.hh"
 #include "utils/updateable_value.hh"
+#include "utils/heterogeneous_lookup.hh"
 #include "stats.hh"
 
 namespace alternator {
@@ -55,16 +56,16 @@ parsed::condition_expression parse_condition_expression(std::string_view query, 
 void resolve_update_expression(parsed::update_expression& ue,
         const rjson::value* expression_attribute_names,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_names,
-        std::unordered_set<std::string>& used_attribute_values);
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values);
 void resolve_projection_expression(std::vector<parsed::path>& pe,
         const rjson::value* expression_attribute_names,
-        std::unordered_set<std::string>& used_attribute_names);
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names);
 void resolve_condition_expression(parsed::condition_expression& ce,
         const rjson::value* expression_attribute_names,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_names,
-        std::unordered_set<std::string>& used_attribute_values);
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values);
 
 void validate_value(const rjson::value& v, const char* caller);
 

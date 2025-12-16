@@ -2787,12 +2787,12 @@ static bool check_needs_read_before_write(const parsed::condition_expression& co
 // Fail the expression if it has unused attribute names or values. This is
 // how DynamoDB behaves, so we do too.
 static void verify_all_are_used(const rjson::value* field,
-        const std::unordered_set<std::string>& used, const char* field_name, const char* operation) {
+        const std::unordered_set<std::string, str_hash, str_eq>& used, const char* field_name, const char* operation) {
     if (!field) {
         return;
     }
     for (auto it = field->MemberBegin(); it != field->MemberEnd(); ++it) {
-        if (!used.contains(rjson::to_string(it->name))) {
+        if (!used.contains(rjson::to_string_view(it->name))) {
             throw api_error::validation(
                 format("{} has spurious '{}', not used in {}",
                     field_name, rjson::to_string_view(it->name), operation));
@@ -2818,8 +2818,8 @@ public:
         const rjson::value* expression_attribute_names = rjson::find(_request, "ExpressionAttributeNames");
         const rjson::value* expression_attribute_values = rjson::find(_request, "ExpressionAttributeValues");
         if (!_condition_expression.empty()) {
-            std::unordered_set<std::string> used_attribute_names;
-            std::unordered_set<std::string> used_attribute_values;
+            std::unordered_set<std::string, str_hash, str_eq> used_attribute_names;
+            std::unordered_set<std::string, str_hash, str_eq> used_attribute_values;
             resolve_condition_expression(_condition_expression,
                     expression_attribute_names, expression_attribute_values,
                     used_attribute_names, used_attribute_values);
@@ -2919,8 +2919,8 @@ public:
         const rjson::value* expression_attribute_names = rjson::find(_request, "ExpressionAttributeNames");
         const rjson::value* expression_attribute_values = rjson::find(_request, "ExpressionAttributeValues");
         if (!_condition_expression.empty()) {
-            std::unordered_set<std::string> used_attribute_names;
-            std::unordered_set<std::string> used_attribute_values;
+            std::unordered_set<std::string, str_hash, str_eq> used_attribute_names;
+            std::unordered_set<std::string, str_hash, str_eq> used_attribute_values;
             resolve_condition_expression(_condition_expression,
                     expression_attribute_names, expression_attribute_values,
                     used_attribute_names, used_attribute_values);
@@ -3598,7 +3598,7 @@ static select_type parse_select(const rjson::value& request, table_or_view_type 
 // For example, if ProjectionExpression lists a.b and a.c[2], we
 // return one top-level attribute name, "a", with the value "{b, c[2]}".
 
-static std::optional<attrs_to_get> calculate_attrs_to_get(const rjson::value& req, parsed::expression_cache& parsed_expression_cache, std::unordered_set<std::string>& used_attribute_names, select_type select = select_type::regular) {
+static std::optional<attrs_to_get> calculate_attrs_to_get(const rjson::value& req, parsed::expression_cache& parsed_expression_cache, std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names, select_type select = select_type::regular) {
     if (select == select_type::count) {
         // An empty map asks to retrieve no attributes. Note that this is
         // different from a disengaged optional which means retrieve all.
@@ -3903,8 +3903,8 @@ update_item_operation::update_item_operation(parsed::expression_cache& parsed_ex
 
     const rjson::value* expression_attribute_names = rjson::find(_request, "ExpressionAttributeNames");
     const rjson::value* expression_attribute_values = rjson::find(_request, "ExpressionAttributeValues");
-    std::unordered_set<std::string> used_attribute_names;
-    std::unordered_set<std::string> used_attribute_values;
+    std::unordered_set<std::string, str_hash, str_eq> used_attribute_names;
+    std::unordered_set<std::string, str_hash, str_eq> used_attribute_values;
 
     const rjson::value* update_expression = rjson::find(_request, "UpdateExpression");
     if (update_expression) {
@@ -4615,7 +4615,7 @@ future<executor::request_return_type> executor::get_item(client_state& client_st
     auto command = ::make_lw_shared<query::read_command>(schema->id(), schema->version(), partition_slice, _proxy.get_max_result_size(partition_slice),
             query::tombstone_limit(_proxy.get_tombstone_limit()));
 
-    std::unordered_set<std::string> used_attribute_names;
+    std::unordered_set<std::string, str_hash, str_eq> used_attribute_names;
     auto attrs_to_get = calculate_attrs_to_get(request, *_parsed_expression_cache, used_attribute_names);
     const rjson::value* expression_attribute_names = rjson::find(request, "ExpressionAttributeNames");
     verify_all_are_used(expression_attribute_names, used_attribute_names, "ExpressionAttributeNames", "GetItem");
@@ -4738,7 +4738,7 @@ future<executor::request_return_type> executor::batch_get_item(client_state& cli
         table_requests rs(get_table_from_batch_request(_proxy, it));
         tracing::add_alternator_table_name(trace_state, rs.schema->cf_name());
         rs.cl = get_read_consistency(it->value);
-        std::unordered_set<std::string> used_attribute_names;
+        std::unordered_set<std::string, str_hash, str_eq> used_attribute_names;
         rs.attrs_to_get = ::make_shared<const std::optional<attrs_to_get>>(calculate_attrs_to_get(it->value, *_parsed_expression_cache, used_attribute_names));
         const rjson::value* expression_attribute_names = rjson::find(it->value, "ExpressionAttributeNames");
         verify_all_are_used(expression_attribute_names, used_attribute_names,"ExpressionAttributeNames", "GetItem");
@@ -4903,8 +4903,8 @@ public:
     // Note that a filter does not store pointers to the query used to
     // construct it.
     filter(parsed::expression_cache& parsed_expression_cache, const rjson::value& request, request_type rt,
-            std::unordered_set<std::string>& used_attribute_names,
-            std::unordered_set<std::string>& used_attribute_values);
+            std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+            std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values);
     bool check(const rjson::value& item) const;
     bool filters_on(std::string_view attribute) const;
     // for_filters_on() runs the given function on the attributes that the
@@ -4915,8 +4915,8 @@ public:
 };
 
 filter::filter(parsed::expression_cache& parsed_expression_cache, const rjson::value& request, request_type rt,
-        std::unordered_set<std::string>& used_attribute_names,
-        std::unordered_set<std::string>& used_attribute_values) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values) {
     const rjson::value* expression = rjson::find(request, "FilterExpression");
     const char* conditions_attribute = (rt == request_type::SCAN) ? "ScanFilter" : "QueryFilter";
     const rjson::value* conditions = rjson::find(request, conditions_attribute);
@@ -5374,8 +5374,8 @@ future<executor::request_return_type> executor::scan(client_state& client_state,
 
     select_type select = parse_select(request, table_type);
 
-    std::unordered_set<std::string> used_attribute_names;
-    std::unordered_set<std::string> used_attribute_values;
+    std::unordered_set<std::string, str_hash, str_eq> used_attribute_names;
+    std::unordered_set<std::string, str_hash, str_eq> used_attribute_values;
     auto attrs_to_get = calculate_attrs_to_get(request, *_parsed_expression_cache, used_attribute_names, select);
 
     dht::partition_range_vector partition_ranges;
@@ -5537,7 +5537,7 @@ calculate_bounds_conditions(schema_ptr schema, const rjson::value& conditions) {
 // given parsed::value or expression_attribute_names.
 static std::string_view get_toplevel(const parsed::value& v,
         const rjson::value* expression_attribute_names,
-        std::unordered_set<std::string>& used_attribute_names)
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names)
 {
     const parsed::path& path = std::get<parsed::path>(v._value);
     if (path.has_operators()) {
@@ -5608,9 +5608,9 @@ static std::pair<dht::partition_range_vector, std::vector<query::clustering_rang
 calculate_bounds_condition_expression(schema_ptr schema,
         const rjson::value& expression,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_values,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values,
         const rjson::value* expression_attribute_names,
-        std::unordered_set<std::string>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
         parsed::expression_cache& parsed_expression_cache)
 {
     if (!expression.IsString()) {
@@ -5838,8 +5838,8 @@ future<executor::request_return_type> executor::query(client_state& client_state
 
     rjson::value* key_conditions = rjson::find(request, "KeyConditions");
     rjson::value* key_condition_expression = rjson::find(request, "KeyConditionExpression");
-    std::unordered_set<std::string> used_attribute_values;
-    std::unordered_set<std::string> used_attribute_names;
+    std::unordered_set<std::string, str_hash, str_eq> used_attribute_values;
+    std::unordered_set<std::string, str_hash, str_eq> used_attribute_names;
     if (key_conditions && key_condition_expression) {
         throw api_error::validation("Query does not allow both "
                 "KeyConditions and KeyConditionExpression to be given together");

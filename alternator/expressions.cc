@@ -153,7 +153,7 @@ void path::check_depth_limit() {
 
 static std::optional<std::string> resolve_path_component(const std::string& column_name,
         const rjson::value* expression_attribute_names,
-        std::unordered_set<std::string>& used_attribute_names) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names) {
     if (column_name.size() > 0 && column_name.front() == '#') {
         if (!expression_attribute_names) {
             throw api_error::validation(
@@ -174,7 +174,7 @@ static std::optional<std::string> resolve_path_component(const std::string& colu
 
 static void resolve_path(parsed::path& p,
         const rjson::value* expression_attribute_names,
-        std::unordered_set<std::string>& used_attribute_names) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names) {
     std::optional<std::string> r = resolve_path_component(p.root(), expression_attribute_names, used_attribute_names);
     if (r) {
         p.set_root(std::move(*r));
@@ -196,7 +196,7 @@ static void resolve_path(parsed::path& p,
 
 static void resolve_constant(parsed::constant& c,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_values) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values) {
     std::visit(overloaded_functor {
         [&] (const std::string& valref) {
             if (!expression_attribute_values) {
@@ -226,8 +226,8 @@ static void resolve_constant(parsed::constant& c,
 void resolve_value(parsed::value& rhs,
         const rjson::value* expression_attribute_names,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_names,
-        std::unordered_set<std::string>& used_attribute_values) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values) {
     std::visit(overloaded_functor {
         [&] (parsed::constant& c) {
             resolve_constant(c, expression_attribute_values, used_attribute_values);
@@ -247,8 +247,8 @@ void resolve_value(parsed::value& rhs,
 void resolve_set_rhs(parsed::set_rhs& rhs,
         const rjson::value* expression_attribute_names,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_names,
-        std::unordered_set<std::string>& used_attribute_values) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values) {
     resolve_value(rhs._v1, expression_attribute_names, expression_attribute_values,
             used_attribute_names, used_attribute_values);
     if (rhs._op != 'v') {
@@ -260,8 +260,8 @@ void resolve_set_rhs(parsed::set_rhs& rhs,
 void resolve_update_expression(parsed::update_expression& ue,
         const rjson::value* expression_attribute_names,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_names,
-        std::unordered_set<std::string>& used_attribute_values) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values) {
     for (parsed::update_expression::action& action : ue.actions()) {
         resolve_path(action._path, expression_attribute_names, used_attribute_names);
         std::visit(overloaded_functor {
@@ -285,8 +285,8 @@ void resolve_update_expression(parsed::update_expression& ue,
 static void resolve_primitive_condition(parsed::primitive_condition& pc,
         const rjson::value* expression_attribute_names,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_names,
-        std::unordered_set<std::string>& used_attribute_values) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values) {
     for (parsed::value& value : pc._values) {
         resolve_value(value,
                 expression_attribute_names, expression_attribute_values,
@@ -297,8 +297,8 @@ static void resolve_primitive_condition(parsed::primitive_condition& pc,
 void resolve_condition_expression(parsed::condition_expression& ce,
         const rjson::value* expression_attribute_names,
         const rjson::value* expression_attribute_values,
-        std::unordered_set<std::string>& used_attribute_names,
-        std::unordered_set<std::string>& used_attribute_values) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names,
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_values) {
     std::visit(overloaded_functor {
         [&] (parsed::primitive_condition& cond) {
             resolve_primitive_condition(cond,
@@ -318,7 +318,7 @@ void resolve_condition_expression(parsed::condition_expression& ce,
 
 void resolve_projection_expression(std::vector<parsed::path>& pe,
         const rjson::value* expression_attribute_names,
-        std::unordered_set<std::string>& used_attribute_names) {
+        std::unordered_set<std::string, str_hash, str_eq>& used_attribute_names) {
     for (parsed::path& p : pe) {
         resolve_path(p, expression_attribute_names, used_attribute_names);
     }
