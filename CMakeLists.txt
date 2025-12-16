@@ -205,7 +205,6 @@ add_library(scylla-main STATIC)
 
 target_sources(scylla-main
   PRIVATE
-    absl-flat_hash_map.cc
     bytes.cc
     client_data.cc
     clocks-impl.cc

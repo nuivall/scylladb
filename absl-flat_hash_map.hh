@@ -11,19 +11,9 @@
 #include <absl/container/flat_hash_map.h>
 #include <seastar/core/sstring.hh>
 
+#include "utils/heterogeneous_lookup.hh"
+
 using namespace seastar;
-
-struct sstring_hash {
-    using is_transparent = void;
-    size_t operator()(std::string_view v) const noexcept;
-};
-
-struct sstring_eq {
-    using is_transparent = void;
-    bool operator()(std::string_view a, std::string_view b) const noexcept {
-        return a == b;
-    }
-};
 
 template <typename K, typename V, typename... Ts>
 struct flat_hash_map : public absl::flat_hash_map<K, V, Ts...> {
