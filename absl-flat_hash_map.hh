@@ -21,4 +21,4 @@ struct flat_hash_map : public absl::flat_hash_map<K, V, Ts...> {
 
 template <typename V>
 struct flat_hash_map<sstring, V>
-    : public absl::flat_hash_map<sstring, V, sstring_hash, sstring_eq> {};
+    : public absl::flat_hash_map<sstring, V, str_hash, str_eq> {};

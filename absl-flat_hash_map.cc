@@ -8,6 +8,6 @@
 
 #include "absl-flat_hash_map.hh"
 
-size_t sstring_hash::operator()(std::string_view v) const noexcept {
+size_t str_hash::operator()(std::string_view v) const noexcept {
     return absl::Hash<std::string_view>{}(v);
 }
