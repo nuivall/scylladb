@@ -77,6 +77,14 @@ future<> cache::prune(const resource& r) {
     }
 }
 
+future<> cache::prune_all_permissions() noexcept {
+    _anonymous_permissions.clear();
+    for (auto& it : _roles) {
+        it.second->cached_permissions.clear();
+        co_await coroutine::maybe_yield();
+    }
+}
+
 future<lw_shared_ptr<cache::role_record>> cache::fetch_role(const role_name_t& role) const {
     auto rec = make_lw_shared<role_record>();
     rec->version = _current_version;
