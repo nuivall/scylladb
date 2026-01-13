@@ -54,6 +54,7 @@ struct raw_cql_test_config {
     std::string remote_host = "127.0.0.1"; // target host for CQL + REST (empty => in-process server mode)
     bool connection_per_request = false; // create and tear down a connection for every request
     bool use_prepared = true;
+    bool create_non_superuser = false;
 };
 
 } // namespace perf
@@ -62,11 +63,12 @@ template <>
 struct fmt::formatter<perf::raw_cql_test_config> {
     constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
     auto format(const perf::raw_cql_test_config& c, format_context& ctx) const {
-        return fmt::format_to(ctx.out(), "{{workload={}, partitions={}, concurrency={}, duration={}, ops_per_shard={}{}{}{}}}",
+        return fmt::format_to(ctx.out(), "{{workload={}, partitions={}, concurrency={}, duration={}, ops_per_shard={}{}{}{}{}}}",
             c.workload, c.partitions, c.concurrency, c.duration_in_seconds, c.operations_per_shard,
             (c.username.empty() ? "" : ", auth"),
             (c.connection_per_request ? ", connection_per_request" : ""),
-            (c.use_prepared ? ", use_prepared" : ""));
+            (c.use_prepared ? ", use_prepared" : ""),
+            (c.create_non_superuser ? ", create_non_superuser" : ""));
     }
 };
 
@@ -380,6 +382,22 @@ static future<> ensure_schema(raw_cql_connection& conn) {
     co_await conn.query_simple("CREATE TABLE IF NOT EXISTS ks.cf (pk blob primary key, c0 blob, c1 blob, c2 blob, c3 blob, c4 blob)");
 }
 
+static future<> create_role_with_permissions(raw_cql_connection& conn, std::string_view username, std::string_view password) {
+    co_await conn.query_simple(fmt::format("CREATE ROLE IF NOT EXISTS '{}' WITH PASSWORD = '{}' AND LOGIN = true", username, password));
+    co_await conn.query_simple(fmt::format("GRANT CREATE ON ALL KEYSPACES TO {}", username));
+    co_await conn.query_simple(fmt::format("GRANT SELECT ON ALL KEYSPACES TO {}", username));
+    co_await conn.query_simple(fmt::format("GRANT MODIFY ON ALL KEYSPACES TO {}", username));
+}
+
+static constexpr std::string_view non_superuser_name = "perf_test_user";
+static constexpr std::string_view non_superuser_password = "perf_test_password";
+
+static std::unique_ptr<raw_cql_connection> make_connection(connected_socket cs, const raw_cql_test_config& cfg) {
+    sstring username = cfg.create_non_superuser ? sstring(non_superuser_name) : sstring(cfg.username);
+    sstring password = cfg.create_non_superuser ? sstring(non_superuser_password) : sstring(cfg.password);
+    return std::make_unique<raw_cql_connection>(std::move(cs), username, password, cfg.use_prepared);
+}
+
 // Perform one logical operation (write or read) using an existing connection.
 static future<> do_request(raw_cql_connection& c, const raw_cql_test_config& cfg) {
     auto seq = tests::random::get_int<uint64_t>(cfg.partitions - 1);
@@ -401,13 +419,13 @@ static future<> run_one_with_new_connection(const raw_cql_test_config& cfg) {
     if (!cs) {
         throw std::runtime_error("Failed to connect (single attempt)");
     }
-    raw_cql_connection c(std::move(cs), sstring(cfg.username), sstring(cfg.password), cfg.use_prepared);
-    co_await c.startup();
+    auto c = make_connection(std::move(cs), cfg);
+    co_await c->startup();
     if (cfg.workload == "connect") {
         co_return;
     }
-    co_await c.prepare_statements();
-    co_await do_request(c, cfg);
+    co_await c->prepare_statements();
+    co_await do_request(*c, cfg);
 }
 
 // Poll the REST API /compaction_manager/compactions until it returns an empty JSON array
@@ -485,7 +503,7 @@ static future<> prepare_thread_connections(const raw_cql_test_config cfg) {
                 if (!cs) {
                     throw std::runtime_error("Failed to connect to native transport port");
                 }
-                auto c = std::make_unique<raw_cql_connection>(std::move(cs), sstring(cfg.username), sstring(cfg.password), cfg.use_prepared);
+                auto c = make_connection(std::move(cs), cfg);
                 co_await c->startup();
                 co_await c->prepare_statements();
                 tl_conns.push_back(std::move(c));
@@ -501,6 +519,29 @@ static future<> prepare_thread_connections(const raw_cql_test_config cfg) {
 
 static void prepopulate(const raw_cql_test_config& cfg) {
     try {
+        if (cfg.create_non_superuser) {
+            connected_socket superuser_cs;
+            for (int attempt = 0; attempt < 200; ++attempt) {
+                try {
+                    superuser_cs = connect(socket_address{net::inet_address{cfg.remote_host}, cfg.port}).get();
+                } catch (...) {
+                    superuser_cs = connected_socket();
+                }
+                if (superuser_cs) {
+                    break;
+                }
+                sleep(std::chrono::milliseconds(25)).get();
+            }
+            if (!superuser_cs) {
+                throw std::runtime_error("populate phase: failed to connect as superuser");
+            }
+            raw_cql_connection superuser_conn(std::move(superuser_cs), sstring(cfg.username), sstring(cfg.password), false);
+            superuser_conn.startup().get();
+            create_role_with_permissions(superuser_conn, non_superuser_name, non_superuser_password).get();
+            ensure_schema(superuser_conn).get();
+            std::cout << "Created role '" << non_superuser_name << "' with CREATE, SELECT, MODIFY permissions on all keyspaces" << std::endl;
+        }
+
         connected_socket cs;
         for (int attempt = 0; attempt < 200; ++attempt) {
             try {
@@ -516,13 +557,14 @@ static void prepopulate(const raw_cql_test_config& cfg) {
         if (!cs) {
             throw std::runtime_error("populate phase: failed to connect");
         }
-        raw_cql_connection conn(std::move(cs),
-                sstring(cfg.username), sstring(cfg.password), cfg.use_prepared);
-        conn.startup().get();
-        ensure_schema(conn).get();
-        conn.prepare_statements().get();
+        auto conn = make_connection(std::move(cs), cfg);
+        conn->startup().get();
+        if (!cfg.create_non_superuser) {
+            ensure_schema(*conn).get();
+        }
+        conn->prepare_statements().get();
         for (uint64_t seq = 0; seq < cfg.partitions; ++seq) {
-            conn.write_one(seq).get();
+            conn->write_one(seq).get();
         }
         std::cout << "Pre-populated " << cfg.partitions << " partitions" << std::endl;
     } catch (...) {
@@ -581,8 +623,9 @@ std::function<int(int, char**)> cql_raw(std::function<int(int, char**)> scylla_m
             ("operations-per-shard", bpo::value<unsigned>()->default_value(0), "fixed op count per shard")
             ("concurrency", bpo::value<unsigned>()->default_value(100), "connections per shard")
             ("continue-after-error", bpo::value<bool>()->default_value(false), "continue after error")
-            ("username", bpo::value<std::string>()->default_value(""), "authentication username")
-            ("password", bpo::value<std::string>()->default_value(""), "authentication password")
+            ("username", bpo::value<std::string>()->default_value(""), "authentication username (used as superuser when create-non-superuser is set)")
+            ("password", bpo::value<std::string>()->default_value(""), "authentication password (used as superuser when create-non-superuser is set)")
+            ("create-non-superuser", bpo::value<bool>()->default_value(false), "create a non-superuser role using username/password as superuser credentials")
             ("remote-host", bpo::value<std::string>()->default_value(""), "remote host to connect to, leave empty to run in-process server")
             ("connection-per-request", bpo::value<bool>()->default_value(false), "create a fresh connection for every request")
             ("use-prepared", bpo::value<bool>()->default_value(true), "use prepared statements");
@@ -597,12 +640,17 @@ std::function<int(int, char**)> cql_raw(std::function<int(int, char**)> scylla_m
         c.continue_after_error = vm["continue-after-error"].as<bool>();
         c.username = vm["username"].as<std::string>();
         c.password = vm["password"].as<std::string>();
+        c.create_non_superuser = vm["create-non-superuser"].as<bool>();
         c.remote_host = vm["remote-host"].as<std::string>();
         c.connection_per_request = vm["connection-per-request"].as<bool>();
         c.use_prepared = vm["use-prepared"].as<bool>();
 
         if (!c.username.empty() && c.password.empty()) {
             std::cerr << "--username specified without --password" << std::endl;
+            return 1;
+        }
+        if (c.create_non_superuser && (c.username.empty() || c.password.empty())) {
+            std::cerr << "--create-non-superuser requires both --username and --password" << std::endl;
             return 1;
         }
         if (c.workload != "read" && c.workload != "write" && c.workload != "connect") {
