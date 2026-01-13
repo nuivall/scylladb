@@ -17,6 +17,7 @@
 #include <seastar/core/sharded.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/core/semaphore.hh>
+#include <seastar/core/metrics_registration.hh>
 
 #include <absl/container/flat_hash_map.h>
 
@@ -67,6 +68,8 @@ private:
     semaphore _loading_sem;
     abort_source& _as;
     permission_loader_func _permission_loader;
+    metrics::metric_groups _metrics;
+    size_t _cached_permissions_count = 0;
 
     future<lw_shared_ptr<role_record>> fetch_role(const role_name_t& role) const;
     future<> prune_all() noexcept;
