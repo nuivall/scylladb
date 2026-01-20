@@ -59,6 +59,8 @@ struct raw_cql_test_config {
     bool use_prepared = true;
     bool create_non_superuser = false;
     unsigned tables = 1;
+
+    sharded<abort_source>* as;
 };
 
 } // namespace perf
@@ -670,6 +672,7 @@ static void workload_main(raw_cql_test_config cfg) {
         }
     }
     auto results = time_parallel([cfg] () -> future<> {
+        cfg.as->local().check();
         if (cfg.connection_per_request || cfg.workload == "connect") {
             co_await run_one_with_new_connection(cfg);
         } else {
@@ -687,7 +690,7 @@ static void workload_main(raw_cql_test_config cfg) {
 // handcrafted CQL binary frames (no driver). Similar to perf_alternator
 // (runs inside the server process) and perf_simple_query (similar workload types), but
 // exercises the full networking + protocol parsing path.
-std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scylla_main, std::function<void(lw_shared_ptr<db::config>)>* after_init_func) {
+std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scylla_main, std::function<future<>(lw_shared_ptr<db::config>,sharded<abort_source>&)>* after_init_func) {
     return [=](int ac, char** av) -> int {
         raw_cql_test_config c;
         bpo::options_description opts_desc;
@@ -769,10 +772,11 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
             ++ac;
         }
 
-        *after_init_func = [c](lw_shared_ptr<db::config> cfg) mutable {
+        *after_init_func = [c](lw_shared_ptr<db::config> cfg, sharded<abort_source>& as) mutable {
             c.port = cfg->native_transport_port();
+            c.as = &as;
             // run workload in background-ish
-            (void)seastar::async([c]() {
+            return seastar::async([c]() {
                 try {
                     workload_main(c);
                 } catch (...) {
