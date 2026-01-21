@@ -33,6 +33,13 @@ class migration_manager;
 
 namespace auth {
 
+struct record final {
+    sstring name;
+    bool is_superuser;
+    bool can_login;
+    role_set member_of;
+};
+
 class standard_role_manager final : public role_manager {
     cql3::query_processor& _qp;
     ::service::raft_group0_client& _group0_client;
@@ -107,6 +114,10 @@ private:
     future<> legacy_modify_membership(std::string_view role_name, std::string_view grantee_name, membership_change);
 
     future<> modify_membership(std::string_view role_name, std::string_view grantee_name, membership_change, ::service::group0_batch& mc);
+
+    future<std::optional<record>> find_record(std::string_view role_name);
+    future<record> require_record(std::string_view role_name);
+    future<> collect_roles(std::string_view grantee_name, bool recurse, role_set& roles);
 };
 
 } // namespace auth
