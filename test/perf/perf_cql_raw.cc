@@ -60,7 +60,7 @@ struct raw_cql_test_config {
     bool create_non_superuser = false;
     unsigned tables = 1;
 
-    sharded<abort_source>* as;
+    sharded<abort_source>* as = nullptr;
 };
 
 } // namespace perf
@@ -672,7 +672,9 @@ static void workload_main(raw_cql_test_config cfg) {
         }
     }
     auto results = time_parallel([cfg] () -> future<> {
-        cfg.as->local().check();
+        if (cfg.as) {
+            cfg.as->local().check();
+        }
         if (cfg.connection_per_request || cfg.workload == "connect") {
             co_await run_one_with_new_connection(cfg);
         } else {
