@@ -17,9 +17,9 @@
 namespace cql3 {
 namespace statements {
 
-future<> function_statement::check_access(query_processor& qp, const service::client_state& state) const { return make_ready_future<>(); }
+future<> function_statement::check_access(query_processor& qp, const service::auth_context& state) const { return make_ready_future<>(); }
 
-future<> create_function_statement_base::check_access(query_processor& qp, const service::client_state& state) const {
+future<> create_function_statement_base::check_access(query_processor& qp, const service::auth_context& state) const {
     co_await state.has_functions_access(_name.keyspace, auth::permission::CREATE);
     if (_or_replace) {
         create_arg_types(qp);
@@ -29,7 +29,7 @@ future<> create_function_statement_base::check_access(query_processor& qp, const
     }
 }
 
-future<> drop_function_statement_base::check_access(query_processor& qp, const service::client_state& state) const
+future<> drop_function_statement_base::check_access(query_processor& qp, const service::auth_context& state) const
 {
     create_arg_types(qp);
     shared_ptr<functions::function> func;

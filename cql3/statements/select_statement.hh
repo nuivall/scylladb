@@ -121,7 +121,7 @@ public:
 
     virtual ::shared_ptr<const cql3::metadata> get_result_metadata() const override;
     virtual uint32_t get_bound_terms() const override;
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
     virtual bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const override;
 
     virtual future<::shared_ptr<cql_transport::messages::result_message>> execute(query_processor& qp,

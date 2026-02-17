@@ -32,7 +32,7 @@ cql3::statements::create_service_level_statement::prepare(
     return std::make_unique<prepared_statement>(audit_info(), ::make_shared<create_service_level_statement>(*this));
 }
 
-future<> create_service_level_statement::check_access(query_processor& qp, const service::client_state &state) const {
+future<> create_service_level_statement::check_access(query_processor& qp, const service::auth_context &state) const {
     return state.ensure_has_permission(auth::command_desc{.permission = auth::permission::CREATE, .resource = auth::root_service_level_resource()});
 }
 

@@ -107,7 +107,7 @@ uint32_t broadcast_modification_statement::get_bound_terms() const {
     return _bound_terms;
 }
 
-future<> broadcast_modification_statement::check_access(query_processor& qp, const service::client_state& state) const {
+future<> broadcast_modification_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     auto f = state.has_column_family_access(_schema->ks_name(), _schema->cf_name(), auth::permission::MODIFY);
     if (_query.value_condition.has_value()) {
         f = f.then([this, &state] {

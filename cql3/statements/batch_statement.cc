@@ -79,7 +79,7 @@ uint32_t batch_statement::get_bound_terms() const
     return _bound_terms;
 }
 
-future<> batch_statement::check_access(query_processor& qp, const service::client_state& state) const
+future<> batch_statement::check_access(query_processor& qp, const service::auth_context& state) const
 {
     return parallel_for_each(_statements.begin(), _statements.end(), [&qp, &state](auto&& s) {
         if (s.needs_authorization) {

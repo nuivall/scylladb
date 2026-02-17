@@ -27,7 +27,7 @@ drop_table_statement::drop_table_statement(cf_name cf_name, bool if_exists)
 {
 }
 
-future<> drop_table_statement::check_access(query_processor& qp, const service::client_state& state) const
+future<> drop_table_statement::check_access(query_processor& qp, const service::auth_context& state) const
 {
     return state.has_column_family_access(keyspace(), column_family(), auth::permission::DROP);
 }

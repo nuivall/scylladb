@@ -49,7 +49,7 @@ public:
             std::vector<::shared_ptr<index_target::raw>> raw_targets,
             ::shared_ptr<index_specific_prop_defs> idx_properties, view_prop_defs view_properties, bool if_not_exists);
 
-    future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    future<> check_access(query_processor& qp, const service::auth_context& state) const override;
     void validate(query_processor&, const service::client_state& state) const override;
     future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, utils::chunked_vector<mutation>, cql3::cql_warnings_vec>> prepare_schema_mutations(query_processor& qp, const query_options& options, api::timestamp_type) const override;
 

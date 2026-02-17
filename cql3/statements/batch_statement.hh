@@ -93,7 +93,7 @@ public:
 
     virtual uint32_t get_bound_terms() const override;
 
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 
     // Validates a prepared batch statement without validating its nested statements.
     void validate();

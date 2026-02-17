@@ -28,6 +28,7 @@ set_property(
 add_library(cql3 STATIC)
 target_sources(cql3
   PRIVATE
+    access_checker.cc
     attributes.cc
     cf_name.cc
     cql3_type.cc

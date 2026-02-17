@@ -24,7 +24,7 @@ namespace statements {
 
 class function_statement : public schema_altering_statement {
 protected:
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
     virtual void prepare_keyspace(const service::client_state& state) override;
     db::functions::function_name _name;
     std::vector<shared_ptr<cql3_type::raw>> _raw_arg_types;
@@ -50,7 +50,7 @@ protected:
             bool or_replace, bool if_not_exists);
 
 public:
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 };
 
 // common logic for dropping UDF and UDA
@@ -65,7 +65,7 @@ protected:
             bool args_present, bool if_exists);
 
 public:
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 };
 
 }

@@ -30,7 +30,7 @@ public:
 
     virtual void prepare_keyspace(const service::client_state& state) override;
 
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 
     virtual const sstring& keyspace() const override;
 

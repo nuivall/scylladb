@@ -29,7 +29,7 @@ protected:
 public:
     permission_altering_statement(auth::permission_set, auth::resource, const cql3::role_name&);
 
-    future<> check_access(query_processor& qp, const service::client_state&) const override;
+    future<> check_access(query_processor& qp, const service::auth_context&) const override;
 };
 
 }

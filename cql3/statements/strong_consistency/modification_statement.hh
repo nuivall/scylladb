@@ -29,7 +29,7 @@ public:
         service::query_state& qs, const query_options& options,
         std::optional<service::group0_guard> guard) const override;
 
-    future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 
     uint32_t get_bound_terms() const override;
 

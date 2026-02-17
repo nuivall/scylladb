@@ -41,7 +41,7 @@ void create_type_statement::add_definition(::shared_ptr<column_identifier> name,
     _column_types.emplace_back(type);
 }
 
-future<> create_type_statement::check_access(query_processor& qp, const service::client_state& state) const
+future<> create_type_statement::check_access(query_processor& qp, const service::auth_context& state) const
 {
     return state.has_keyspace_access(keyspace(), auth::permission::CREATE);
 }

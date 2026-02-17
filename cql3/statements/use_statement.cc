@@ -53,7 +53,7 @@ bool use_statement::depends_on(std::string_view ks_name, std::optional<std::stri
     return false;
 }
 
-future<> use_statement::check_access(query_processor& qp, const service::client_state& state) const
+future<> use_statement::check_access(query_processor& qp, const service::auth_context& state) const
 {
     state.validate_login();
     return make_ready_future<>();

@@ -25,6 +25,7 @@
 #include "auth/role_manager.hh"
 #include "auth/common.hh"
 #include "cql3/description.hh"
+#include "cql3/access_checker.hh"
 #include "seastarx.hh"
 #include "service/raft/raft_group0_client.hh"
 #include "utils/observable.hh"
@@ -39,7 +40,7 @@ namespace service {
 class migration_manager;
 class migration_notifier;
 class migration_listener;
-}
+} // namespace service
 
 namespace auth {
 
@@ -77,6 +78,7 @@ public:
 class service final : public seastar::peering_sharded_service<service> {
     utils::loading_cache_config _loading_cache_config;
     std::unique_ptr<permissions_cache> _permissions_cache;
+    std::unique_ptr<cql3::access_checker> _access_checker;
     cache& _cache;
 
     cql3::query_processor& _qp;
@@ -106,31 +108,16 @@ class service final : public seastar::peering_sharded_service<service> {
     abort_source _as;
 
 public:
-    service(
-            utils::loading_cache_config,
-            cache& cache,
-            cql3::query_processor&,
-            ::service::raft_group0_client&,
-            ::service::migration_notifier&,
-            std::unique_ptr<authorizer>,
-            std::unique_ptr<authenticator>,
-            std::unique_ptr<role_manager>,
-            maintenance_socket_enabled);
+    service(utils::loading_cache_config, cache& cache, cql3::query_processor&, ::service::raft_group0_client&, ::service::migration_notifier&,
+            std::unique_ptr<authorizer>, std::unique_ptr<authenticator>, std::unique_ptr<role_manager>, maintenance_socket_enabled);
 
     ///
     /// This constructor is intended to be used when the class is sharded via \ref seastar::sharded. In that case, the
     /// arguments must be copyable, which is why we delay construction with instance-construction instructions instead
     /// of the instances themselves.
     ///
-    service(
-            utils::loading_cache_config,
-            cql3::query_processor&,
-            ::service::raft_group0_client&,
-            ::service::migration_notifier&,
-            ::service::migration_manager&,
-            const service_config&,
-            maintenance_socket_enabled,
-            cache&);
+    service(utils::loading_cache_config, cql3::query_processor&, ::service::raft_group0_client&, ::service::migration_notifier&, ::service::migration_manager&,
+            const service_config&, maintenance_socket_enabled, cache&);
 
     future<> start(::service::migration_manager&, db::system_keyspace&);
 
@@ -168,10 +155,7 @@ public:
     ///
     /// \returns an exceptional future with \ref unsupported_authentication_option if an unsupported option is included.
     ///
-    future<> create_role(std::string_view name,
-            const role_config& config,
-            const authentication_options& options,
-            ::service::group0_batch& mc) const;
+    future<> create_role(std::string_view name, const role_config& config, const authentication_options& options, ::service::group0_batch& mc) const;
 
     ///
     /// Return the set of all roles granted to the given role, including itself and roles granted through other roles.
@@ -224,7 +208,7 @@ future<permission_set> get_permissions(const service&, const authenticated_user&
 /// A description of a CQL command from which auth::service can tell whether or not this command could endanger
 /// internal data on which auth::service depends.
 struct command_desc {
-    auth::permission permission; ///< Nature of the command's alteration.
+    auth::permission permission;      ///< Nature of the command's alteration.
     const ::auth::resource& resource; ///< Resource impacted by this command.
     enum class type {
         ALTER_WITH_OPTS, ///< Command is ALTER ... WITH ...
@@ -237,11 +221,7 @@ struct command_desc {
 struct command_desc_with_permission_set {
     permission_set permission;
     const ::auth::resource& resource;
-    enum class type {
-        ALTER_WITH_OPTS,
-        ALTER_SYSTEM_WITH_ALLOWED_OPTS,
-        OTHER
-    } type_ = type::OTHER;
+    enum class type { ALTER_WITH_OPTS, ALTER_SYSTEM_WITH_ALLOWED_OPTS, OTHER } type_ = type::OTHER;
 };
 
 ///
@@ -256,12 +236,7 @@ bool is_protected(const service&, command_desc) noexcept;
 ///
 /// \returns an exceptional future with \ref unsupported_authentication_option if an unsupported option is included.
 ///
-future<> create_role(
-        const service&,
-        std::string_view name,
-        const role_config&,
-        const authentication_options&,
-        ::service::group0_batch&);
+future<> create_role(const service&, std::string_view name, const role_config&, const authentication_options&, ::service::group0_batch&);
 
 ///
 /// Alter an existing role and its authentication information.
@@ -270,12 +245,7 @@ future<> create_role(
 ///
 /// \returns an exceptional future with \ref unsupported_authentication_option if an unsupported option is included.
 ///
-future<> alter_role(
-        const service&,
-        std::string_view name,
-        const role_config_update&,
-        const authentication_options&,
-        ::service::group0_batch& mc);
+future<> alter_role(const service&, std::string_view name, const role_config_update&, const authentication_options&, ::service::group0_batch& mc);
 
 ///
 /// Drop a role from the system, including all permissions and authentication information.
@@ -320,7 +290,8 @@ future<bool> has_role(const service&, const authenticated_user&, std::string_vie
 /// Sets `attribute_name` with `attribute_value` for `role_name`.
 /// \returns an exceptional future with nonexistant_role if the role does not exist.
 ///
-future<> set_attribute(const service&, std::string_view role_name, std::string_view attribute_name, std::string_view attribute_value, ::service::group0_batch& mc);
+future<> set_attribute(
+        const service&, std::string_view role_name, std::string_view attribute_name, std::string_view attribute_value, ::service::group0_batch& mc);
 
 /// Removes `attribute_name` for `role_name`.
 /// \returns an exceptional future with nonexistant_role if the role does not exist.
@@ -334,12 +305,7 @@ future<> remove_attribute(const service&, std::string_view role_name, std::strin
 /// \returns an exceptional future with \ref unsupported_authorization_operation if granting permissions is not
 /// supported.
 ///
-future<> grant_permissions(
-        const service&,
-        std::string_view role_name,
-        permission_set,
-        const resource&,
-        ::service::group0_batch&);
+future<> grant_permissions(const service&, std::string_view role_name, permission_set, const resource&, ::service::group0_batch&);
 
 ///
 /// Like \ref grant_permissions, but grants all applicable permissions on the resource.
@@ -358,12 +324,7 @@ future<> grant_applicable_permissions(const service&, const authenticated_user&,
 /// \returns an exceptional future with \ref unsupported_authorization_operation if revoking permissions is not
 /// supported.
 ///
-future<> revoke_permissions(
-        const service&,
-        std::string_view role_name,
-        permission_set,
-        const resource&,
-        ::service::group0_batch&);
+future<> revoke_permissions(const service&, std::string_view role_name, permission_set, const resource&, ::service::group0_batch&);
 
 ///
 /// Revoke all permissions granted to any role for a particular resource.
@@ -390,10 +351,7 @@ using recursive_permissions = bool_class<struct recursive_permissions_tag>;
 /// \returns an exceptional future with \ref unsupported_authorization_operation if listing permissions is not
 /// supported.
 ///
-future<std::vector<permission_details>> list_filtered_permissions(
-        const service&,
-        permission_set,
-        std::optional<std::string_view> role_name,
+future<std::vector<permission_details>> list_filtered_permissions(const service&, permission_set, std::optional<std::string_view> role_name,
         const std::optional<std::pair<resource, recursive_permissions>>& resource_filter);
 
 
@@ -403,4 +361,4 @@ future<> commit_mutations(service& ser, ::service::group0_batch&& mc);
 // Migrates data from old keyspace to new one which supports linearizable writes via raft.
 future<> migrate_to_auth_v2(db::system_keyspace& sys_ks, ::service::raft_group0_client& g0, start_operation_func_t start_operation_func, abort_source& as);
 
-}
+} // namespace auth

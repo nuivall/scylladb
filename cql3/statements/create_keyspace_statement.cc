@@ -47,7 +47,7 @@ const sstring& create_keyspace_statement::keyspace() const
     return _name;
 }
 
-future<> create_keyspace_statement::check_access(query_processor& qp, const service::client_state& state) const
+future<> create_keyspace_statement::check_access(query_processor& qp, const service::auth_context& state) const
 {
     return state.has_all_keyspaces_access(auth::permission::CREATE);
 }

@@ -24,7 +24,7 @@ class drop_keyspace_statement : public schema_altering_statement {
 public:
     drop_keyspace_statement(const sstring& keyspace, bool if_exists);
 
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 
     virtual void validate(query_processor&, const service::client_state& state) const override;
 

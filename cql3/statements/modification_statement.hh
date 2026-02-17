@@ -129,7 +129,7 @@ public:
 
     std::optional<gc_clock::duration> get_time_to_live(const query_options& options) const;
 
-    future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 
     // Validate before execute, using client state and current schema
     void validate(query_processor&, const service::client_state& state) const override;

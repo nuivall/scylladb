@@ -29,7 +29,7 @@ alter_view_statement::alter_view_statement(cf_name view_name, std::optional<view
 {
 }
 
-future<> alter_view_statement::check_access(query_processor& qp, const service::client_state& state) const
+future<> alter_view_statement::check_access(query_processor& qp, const service::auth_context& state) const
 {
     try {
         const data_dictionary::database db = qp.db();

@@ -13,6 +13,7 @@
 #include "auth/service.hh"
 #include "db/system_keyspace.hh"
 #include "permission_altering_statement.hh"
+#include "service/client_state.hh"
 #include "cql3/query_processor.hh"
 #include "cql3/role_name.hh"
 #include "gms/feature_service.hh"
@@ -21,24 +22,21 @@ static auth::permission_set filter_applicable_permissions(const auth::permission
     auto const filtered_permissions = auth::permission_set::from_mask(ps.mask() & r.applicable_permissions().mask());
 
     if (!filtered_permissions) {
-        throw exceptions::syntax_exception(
-                format("Resource {} does not support any of the requested permissions.", r));
+        throw exceptions::syntax_exception(format("Resource {} does not support any of the requested permissions.", r));
     }
 
     return filtered_permissions;
 }
 
-cql3::statements::permission_altering_statement::permission_altering_statement(
-                auth::permission_set permissions, auth::resource resource,
-                const role_name& rn)
-                : _permissions(filter_applicable_permissions(permissions, resource))
-                , _resource(std::move(resource))
-                , _role_name(rn.to_string()) {
+cql3::statements::permission_altering_statement::permission_altering_statement(auth::permission_set permissions, auth::resource resource, const role_name& rn)
+    : _permissions(filter_applicable_permissions(permissions, resource))
+    , _resource(std::move(resource))
+    , _role_name(rn.to_string()) {
 }
 
-future<> cql3::statements::permission_altering_statement::check_access(query_processor& qp, const service::client_state& state) const {
+future<> cql3::statements::permission_altering_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     state.ensure_not_anonymous();
-    maybe_correct_resource(_resource, state, qp);
+    maybe_correct_resource(_resource, dynamic_cast<const service::client_state&>(state), qp);
 
     return state.ensure_exists(_resource).then([this, &state] {
         if (_resource.kind() == auth::resource_kind::functions) {

@@ -35,7 +35,7 @@ public:
 
     virtual bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const override;
 
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 
     virtual void validate(query_processor&, const service::client_state& state) const override;
 

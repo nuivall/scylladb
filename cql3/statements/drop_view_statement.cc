@@ -27,7 +27,7 @@ drop_view_statement::drop_view_statement(cf_name view_name, bool if_exists)
 {
 }
 
-future<> drop_view_statement::check_access(query_processor& qp, const service::client_state& state) const
+future<> drop_view_statement::check_access(query_processor& qp, const service::auth_context& state) const
 {
     try {
         const data_dictionary::database db = qp.db();

@@ -242,7 +242,7 @@ create_index_statement::create_index_statement(cf_name name,
 }
 
 future<>
-create_index_statement::check_access(query_processor& qp, const service::client_state& state) const {
+create_index_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     return state.has_column_family_access(keyspace(), column_family(), auth::permission::ALTER);
 }
 

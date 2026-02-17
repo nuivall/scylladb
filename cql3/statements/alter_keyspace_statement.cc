@@ -48,7 +48,7 @@ const sstring& cql3::statements::alter_keyspace_statement::keyspace() const {
     return _name;
 }
 
-future<> cql3::statements::alter_keyspace_statement::check_access(query_processor& qp, const service::client_state& state) const {
+future<> cql3::statements::alter_keyspace_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     return state.has_keyspace_access(_name, auth::permission::ALTER);
 }
 

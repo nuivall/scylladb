@@ -19,8 +19,9 @@ namespace service {
 class storage_proxy;
 class query_state;
 class client_state;
+class auth_context;
 
-}
+} // namespace service
 
 namespace cql_transport {
 
@@ -30,7 +31,7 @@ class result_message;
 
 }
 
-}
+} // namespace cql_transport
 
 namespace cql3 {
 
@@ -47,6 +48,7 @@ using cql_warnings_vec = std::vector<sstring>;
 class cql_statement {
     timeout_config_selector _timeout_config_selector;
     audit::audit_info_ptr _audit_info;
+
 public:
     // CQL statement text
     seastar::sstring raw_cql_statement;
@@ -56,13 +58,20 @@ public:
         return false;
     }
 
-    explicit cql_statement(timeout_config_selector timeout_selector) : _timeout_config_selector(timeout_selector) {}
+    explicit cql_statement(timeout_config_selector timeout_selector)
+        : _timeout_config_selector(timeout_selector) {
+    }
     cql_statement(cql_statement&& o) = default;
-    cql_statement(const cql_statement& o) : _timeout_config_selector(o._timeout_config_selector), _audit_info(o._audit_info ? std::make_unique<audit::audit_info>(*o._audit_info) : nullptr) { }
-    virtual ~cql_statement()
-    { }
+    cql_statement(const cql_statement& o)
+        : _timeout_config_selector(o._timeout_config_selector)
+        , _audit_info(o._audit_info ? std::make_unique<audit::audit_info>(*o._audit_info) : nullptr) {
+    }
+    virtual ~cql_statement() {
+    }
 
-    timeout_config_selector get_timeout_config_selector() const { return _timeout_config_selector; }
+    timeout_config_selector get_timeout_config_selector() const {
+        return _timeout_config_selector;
+    }
 
     virtual uint32_t get_bound_terms() const = 0;
 
@@ -71,7 +80,7 @@ public:
      *
      * @param state the current client state
      */
-    virtual seastar::future<> check_access(query_processor& qp, const service::client_state& state) const = 0;
+    virtual seastar::future<> check_access(query_processor& qp, const service::auth_context& state) const = 0;
 
     /**
      * Perform additional validation required by the statement.
@@ -79,7 +88,8 @@ public:
      *
      * @param state the current client state
      */
-    virtual void validate(query_processor& qp, const service::client_state& state) const {}
+    virtual void validate(query_processor& qp, const service::client_state& state) const {
+    }
 
     /**
      * Execute the statement and return the resulting result or null if there is no result.
@@ -90,8 +100,8 @@ public:
      * @param state the current query state
      * @param options options for this query (consistency, variables, pageSize, ...)
      */
-    virtual seastar::future<seastar::shared_ptr<cql_transport::messages::result_message>>
-        execute(query_processor& qp, service::query_state& state, const query_options& options, std::optional<service::group0_guard> guard) const = 0;
+    virtual seastar::future<seastar::shared_ptr<cql_transport::messages::result_message>> execute(
+            query_processor& qp, service::query_state& state, const query_options& options, std::optional<service::group0_guard> guard) const = 0;
 
     /**
      * Execute the statement and return the resulting result or null if there is no result.
@@ -102,8 +112,8 @@ public:
      * @param state the current query state
      * @param options options for this query (consistency, variables, pageSize, ...)
      */
-    virtual seastar::future<seastar::shared_ptr<cql_transport::messages::result_message>>
-            execute_without_checking_exception_message(query_processor& qp, service::query_state& state, const query_options& options, std::optional<service::group0_guard> guard) const {
+    virtual seastar::future<seastar::shared_ptr<cql_transport::messages::result_message>> execute_without_checking_exception_message(
+            query_processor& qp, service::query_state& state, const query_options& options, std::optional<service::group0_guard> guard) const {
         return execute(qp, state, options, std::move(guard));
     }
 
@@ -115,10 +125,15 @@ public:
         return false;
     }
 
-    audit::audit_info* get_audit_info() { return _audit_info.get(); }
-    void set_audit_info(audit::audit_info_ptr&& info) { _audit_info = std::move(info); }
+    audit::audit_info* get_audit_info() {
+        return _audit_info.get();
+    }
+    void set_audit_info(audit::audit_info_ptr&& info) {
+        _audit_info = std::move(info);
+    }
 
-    virtual void sanitize_audit_info() {}
+    virtual void sanitize_audit_info() {
+    }
 };
 
 class cql_statement_no_metadata : public cql_statement {
@@ -136,6 +151,7 @@ class cql_statement_opt_metadata : public cql_statement {
 protected:
     // Result set metadata, may be empty for simple updates and batches
     seastar::shared_ptr<metadata> _metadata;
+
 public:
     using cql_statement::cql_statement;
     virtual seastar::shared_ptr<const metadata> get_result_metadata() const override {
@@ -146,4 +162,4 @@ public:
     }
 };
 
-}
+} // namespace cql3

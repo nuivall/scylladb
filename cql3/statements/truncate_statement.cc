@@ -77,7 +77,7 @@ bool truncate_statement::depends_on(std::string_view ks_name, std::optional<std:
     return false;
 }
 
-future<> truncate_statement::check_access(query_processor& qp, const service::client_state& state) const
+future<> truncate_statement::check_access(query_processor& qp, const service::auth_context& state) const
 {
     return state.has_column_family_access(keyspace(), column_family(), auth::permission::MODIFY);
 }

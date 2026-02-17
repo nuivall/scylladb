@@ -18,6 +18,7 @@
 #include "data_dictionary/data_dictionary.hh"
 #include "mutation/mutation.hh"
 #include "cql3/query_processor.hh"
+#include "service/client_state.hh"
 #include "gms/feature_service.hh"
 
 
@@ -39,7 +40,9 @@ seastar::future<shared_ptr<db::functions::function>> create_aggregate_statement:
     acc_types.insert(acc_types.end(), _arg_types.begin(), _arg_types.end());
     auto state_func = dynamic_pointer_cast<functions::scalar_function>(functions::instance().find(functions::function_name{_name.keyspace, _sfunc}, acc_types));
     if (!state_func) {
-        auto acc_type_names = acc_types | std::views::transform([] (auto&& t) { return t->cql3_type_name(); });
+        auto acc_type_names = acc_types | std::views::transform([](auto&& t) {
+            return t->cql3_type_name();
+        });
         throw exceptions::invalid_request_exception(seastar::format("State function {}({}) not found", _sfunc, fmt::join(acc_type_names, ", ")));
     }
     if (state_func->return_type() != state_type) {
@@ -49,17 +52,20 @@ seastar::future<shared_ptr<db::functions::function>> create_aggregate_statement:
     ::shared_ptr<cql3::functions::scalar_function> reduce_func = nullptr;
     if (_rfunc) {
         if (!qp.proxy().features().uda_native_parallelized_aggregation) {
-            throw exceptions::invalid_request_exception("Cluster does not support reduction function for user-defined aggregates, upgrade the whole cluster in order to define REDUCEFUNC for UDA");
+            throw exceptions::invalid_request_exception(
+                    "Cluster does not support reduction function for user-defined aggregates, upgrade the whole cluster in order to define REDUCEFUNC for UDA");
         }
 
-        reduce_func = dynamic_pointer_cast<functions::scalar_function>(functions::instance().find(functions::function_name{_name.keyspace, _rfunc.value()}, {state_type, state_type}));
+        reduce_func = dynamic_pointer_cast<functions::scalar_function>(
+                functions::instance().find(functions::function_name{_name.keyspace, _rfunc.value()}, {state_type, state_type}));
         if (!reduce_func) {
             throw exceptions::invalid_request_exception(format("Scalar reduce function {} for state type {} not found.", _rfunc.value(), state_type->name()));
         }
     }
     ::shared_ptr<cql3::functions::scalar_function> final_func = nullptr;
     if (_ffunc) {
-        final_func = dynamic_pointer_cast<functions::scalar_function>(functions::instance().find(functions::function_name{_name.keyspace, _ffunc.value()}, {state_type}));
+        final_func = dynamic_pointer_cast<functions::scalar_function>(
+                functions::instance().find(functions::function_name{_name.keyspace, _ffunc.value()}, {state_type}));
         if (!final_func) {
             throw exceptions::invalid_request_exception(format("Final function {}({}) not found", _ffunc.value(), state_type->cql3_type_name()));
         }
@@ -96,41 +102,41 @@ create_aggregate_statement::prepare_schema_mutations(query_processor& qp, const 
     co_return std::make_tuple(std::move(ret), std::move(m), std::vector<sstring>());
 }
 
-seastar::future<> create_aggregate_statement::check_access(query_processor &qp, const service::client_state &state) const {
+seastar::future<> create_aggregate_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     co_await create_function_statement_base::check_access(qp, state);
-    auto&& ks = _name.has_keyspace() ? _name.keyspace : state.get_keyspace();
+    auto&& ks = _name.has_keyspace() ? _name.keyspace : dynamic_cast<const service::client_state&>(state).get_keyspace();
     create_arg_types(qp);
     std::vector<data_type> sfunc_args = _arg_types;
     data_type stype = prepare_type(qp, *_stype);
     sfunc_args.insert(sfunc_args.begin(), stype);
-    co_await state.has_function_access(ks, auth::encode_signature(_sfunc,sfunc_args), auth::permission::EXECUTE);
+    co_await state.has_function_access(ks, auth::encode_signature(_sfunc, sfunc_args), auth::permission::EXECUTE);
     if (_rfunc) {
-        co_await state.has_function_access(ks, auth::encode_signature(*_rfunc,{stype, stype}), auth::permission::EXECUTE);
+        co_await state.has_function_access(ks, auth::encode_signature(*_rfunc, {stype, stype}), auth::permission::EXECUTE);
     }
     if (_ffunc) {
-        co_await state.has_function_access(ks, auth::encode_signature(*_ffunc,{stype}), auth::permission::EXECUTE);
+        co_await state.has_function_access(ks, auth::encode_signature(*_ffunc, {stype}), auth::permission::EXECUTE);
     }
 }
 
-create_aggregate_statement::create_aggregate_statement(functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> arg_types,
-            sstring sfunc, shared_ptr<cql3_type::raw> stype, std::optional<sstring> rfunc, std::optional<sstring> ffunc, std::optional<expr::expression> ival, bool or_replace, bool if_not_exists)
-        : create_function_statement_base(std::move(name), std::move(arg_types), or_replace, if_not_exists)
-        , _sfunc(std::move(sfunc))
-        , _stype(std::move(stype))
-        , _rfunc(std::move(rfunc))
-        , _ffunc(std::move(ffunc))
-        , _ival(std::move(ival))
-    {}
+create_aggregate_statement::create_aggregate_statement(functions::function_name name, std::vector<shared_ptr<cql3_type::raw>> arg_types, sstring sfunc,
+        shared_ptr<cql3_type::raw> stype, std::optional<sstring> rfunc, std::optional<sstring> ffunc, std::optional<expr::expression> ival, bool or_replace,
+        bool if_not_exists)
+    : create_function_statement_base(std::move(name), std::move(arg_types), or_replace, if_not_exists)
+    , _sfunc(std::move(sfunc))
+    , _stype(std::move(stype))
+    , _rfunc(std::move(rfunc))
+    , _ffunc(std::move(ffunc))
+    , _ival(std::move(ival)) {
+}
 
 audit::statement_category create_aggregate_statement::category() const {
     return audit::statement_category::DDL;
 }
 
-audit::audit_info_ptr
-create_aggregate_statement::audit_info() const {
+audit::audit_info_ptr create_aggregate_statement::audit_info() const {
     return audit::audit::create_audit_info(category(), sstring(), sstring());
 }
 
-}
+} // namespace statements
 
-}
+} // namespace cql3

@@ -9,6 +9,7 @@
 #pragma once
 
 #include "cql3/prepared_statements_cache.hh"
+#include "cql3/access_checker.hh"
 #include "auth/authenticated_user.hh"
 
 namespace cql3 {
@@ -50,17 +51,21 @@ private:
 
 public:
     authorized_prepared_statements_cache_key(auth::authenticated_user user, cql3::prepared_cache_key_type prepared_cache_key)
-        : _key(std::move(user), std::move(prepared_cache_key.key())) {}
+        : _key(std::move(user), std::move(prepared_cache_key.key())) {
+    }
 
-    cache_key_type& key() { return _key; }
+    cache_key_type& key() {
+        return _key;
+    }
 
-    const cache_key_type& key() const { return _key; }
+    const cache_key_type& key() const {
+        return _key;
+    }
 
     bool operator==(const authorized_prepared_statements_cache_key&) const = default;
 
     static size_t hash(const auth::authenticated_user& user, const cql3::prepared_cache_key_type::cache_key_type& prep_cache_key) {
-        return utils::hash_combine(std::hash<auth::authenticated_user>()(user),
-                                   std::hash<cql3::prepared_cache_key_type::cache_key_type>()(prep_cache_key));
+        return utils::hash_combine(std::hash<auth::authenticated_user>()(user), std::hash<cql3::prepared_cache_key_type::cache_key_type>()(prep_cache_key));
     }
 };
 
@@ -86,9 +91,12 @@ public:
     }
 
     struct authorized_prepared_statements_cache_stats_updater {
-        static void inc_hits() noexcept {}
-        static void inc_misses() noexcept {}
-        static void inc_blocks() noexcept {}
+        static void inc_hits() noexcept {
+        }
+        static void inc_misses() noexcept {
+        }
+        static void inc_blocks() noexcept {
+        }
         static void inc_evictions() noexcept {
             ++shard_stats().authorized_prepared_statements_cache_evictions;
         }
@@ -105,15 +113,9 @@ public:
 private:
     using cache_key_type = authorized_prepared_statements_cache_key;
     using checked_weak_ptr = typename statements::prepared_statement::checked_weak_ptr;
-    using cache_type = utils::loading_cache<cache_key_type,
-                                            checked_weak_ptr,
-                                            1,
-                                            utils::loading_cache_reload_enabled::yes,
-                                            authorized_prepared_statements_cache_size,
-                                            std::hash<cache_key_type>,
-                                            std::equal_to<cache_key_type>,
-                                            authorized_prepared_statements_cache_stats_updater,
-                                            authorized_prepared_statements_cache_stats_updater>;
+    using cache_type = utils::loading_cache<cache_key_type, checked_weak_ptr, 1, utils::loading_cache_reload_enabled::yes,
+            authorized_prepared_statements_cache_size, std::hash<cache_key_type>, std::equal_to<cache_key_type>,
+            authorized_prepared_statements_cache_stats_updater, authorized_prepared_statements_cache_stats_updater>;
 
 public:
     using key_type = cache_key_type;
@@ -123,22 +125,52 @@ public:
     using value_type = checked_weak_ptr;
     using entry_is_too_big = typename cache_type::entry_is_too_big;
     using value_ptr = typename cache_type::value_ptr;
+
 private:
     cache_type _cache;
+    access_checker* _access_checker = nullptr;
 
 public:
     // Choose the memory budget such that would allow us ~4K entries when a shard gets 1GB of RAM
     authorized_prepared_statements_cache(utils::loading_cache_config c, logging::logger& logger)
-        : _cache(std::move(c), logger, [this] (const key_type& k) {
-            _cache.remove(k);
-            return make_ready_future<value_type>();
-        })
-    {}
+        : _cache(std::move(c), logger, [this](const key_type& k) -> future<value_type> {
+            if (!_access_checker) {
+                // No access checker plugged in — fallback to current eviction behavior.
+                _cache.remove(k);
+                co_return value_type();
+            }
+            auto vp = _cache.find(k);
+            if (!vp) {
+                co_return value_type();
+            }
+
+            value_type existing;
+            try {
+                existing = vp->get()->checked_weak_from_this();
+            } catch (seastar::checked_ptr_is_null_exception&) {
+                _cache.remove(k);
+                co_return value_type();
+            }
+
+            auto result = co_await _access_checker->check(k, std::move(existing));
+            if (!result) {
+                _cache.remove(k);
+            }
+            co_return std::move(result);
+        }) {
+    }
+
+    void set_access_checker(access_checker* ac) noexcept {
+        _access_checker = ac;
+    }
 
     future<> insert(auth::authenticated_user user, cql3::prepared_cache_key_type prep_cache_key, value_type v) noexcept {
-        return _cache.get_ptr(key_type(std::move(user), std::move(prep_cache_key)), [v = std::move(v)] (const cache_key_type&) mutable {
-            return make_ready_future<value_type>(std::move(v));
-        }).discard_result();
+        return _cache
+                .get_ptr(key_type(std::move(user), std::move(prep_cache_key)),
+                        [v = std::move(v)](const cache_key_type&) mutable {
+                            return make_ready_future<value_type>(std::move(v));
+                        })
+                .discard_result();
     }
 
     value_ptr find(const auth::authenticated_user& user, const cql3::prepared_cache_key_type& prep_cache_key) {
@@ -170,7 +202,7 @@ public:
     }
 };
 
-}
+} // namespace cql3
 
 namespace std {
 template <>
@@ -180,11 +212,13 @@ struct hash<cql3::authorized_prepared_statements_cache_key> final {
     }
 };
 
-}
+} // namespace std
 
 template <>
 struct fmt::formatter<cql3::authorized_prepared_statements_cache_key> {
-    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+    constexpr auto parse(format_parse_context& ctx) {
+        return ctx.begin();
+    }
     auto format(const cql3::authorized_prepared_statements_cache_key& k, fmt::format_context& ctx) const {
         return fmt::format_to(ctx.out(), "{{{}, {}}}", k.key().first, k.key().second);
     }

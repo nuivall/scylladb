@@ -34,13 +34,83 @@ class database;
 namespace service {
 
 /**
+ * Lightweight base class holding only auth-related state and methods.
+ * Used by the authorized_prepared_statements_cache reload callback
+ * to re-run check_access without needing a full client_state.
+ */
+class auth_context {
+protected:
+    std::optional<auth::authenticated_user> _user;
+    bool _is_internal = false;
+    auth::service* _auth_service{nullptr};
+
+    // Protected constructors - only for use by derived classes and auth_context itself.
+    auth_context() = default;
+    auth_context(std::optional<auth::authenticated_user> user, bool is_internal, auth::service* auth_service)
+        : _user(std::move(user))
+        , _is_internal(is_internal)
+        , _auth_service(auth_service) {
+    }
+    auth_context(const auth_context&) = default;
+    auth_context(auth_context&&) = default;
+    auth_context& operator=(const auth_context&) = default;
+    auth_context& operator=(auth_context&&) = default;
+
+private:
+    future<> check_internal_table_permissions(std::string_view ks, std::string_view table_name, const auth::command_desc& cmd) const;
+    future<> has_access(const sstring& keyspace, auth::command_desc, std::optional<bool> is_vector_indexed = std::nullopt) const;
+    sstring generate_authorization_error_msg(const auth::command_desc&) const;
+    sstring generate_authorization_error_msg(const auth::command_desc_with_permission_set&) const;
+
+public:
+    virtual ~auth_context() = default;
+
+    /// Public constructor for creating a lightweight auth_context for cache reload.
+    /// Used by access_checker to re-run check_access without a full client_state.
+    auth_context(auth::authenticated_user user, auth::service& auth_service)
+        : _user(std::move(user))
+        , _is_internal(false)
+        , _auth_service(&auth_service) {
+    }
+
+    const std::optional<auth::authenticated_user>& user() const {
+        return _user;
+    }
+
+    auth::service* get_auth_service() const {
+        return _auth_service;
+    }
+
+    bool is_internal() const {
+        return _is_internal;
+    }
+
+    void validate_login() const;
+    void ensure_not_anonymous() const;
+
+    future<> has_all_keyspaces_access(auth::permission) const;
+    future<> has_keyspace_access(const sstring&, auth::permission) const;
+    future<> has_column_family_access(const sstring&, const sstring&, auth::permission, auth::command_desc::type = auth::command_desc::type::OTHER,
+            std::optional<bool> is_vector_indexed = std::nullopt) const;
+
+    future<> has_functions_access(auth::permission p) const;
+    future<> has_functions_access(const sstring& ks, auth::permission p) const;
+    future<> has_function_access(const sstring& ks, const sstring& function_signature, auth::permission p) const;
+
+    template <typename Cmd = auth::command_desc>
+    future<bool> check_has_permission(Cmd) const;
+    template <typename Cmd = auth::command_desc>
+    future<> ensure_has_permission(Cmd) const;
+
+    future<> ensure_exists(const auth::resource&) const;
+};
+
+/**
  * State related to a client connection.
  */
-class client_state {
+class client_state : public auth_context {
 public:
-    enum class auth_state : uint8_t {
-        UNINITIALIZED, AUTHENTICATION, READY
-    };
+    enum class auth_state : uint8_t { UNINITIALIZED, AUTHENTICATION, READY };
     using workload_type = qos::service_level_options::workload_type;
 
     // This class is used to move client_state between shards
@@ -52,32 +122,33 @@ public:
         const client_state* _cs;
         seastar::sharded<auth::service>* _auth_service;
         seastar::sharded<qos::service_level_controller>* _sl_controller;
-        client_state_for_another_shard(const client_state* cs,
-            seastar::sharded<auth::service>* auth_service,
-            seastar::sharded<qos::service_level_controller>* sl_controller)
-            : _cs(cs), _auth_service(auth_service), _sl_controller(sl_controller) {}
+        client_state_for_another_shard(
+                const client_state* cs, seastar::sharded<auth::service>* auth_service, seastar::sharded<qos::service_level_controller>* sl_controller)
+            : _cs(cs)
+            , _auth_service(auth_service)
+            , _sl_controller(sl_controller) {
+        }
         friend client_state;
+
     public:
         client_state get() const {
             return client_state(_cs, _auth_service, _sl_controller);
         }
     };
+
 private:
-    client_state(const client_state* cs,
-        seastar::sharded<auth::service>* auth_service,
-        seastar::sharded<qos::service_level_controller>* sl_controller)
-            : _keyspace(cs->_keyspace)
-            , _user(cs->_user)
-            , _auth_state(cs->_auth_state)
-            , _is_internal(cs->_is_internal)
-            , _remote_address(cs->_remote_address)
-            , _auth_service(auth_service ? &auth_service->local() : nullptr)
-            , _sl_controller(sl_controller ? &sl_controller->local() : nullptr)
-            , _default_timeout_config(cs->_default_timeout_config)
-            , _timeout_config(cs->_timeout_config)
-            , _enabled_protocol_extensions(cs->_enabled_protocol_extensions)
-    {}
+    client_state(const client_state* cs, seastar::sharded<auth::service>* auth_service, seastar::sharded<qos::service_level_controller>* sl_controller)
+        : auth_context(cs->_user, cs->_is_internal, auth_service ? &auth_service->local() : nullptr)
+        , _keyspace(cs->_keyspace)
+        , _auth_state(cs->_auth_state)
+        , _remote_address(cs->_remote_address)
+        , _sl_controller(sl_controller ? &sl_controller->local() : nullptr)
+        , _default_timeout_config(cs->_default_timeout_config)
+        , _timeout_config(cs->_timeout_config)
+        , _enabled_protocol_extensions(cs->_enabled_protocol_extensions) {
+    }
     friend client_state_for_another_shard;
+
 private:
     sstring _keyspace;
 #if 0
@@ -102,16 +173,11 @@ private:
     private volatile AuthenticatedUser user;
     private volatile String keyspace;
 #endif
-    std::optional<auth::authenticated_user> _user;
     std::optional<client_options_cache_entry_type> _driver_name, _driver_version;
-	std::list<client_option_key_value_cached_entry> _client_options;
+    std::list<client_option_key_value_cached_entry> _client_options;
 
     auth_state _auth_state = auth_state::UNINITIALIZED;
     bool _control_connection = false;
-
-    // isInternal is used to mark ClientState as used by some internal component
-    // that should have an ability to modify system keyspace.
-    bool _is_internal;
 
     // The biggest timestamp that was returned by getTimestamp/assigned to a query
     static thread_local api::timestamp_type _last_timestamp_micros;
@@ -120,7 +186,6 @@ private:
     socket_address _remote_address;
 
     // Only populated for external client state.
-    auth::service* _auth_service{nullptr};
     qos::service_level_controller* _sl_controller{nullptr};
 
     // For restoring default values in the timeout config
@@ -157,7 +222,7 @@ public:
         return _driver_name;
     }
     future<> set_driver_name(client_options_cache_type& keys_and_values_cache, const sstring& driver_name) {
-        _driver_name = co_await keys_and_values_cache.get_or_load(driver_name, [] (const client_options_cache_key_type&) {
+        _driver_name = co_await keys_and_values_cache.get_or_load(driver_name, [](const client_options_cache_key_type&) {
             return make_ready_future<options_cache_value_type>(options_cache_value_type{});
         });
     }
@@ -166,33 +231,24 @@ public:
         return _client_options;
     }
 
-    future<> set_client_options(
-        client_options_cache_type& keys_and_values_cache,
-        const std::unordered_map<sstring, sstring>& client_options);
+    future<> set_client_options(client_options_cache_type& keys_and_values_cache, const std::unordered_map<sstring, sstring>& client_options);
 
     std::optional<client_options_cache_entry_type> get_driver_version() const {
         return _driver_version;
     }
-    future<> set_driver_version(
-        client_options_cache_type& keys_and_values_cache,
-        const sstring& driver_version)
-    {
-        _driver_version = co_await keys_and_values_cache.get_or_load(driver_version, [] (const client_options_cache_key_type&) {
+    future<> set_driver_version(client_options_cache_type& keys_and_values_cache, const sstring& driver_version) {
+        _driver_version = co_await keys_and_values_cache.get_or_load(driver_version, [](const client_options_cache_key_type&) {
             return make_ready_future<options_cache_value_type>(options_cache_value_type{});
         });
     }
 
-    client_state(external_tag,
-                 auth::service& auth_service,
-                 qos::service_level_controller* sl_controller,
-                 timeout_config timeout_config,
-                 const socket_address& remote_address = socket_address())
-            : _is_internal(false)
-            , _remote_address(remote_address)
-            , _auth_service(&auth_service)
-            , _sl_controller(sl_controller)
-            , _default_timeout_config(timeout_config)
-            , _timeout_config(timeout_config) {
+    client_state(external_tag, auth::service& auth_service, qos::service_level_controller* sl_controller, timeout_config timeout_config,
+            const socket_address& remote_address = socket_address())
+        : auth_context(std::nullopt, false, &auth_service)
+        , _remote_address(remote_address)
+        , _sl_controller(sl_controller)
+        , _default_timeout_config(timeout_config)
+        , _timeout_config(timeout_config) {
         if (!auth_service.underlying_authenticator().require_authentication()) {
             _user = auth::authenticated_user();
         }
@@ -218,37 +274,25 @@ public:
         return *_sl_controller;
     }
 
-    client_state(internal_tag) : client_state(internal_tag{}, infinite_timeout_config)
-    {}
+    client_state(internal_tag)
+        : client_state(internal_tag{}, infinite_timeout_config) {
+    }
 
     client_state(internal_tag, const timeout_config& config)
-            : _keyspace("system")
-            , _is_internal(true)
-            , _default_timeout_config(config)
-            , _timeout_config(config)
-    {}
+        : auth_context(std::nullopt, true, nullptr)
+        , _keyspace("system")
+        , _default_timeout_config(config)
+        , _timeout_config(config) {
+    }
 
     client_state(internal_tag, auth::service& auth_service, qos::service_level_controller& sl_controller, sstring username)
-        : _user(auth::authenticated_user(username))
+        : auth_context(auth::authenticated_user(username), true, &auth_service)
         , _auth_state(auth_state::READY)
-        , _is_internal(true)
-        , _auth_service(&auth_service)
-        , _sl_controller(&sl_controller)
-    {}
+        , _sl_controller(&sl_controller) {
+    }
 
     client_state(const client_state&) = delete;
     client_state(client_state&&) = default;
-
-    ///
-    /// `nullptr` for internal instances.
-    ///
-    auth::service* get_auth_service() const {
-        return _auth_service;
-    }
-
-    bool is_internal() const {
-        return _is_internal;
-    }
 
     /**
      * @return a ClientState object for internal C* calls (not limited by any kind of auth).
@@ -355,33 +399,8 @@ public:
     /// \brief A user can login if it's anonymous, or if it exists and the `LOGIN` option for the user is `true`.
     future<> check_user_can_login();
 
-    future<> has_all_keyspaces_access(auth::permission) const;
-    future<> has_keyspace_access(const sstring&, auth::permission) const;
-    future<> has_column_family_access(const sstring&, const sstring&, auth::permission,
-                                      auth::command_desc::type = auth::command_desc::type::OTHER, std::optional<bool> is_vector_indexed = std::nullopt) const;
-
-    future<> has_functions_access(auth::permission p) const;
-    future<> has_functions_access(const sstring& ks, auth::permission p) const;
-    future<> has_function_access(const sstring& ks, const sstring& function_signature, auth::permission p) const;
-private:
-    future<> check_internal_table_permissions(std::string_view ks, std::string_view table_name, const auth::command_desc& cmd) const;
-    future<> has_access(const sstring& keyspace, auth::command_desc, std::optional<bool> is_vector_indexed = std::nullopt) const;
-    sstring generate_authorization_error_msg(const auth::command_desc&) const;
-    sstring generate_authorization_error_msg(const auth::command_desc_with_permission_set&) const;
-
-public:
-    template<typename Cmd = auth::command_desc> future<bool> check_has_permission(Cmd) const;
-    template<typename Cmd = auth::command_desc> future<> ensure_has_permission(Cmd) const;
     future<> maybe_update_per_service_level_params();
     void update_per_service_level_params(qos::service_level_options& slo);
-
-    /**
-     * Returns an exceptional future with \ref exceptions::invalid_request_exception if the resource does not exist.
-     */
-    future<> ensure_exists(const auth::resource&) const;
-
-    void validate_login() const;
-    void ensure_not_anonymous() const; // unauthorized_exception on error
 
 #if 0
     public void ensureIsSuper(String message) throws UnauthorizedException
@@ -397,14 +416,9 @@ public:
     }
 #endif
 
-    const std::optional<auth::authenticated_user>& user() const {
-        return _user;
-    }
-
     client_state_for_another_shard move_to_other_shard() {
-        return client_state_for_another_shard(this,
-            _auth_service ? &_auth_service->container() : nullptr,
-            _sl_controller ? &_sl_controller->container() : nullptr);
+        return client_state_for_another_shard(
+                this, _auth_service ? &_auth_service->container() : nullptr, _sl_controller ? &_sl_controller->container() : nullptr);
     }
 
 #if 0
@@ -431,11 +445,9 @@ public:
 #endif
 
 private:
-
     cql_transport::cql_protocol_extension_enum_set _enabled_protocol_extensions;
 
 public:
-
     bool is_protocol_extension_set(cql_transport::cql_protocol_extension ext) const {
         return _enabled_protocol_extensions.contains(ext);
     }
@@ -445,5 +457,4 @@ public:
     }
 };
 
-}
-
+} // namespace service

@@ -104,7 +104,7 @@ std::optional<gc_clock::duration> modification_statement::get_time_to_live(const
     return ttl ? std::make_optional<gc_clock::duration>(*ttl) : std::nullopt;
 }
 
-future<> modification_statement::check_access(query_processor& qp, const service::client_state& state) const {
+future<> modification_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     auto f = state.has_column_family_access(keyspace(), column_family(), auth::permission::MODIFY);
     if (has_conditions()) {
         f = f.then([this, &state] {

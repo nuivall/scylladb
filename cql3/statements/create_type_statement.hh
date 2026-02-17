@@ -31,7 +31,7 @@ public:
 
     void add_definition(::shared_ptr<column_identifier> name, ::shared_ptr<cql3_type::raw> type);
 
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    virtual future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 
     virtual void validate(query_processor&, const service::client_state& state) const override;
 

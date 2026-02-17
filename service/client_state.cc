@@ -38,8 +38,7 @@ future<> service::client_state::check_user_can_login() {
     const bool exists = co_await role_manager.exists(*_user->name);
 
     if (!exists) {
-        throw exceptions::authentication_exception(
-                format("User {} doesn't exist - create it with CREATE USER query first", *_user->name));
+        throw exceptions::authentication_exception(format("User {} doesn't exist - create it with CREATE USER query first", *_user->name));
     }
 
     bool can_login = co_await role_manager.can_login(*_user->name);
@@ -48,21 +47,20 @@ future<> service::client_state::check_user_can_login() {
     }
 }
 
-void service::client_state::validate_login() const {
+void service::auth_context::validate_login() const {
     if (!_user) {
         throw exceptions::unauthorized_exception("You have not logged in");
     }
 }
 
-void service::client_state::ensure_not_anonymous() const {
+void service::auth_context::ensure_not_anonymous() const {
     validate_login();
     if (auth::is_anonymous(*_user)) {
         throw exceptions::unauthorized_exception("You have to be logged in and not anonymous to perform this request");
     }
 }
 
-future<> service::client_state::has_all_keyspaces_access(
-                auth::permission p) const {
+future<> service::auth_context::has_all_keyspaces_access(auth::permission p) const {
     if (_is_internal) {
         co_return;
     }
@@ -72,73 +70,67 @@ future<> service::client_state::has_all_keyspaces_access(
     co_return co_await ensure_has_permission({p, r});
 }
 
-future<> service::client_state::has_keyspace_access(const sstring& ks, auth::permission p) const {
+future<> service::auth_context::has_keyspace_access(const sstring& ks, auth::permission p) const {
     auth::resource r = auth::make_data_resource(ks);
     co_return co_await has_access(ks, {p, r});
 }
 
-future<> service::client_state::has_functions_access(auth::permission p) const {
+future<> service::auth_context::has_functions_access(auth::permission p) const {
     auth::resource r = auth::make_functions_resource();
     co_return co_await ensure_has_permission({p, r});
 }
 
-future<> service::client_state::has_functions_access(const sstring& ks, auth::permission p) const {
+future<> service::auth_context::has_functions_access(const sstring& ks, auth::permission p) const {
     auth::resource r = auth::make_functions_resource(ks);
     co_return co_await has_access(ks, {p, r});
 }
 
-future<> service::client_state::has_function_access(const sstring& ks, const sstring& function_signature, auth::permission p) const {
+future<> service::auth_context::has_function_access(const sstring& ks, const sstring& function_signature, auth::permission p) const {
     auth::resource r = auth::make_functions_resource(ks, function_signature);
     co_return co_await has_access(ks, {p, r});
 }
 
-future<> service::client_state::has_column_family_access(const sstring& ks,
-                const sstring& cf, auth::permission p, auth::command_desc::type t, std::optional<bool> is_vector_indexed) const {
+future<> service::auth_context::has_column_family_access(
+        const sstring& ks, const sstring& cf, auth::permission p, auth::command_desc::type t, std::optional<bool> is_vector_indexed) const {
     auto r = auth::make_data_resource(ks, cf);
     co_return co_await has_access(ks, {p, r, t}, is_vector_indexed);
 }
 
-future<> service::client_state::check_internal_table_permissions(std::string_view ks, std::string_view table_name, const auth::command_desc& cmd) const {
+future<> service::auth_context::check_internal_table_permissions(std::string_view ks, std::string_view table_name, const auth::command_desc& cmd) const {
     // 1. CDC and $paxos tables are managed internally by Scylla. Users are prohibited
     //    from running ALTER or DROP commands on them.
     // 2. Non-superusers are not allowed to access $paxos tables, even if explicit
     //    permissions have been granted.
     // Note: This function is on a hot path; coroutines are avoided to reduce allocations.
 
-    static constexpr auto forbidden_permissions = auth::permission_set::of<
-                    auth::permission::ALTER, auth::permission::DROP>();
+    static constexpr auto forbidden_permissions = auth::permission_set::of<auth::permission::ALTER, auth::permission::DROP>();
 
     if (forbidden_permissions.contains(cmd.permission)) {
-        if ((ks == db::system_distributed_keyspace::NAME || ks == db::system_distributed_keyspace::NAME_EVERYWHERE)
-                && (table_name == db::system_distributed_keyspace::CDC_DESC_V2
-                || table_name == db::system_distributed_keyspace::CDC_TOPOLOGY_DESCRIPTION
-                || table_name == db::system_distributed_keyspace::CDC_TIMESTAMPS
-                || table_name == db::system_distributed_keyspace::CDC_GENERATIONS_V2)) {
-            return make_exception_future(exceptions::unauthorized_exception(
-                    format("Cannot {} {}", auth::permissions::to_string(cmd.permission), cmd.resource)));
+        if ((ks == db::system_distributed_keyspace::NAME || ks == db::system_distributed_keyspace::NAME_EVERYWHERE) &&
+                (table_name == db::system_distributed_keyspace::CDC_DESC_V2 || table_name == db::system_distributed_keyspace::CDC_TOPOLOGY_DESCRIPTION ||
+                        table_name == db::system_distributed_keyspace::CDC_TIMESTAMPS || table_name == db::system_distributed_keyspace::CDC_GENERATIONS_V2)) {
+            return make_exception_future(
+                    exceptions::unauthorized_exception(format("Cannot {} {}", auth::permissions::to_string(cmd.permission), cmd.resource)));
         }
     }
 
     if (service::paxos::paxos_store::try_get_base_table(table_name)) {
         if (forbidden_permissions.contains(cmd.permission)) {
-            return make_exception_future(exceptions::unauthorized_exception(
-                    format("Cannot {} {}", auth::permissions::to_string(cmd.permission), cmd.resource)));
+            return make_exception_future(
+                    exceptions::unauthorized_exception(format("Cannot {} {}", auth::permissions::to_string(cmd.permission), cmd.resource)));
         }
 
-        return _auth_service->underlying_role_manager().is_superuser(*_user->name)
-            .then([&cmd](bool is_superuser) {
-                return is_superuser
-                    ? make_ready_future<>()
-                    : make_exception_future(exceptions::unauthorized_exception(
-                        format("Only superusers are allowed to {} {}", 
-                            auth::permissions::to_string(cmd.permission), cmd.resource)));
-            });
+        return _auth_service->underlying_role_manager().is_superuser(*_user->name).then([&cmd](bool is_superuser) {
+            return is_superuser ? make_ready_future<>()
+                                : make_exception_future(exceptions::unauthorized_exception(
+                                          format("Only superusers are allowed to {} {}", auth::permissions::to_string(cmd.permission), cmd.resource)));
+        });
     }
 
     return make_ready_future<>();
 }
 
-future<> service::client_state::has_access(const sstring& ks, auth::command_desc cmd, std::optional<bool> is_vector_indexed) const {
+future<> service::auth_context::has_access(const sstring& ks, auth::command_desc cmd, std::optional<bool> is_vector_indexed) const {
     if (ks.empty()) {
         throw exceptions::invalid_request_exception("You have not set a keyspace for this session");
     }
@@ -148,8 +140,7 @@ future<> service::client_state::has_access(const sstring& ks, auth::command_desc
 
     validate_login();
 
-    static const auto alteration_permissions = auth::permission_set::of<
-            auth::permission::CREATE, auth::permission::ALTER, auth::permission::DROP>();
+    static const auto alteration_permissions = auth::permission_set::of<auth::permission::CREATE, auth::permission::ALTER, auth::permission::DROP>();
 
     // we only care about schema modification.
     if (alteration_permissions.contains(cmd.permission)) {
@@ -165,21 +156,19 @@ future<> service::client_state::has_access(const sstring& ks, auth::command_desc
         // keyspace.
         //
 
-        const bool dropping_anything_in_tracing = (name == tracing::trace_keyspace_helper::KEYSPACE_NAME)
-                && (cmd.permission == auth::permission::DROP);
+        const bool dropping_anything_in_tracing = (name == tracing::trace_keyspace_helper::KEYSPACE_NAME) && (cmd.permission == auth::permission::DROP);
 
-        const bool dropping_auth_keyspace = (cmd.resource == auth::make_data_resource(auth::meta::legacy::AUTH_KS))
-                && (cmd.permission == auth::permission::DROP);
+        const bool dropping_auth_keyspace =
+                (cmd.resource == auth::make_data_resource(auth::meta::legacy::AUTH_KS)) && (cmd.permission == auth::permission::DROP);
 
         if (dropping_anything_in_tracing || dropping_auth_keyspace) {
-            throw exceptions::unauthorized_exception(
-                    format("Cannot {} {}", auth::permissions::to_string(cmd.permission), cmd.resource));
+            throw exceptions::unauthorized_exception(format("Cannot {} {}", auth::permissions::to_string(cmd.permission), cmd.resource));
         }
     }
 
     static thread_local std::unordered_set<auth::resource> readable_system_resources = [] {
         std::unordered_set<auth::resource> tmp;
-        for (auto cf : { db::system_keyspace::LOCAL, db::system_keyspace::PEERS }) {
+        for (auto cf : {db::system_keyspace::LOCAL, db::system_keyspace::PEERS}) {
             tmp.insert(auth::make_data_resource(db::system_keyspace::NAME, cf));
         }
         for (const auto& cf : db::schema_tables::all_table_infos(db::schema_features::full())) {
@@ -204,28 +193,25 @@ future<> service::client_state::has_access(const sstring& ks, auth::command_desc
         }
     }
 
-    if (cmd.resource.kind() == auth::resource_kind::data
-            && !(cmd.permission == auth::permission::SELECT || cmd.permission == auth::permission::DESCRIBE)
-            && is_system_keyspace(ks)
-            && _user
-            && !auth::is_anonymous(*_user)
-            && !co_await _auth_service->underlying_role_manager().is_superuser(*_user->name)) [[unlikely]] {
-        throw exceptions::unauthorized_exception(
-                ks + " can be granted only SELECT or DESCRIBE permissions to a non-superuser.");
+    if (cmd.resource.kind() == auth::resource_kind::data && !(cmd.permission == auth::permission::SELECT || cmd.permission == auth::permission::DESCRIBE) &&
+            is_system_keyspace(ks) && _user && !auth::is_anonymous(*_user) && !co_await _auth_service->underlying_role_manager().is_superuser(*_user->name))
+            [[unlikely]] {
+        throw exceptions::unauthorized_exception(ks + " can be granted only SELECT or DESCRIBE permissions to a non-superuser.");
     }
 
     static const std::unordered_set<auth::resource> vector_search_system_resources = {
-        auth::make_data_resource(db::system_keyspace::NAME, db::system_keyspace::GROUP0_HISTORY),
-        auth::make_data_resource(db::system_keyspace::NAME, db::system_keyspace::VERSIONS),
-        auth::make_data_resource(db::system_keyspace::NAME, db::system_keyspace::CDC_STREAMS),
-        auth::make_data_resource(db::system_keyspace::NAME, db::system_keyspace::CDC_TIMESTAMPS),
+            auth::make_data_resource(db::system_keyspace::NAME, db::system_keyspace::GROUP0_HISTORY),
+            auth::make_data_resource(db::system_keyspace::NAME, db::system_keyspace::VERSIONS),
+            auth::make_data_resource(db::system_keyspace::NAME, db::system_keyspace::CDC_STREAMS),
+            auth::make_data_resource(db::system_keyspace::NAME, db::system_keyspace::CDC_TIMESTAMPS),
     };
 
-    if ((cmd.resource.kind() == auth::resource_kind::data && cmd.permission == auth::permission::SELECT && is_vector_indexed.has_value() && is_vector_indexed.value()) ||
-        (cmd.permission == auth::permission::SELECT && vector_search_system_resources.contains(cmd.resource))) {
+    if ((cmd.resource.kind() == auth::resource_kind::data && cmd.permission == auth::permission::SELECT && is_vector_indexed.has_value() &&
+                is_vector_indexed.value()) ||
+            (cmd.permission == auth::permission::SELECT && vector_search_system_resources.contains(cmd.resource))) {
 
-        co_return co_await ensure_has_permission<auth::command_desc_with_permission_set>({auth::permission_set::of<auth::permission::SELECT, auth::permission::VECTOR_SEARCH_INDEXING>(), cmd.resource});
-
+        co_return co_await ensure_has_permission<auth::command_desc_with_permission_set>(
+                {auth::permission_set::of<auth::permission::SELECT, auth::permission::VECTOR_SEARCH_INDEXING>(), cmd.resource});
     }
 
     co_return co_await ensure_has_permission(cmd);
@@ -239,23 +225,17 @@ static bool intersects_permissions(const auth::permission_set& permissions, cons
     return permissions.contains(cmd.permission);
 }
 
-sstring service::client_state::generate_authorization_error_msg(const auth::command_desc& cmd) const {
-    return format("User {} has no {} permission on {} or any of its parents",
-            *_user,
-            auth::permissions::to_string(cmd.permission),
-            cmd.resource);
+sstring service::auth_context::generate_authorization_error_msg(const auth::command_desc& cmd) const {
+    return format("User {} has no {} permission on {} or any of its parents", *_user, auth::permissions::to_string(cmd.permission), cmd.resource);
 }
 
-sstring service::client_state::generate_authorization_error_msg(const auth::command_desc_with_permission_set& cmd) const {
+sstring service::auth_context::generate_authorization_error_msg(const auth::command_desc_with_permission_set& cmd) const {
     sstring perm_names = fmt::format("{}", fmt::join(auth::permissions::to_strings(cmd.permission), ", "));
-    return format("User {} has none of the permissions ({}) on {} or any of its parents",
-            *_user,
-            perm_names,
-            cmd.resource);
+    return format("User {} has none of the permissions ({}) on {} or any of its parents", *_user, perm_names, cmd.resource);
 }
 
 template <typename Cmd>
-future<bool> service::client_state::check_has_permission(Cmd cmd) const {
+future<bool> service::auth_context::check_has_permission(Cmd cmd) const {
     if (_is_internal) {
         co_return true;
     }
@@ -271,21 +251,20 @@ future<bool> service::client_state::check_has_permission(Cmd cmd) const {
     }
     co_return false;
 }
-template future<bool> service::client_state::check_has_permission(auth::command_desc) const;
-template future<bool> service::client_state::check_has_permission<auth::command_desc_with_permission_set>(auth::command_desc_with_permission_set) const;
+template future<bool> service::auth_context::check_has_permission(auth::command_desc) const;
+template future<bool> service::auth_context::check_has_permission<auth::command_desc_with_permission_set>(auth::command_desc_with_permission_set) const;
 
 template <typename Cmd>
-future<> service::client_state::ensure_has_permission(Cmd cmd) const {
+future<> service::auth_context::ensure_has_permission(Cmd cmd) const {
     return check_has_permission(cmd).then([this, cmd](bool ok) {
         if (!ok) {
-            return make_exception_future<>(exceptions::unauthorized_exception(
-                generate_authorization_error_msg(cmd)));
+            return make_exception_future<>(exceptions::unauthorized_exception(generate_authorization_error_msg(cmd)));
         }
         return make_ready_future<>();
     });
 }
-template future<> service::client_state::ensure_has_permission(auth::command_desc) const;
-template future<> service::client_state::ensure_has_permission<auth::command_desc_with_permission_set>(auth::command_desc_with_permission_set) const;
+template future<> service::auth_context::ensure_has_permission(auth::command_desc) const;
+template future<> service::auth_context::ensure_has_permission<auth::command_desc_with_permission_set>(auth::command_desc_with_permission_set) const;
 
 void service::client_state::set_keyspace(replica::database& db, std::string_view keyspace) {
     // Skip keyspace validation for non-authenticated users. Apparently, some client libraries
@@ -296,7 +275,7 @@ void service::client_state::set_keyspace(replica::database& db, std::string_view
     _keyspace = sstring(keyspace);
 }
 
-future<> service::client_state::ensure_exists(const auth::resource& r) const {
+future<> service::auth_context::ensure_exists(const auth::resource& r) const {
     return _auth_service->exists(r).then([&r](bool exists) {
         if (!exists) {
             return make_exception_future<>(exceptions::invalid_request_exception(format("{} doesn't exist.", r)));
@@ -312,24 +291,25 @@ future<> service::client_state::maybe_update_per_service_level_params() {
         if (!slo_opt) {
             co_return;
         }
-        
+
         update_per_service_level_params(*slo_opt);
     }
 }
 
 void service::client_state::update_per_service_level_params(qos::service_level_options& slo) {
-    auto slo_timeout_or = [&] (const lowres_clock::duration& default_timeout) {
+    auto slo_timeout_or = [&](const lowres_clock::duration& default_timeout) {
         return std::visit(overloaded_functor{
-            [&] (const qos::service_level_options::unset_marker&) -> lowres_clock::duration {
-                return default_timeout;
-            },
-            [&] (const qos::service_level_options::delete_marker&) -> lowres_clock::duration {
-                return default_timeout;
-            },
-            [&] (const lowres_clock::duration& d) -> lowres_clock::duration {
-                return d;
-            },
-        }, slo.timeout);
+                                  [&](const qos::service_level_options::unset_marker&) -> lowres_clock::duration {
+                                      return default_timeout;
+                                  },
+                                  [&](const qos::service_level_options::delete_marker&) -> lowres_clock::duration {
+                                      return default_timeout;
+                                  },
+                                  [&](const lowres_clock::duration& d) -> lowres_clock::duration {
+                                      return d;
+                                  },
+                          },
+                slo.timeout);
     };
 
     _timeout_config.read_timeout = slo_timeout_or(_default_timeout_config.read_timeout);
@@ -344,13 +324,12 @@ void service::client_state::update_per_service_level_params(qos::service_level_o
 }
 
 future<> service::client_state::set_client_options(
-        client_options_cache_type& keys_and_values_cache,
-        const std::unordered_map<sstring, sstring>& client_options) {
+        client_options_cache_type& keys_and_values_cache, const std::unordered_map<sstring, sstring>& client_options) {
     for (const auto& [key, value] : client_options) {
-        auto cached_key = co_await keys_and_values_cache.get_or_load(key, [] (const client_options_cache_key_type&) {
+        auto cached_key = co_await keys_and_values_cache.get_or_load(key, [](const client_options_cache_key_type&) {
             return make_ready_future<options_cache_value_type>(options_cache_value_type{});
         });
-        auto cached_value = co_await keys_and_values_cache.get_or_load(value, [] (const client_options_cache_key_type&) {
+        auto cached_value = co_await keys_and_values_cache.get_or_load(value, [](const client_options_cache_key_type&) {
             return make_ready_future<options_cache_value_type>(options_cache_value_type{});
         });
         _client_options.emplace_back(std::move(cached_key), std::move(cached_value));

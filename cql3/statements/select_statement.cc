@@ -257,7 +257,7 @@ uint32_t select_statement::get_bound_terms() const {
     return _bound_terms;
 }
 
-future<> select_statement::check_access(query_processor& qp, const service::client_state& state) const {
+future<> select_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     try {
         auto cdc = qp.db().get_cdc_base_table(*_schema);
         auto& cf_name = _schema->is_view()

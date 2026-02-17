@@ -21,7 +21,7 @@ bool cql3::statements::authentication_statement::depends_on(std::string_view ks_
     return false;
 }
 
-future<> cql3::statements::authentication_statement::check_access(query_processor& qp, const service::client_state& state) const {
+future<> cql3::statements::authentication_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     return make_ready_future<>();
 }
 

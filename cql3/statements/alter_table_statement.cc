@@ -58,7 +58,7 @@ uint32_t alter_table_statement::get_bound_terms() const {
     return _bound_terms;
 }
 
-future<> alter_table_statement::check_access(query_processor& qp, const service::client_state& state) const {
+future<> alter_table_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     using cdt = auth::command_desc::type;
     auto type = cdt::OTHER;
     if (_type == type::opts) {

@@ -68,7 +68,7 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
     co_return seastar::make_shared<result_message::void_message>();
 }
 
-future<> modification_statement::check_access(query_processor& qp, const service::client_state& state) const {
+future<> modification_statement::check_access(query_processor& qp, const service::auth_context& state) const {
     return _statement->check_access(qp, state);
 }
 

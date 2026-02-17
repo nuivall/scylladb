@@ -37,7 +37,9 @@
 #include "service/storage_proxy_fwd.hh"
 
 
-namespace lang { class manager; }
+namespace lang {
+class manager;
+}
 namespace service {
 class migration_manager;
 class query_state;
@@ -51,7 +53,7 @@ class coordinator;
 namespace broadcast_tables {
 struct query;
 }
-}
+} // namespace service
 
 namespace cql3 {
 
@@ -64,7 +66,7 @@ namespace raw {
 class parsed_statement;
 
 }
-}
+} // namespace statements
 
 class untyped_result_set;
 class untyped_result_set_row;
@@ -83,8 +85,7 @@ public:
     static constexpr int max_query_prefix = 100;
 
     prepared_statement_is_too_big(const sstring& query_string)
-        : _msg(seastar::format("Prepared statement is too big: {}", query_string.substr(0, max_query_prefix)))
-    {
+        : _msg(seastar::format("Prepared statement is too big: {}", query_string.substr(0, max_query_prefix))) {
         // mark that we clipped the query string
         if (query_string.size() > max_query_prefix) {
             _msg += "...";
@@ -142,13 +143,11 @@ private:
     std::unordered_map<sstring, std::unique_ptr<statements::prepared_statement>> _internal_statements;
 
     lang::manager& _lang_manager;
+
 public:
     static const sstring CQL_VERSION;
 
-    static prepared_cache_key_type compute_id(
-            std::string_view query_string,
-            std::string_view keyspace,
-            dialect d);
+    static prepared_cache_key_type compute_id(std::string_view query_string, std::string_view keyspace, dialect d);
 
     static std::unique_ptr<statements::raw::parsed_statement> parse_statement(const std::string_view& query, dialect d);
     static std::vector<std::unique_ptr<statements::raw::parsed_statement>> parse_statements(std::string_view queries, dialect d);
@@ -158,9 +157,8 @@ public:
 
     ~query_processor();
 
-    void start_remote(service::migration_manager&, service::mapreduce_service&,
-                      service::storage_service& ss, service::raft_group0_client&,
-                      service::strong_consistency::coordinator&);
+    void start_remote(service::migration_manager&, service::mapreduce_service&, service::storage_service& ss, service::raft_group0_client&,
+            service::strong_consistency::coordinator&);
     future<> stop_remote();
 
     data_dictionary::database db() {
@@ -179,14 +177,15 @@ public:
         return _proxy;
     }
 
-    std::pair<std::reference_wrapper<service::strong_consistency::coordinator>, gate::holder>
-    acquire_strongly_consistent_coordinator();
+    std::pair<std::reference_wrapper<service::strong_consistency::coordinator>, gate::holder> acquire_strongly_consistent_coordinator();
 
     cql_stats& get_cql_stats() {
         return _cql_stats;
     }
 
-    lang::manager& lang() { return _lang_manager; }
+    lang::manager& lang() {
+        return _lang_manager;
+    }
 
     const vector_search::vector_store_client& vector_store_client() const noexcept {
         return _vector_store_client;
@@ -197,6 +196,12 @@ public:
     }
 
     db::auth_version_t auth_version;
+
+    /// Set (or clear) the access_checker used by the authorized prepared statements cache
+    /// to re-run check_access during cache reloads instead of evicting entries.
+    void set_authorized_cache_access_checker(access_checker* ac) noexcept {
+        _authorized_prepared_cache.set_access_checker(ac);
+    }
 
     statements::prepared_statement::checked_weak_ptr get_prepared(const std::optional<auth::authenticated_user>& user, const prepared_cache_key_type& key) {
         if (user) {
@@ -227,78 +232,38 @@ public:
         return _prepared_cache.find(key);
     }
 
-    inline
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_prepared(
-            statements::prepared_statement::checked_weak_ptr statement,
-            cql3::prepared_cache_key_type cache_key,
-            service::query_state& query_state,
-            const query_options& options,
-            bool needs_authorization) {
+    inline future<::shared_ptr<cql_transport::messages::result_message>> execute_prepared(statements::prepared_statement::checked_weak_ptr statement,
+            cql3::prepared_cache_key_type cache_key, service::query_state& query_state, const query_options& options, bool needs_authorization) {
         auto cql_statement = statement->statement;
         return execute_prepared_without_checking_exception_message(
-                query_state,
-                std::move(cql_statement),
-                options,
-                std::move(statement),
-                std::move(cache_key),
-                needs_authorization)
+                query_state, std::move(cql_statement), options, std::move(statement), std::move(cache_key), needs_authorization)
                 .then(cql_transport::messages::propagate_exception_as_future<::shared_ptr<cql_transport::messages::result_message>>);
     }
 
     // Like execute_prepared, but is allowed to return exceptions as result_message::exception.
     // The result_message::exception must be explicitly handled.
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_prepared_without_checking_exception_message(
-                service::query_state& query_state,
-                shared_ptr<cql_statement> statement,
-                const query_options& options,
-                statements::prepared_statement::checked_weak_ptr prepared,
-                cql3::prepared_cache_key_type cache_key,
-                bool needs_authorization);
+    future<::shared_ptr<cql_transport::messages::result_message>> execute_prepared_without_checking_exception_message(service::query_state& query_state,
+            shared_ptr<cql_statement> statement, const query_options& options, statements::prepared_statement::checked_weak_ptr prepared,
+            cql3::prepared_cache_key_type cache_key, bool needs_authorization);
 
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    do_execute_prepared(
-                service::query_state& query_state,
-                shared_ptr<cql_statement> statement,
-                const query_options& options,
-                std::optional<service::group0_guard> guard,
-                statements::prepared_statement::checked_weak_ptr prepared,
-                cql3::prepared_cache_key_type cache_key,
-                bool needs_authorization);
+    future<::shared_ptr<cql_transport::messages::result_message>> do_execute_prepared(service::query_state& query_state, shared_ptr<cql_statement> statement,
+            const query_options& options, std::optional<service::group0_guard> guard, statements::prepared_statement::checked_weak_ptr prepared,
+            cql3::prepared_cache_key_type cache_key, bool needs_authorization);
 
     /// Execute a client statement that was not prepared.
-    inline
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_direct(
-            const std::string_view& query_string,
-            service::query_state& query_state,
-            dialect d,
-            query_options& options) {
-        return execute_direct_without_checking_exception_message(
-                query_string,
-                query_state,
-                d,
-                options)
+    inline future<::shared_ptr<cql_transport::messages::result_message>> execute_direct(
+            const std::string_view& query_string, service::query_state& query_state, dialect d, query_options& options) {
+        return execute_direct_without_checking_exception_message(query_string, query_state, d, options)
                 .then(cql_transport::messages::propagate_exception_as_future<::shared_ptr<cql_transport::messages::result_message>>);
     }
 
     // Like execute_direct, but is allowed to return exceptions as result_message::exception.
     // The result_message::exception must be explicitly handled.
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_direct_without_checking_exception_message(
-            const std::string_view& query_string,
-            service::query_state& query_state,
-            dialect d,
-            query_options& options);
+    future<::shared_ptr<cql_transport::messages::result_message>> execute_direct_without_checking_exception_message(
+            const std::string_view& query_string, service::query_state& query_state, dialect d, query_options& options);
 
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    do_execute_direct(
-            service::query_state& query_state,
-            shared_ptr<cql_statement> statement,
-            const query_options& options,
-            std::optional<service::group0_guard> guard,
-            cql3::cql_warnings_vec warnings);
+    future<::shared_ptr<cql_transport::messages::result_message>> do_execute_direct(service::query_state& query_state, shared_ptr<cql_statement> statement,
+            const query_options& options, std::optional<service::group0_guard> guard, cql3::cql_warnings_vec warnings);
 
     statements::prepared_statement::checked_weak_ptr prepare_internal(const sstring& query);
 
@@ -334,13 +299,8 @@ public:
      *
      * \note This function is optimized for convenience, not performance.
      */
-    future<> query_internal(
-            const sstring& query_string,
-            db::consistency_level cl,
-            const data_value_list& values,
-            int32_t page_size,
-            noncopyable_function<future<stop_iteration>(const cql3::untyped_result_set_row&)> f,
-            std::optional<service::query_state> qs = std::nullopt);
+    future<> query_internal(const sstring& query_string, db::consistency_level cl, const data_value_list& values, int32_t page_size,
+            noncopyable_function<future<stop_iteration>(const cql3::untyped_result_set_row&)> f, std::optional<service::query_state> qs = std::nullopt);
 
     /*
      * \brief iterate over all cql results using paging
@@ -353,13 +313,11 @@ public:
      *
      * \note This function is optimized for convenience, not performance.
      */
-    future<> query_internal(
-            const sstring& query_string,
-            noncopyable_function<future<stop_iteration>(const cql3::untyped_result_set_row&)> f);
+    future<> query_internal(const sstring& query_string, noncopyable_function<future<stop_iteration>(const cql3::untyped_result_set_row&)> f);
 
     class cache_internal_tag;
     using cache_internal = bool_class<cache_internal_tag>;
-    
+
     // NOTICE: Internal queries should be used with care, as they are expected
     // to be used for local tables (e.g. from the `system` keyspace).
     // Data modifications will usually be performed with consistency level ONE
@@ -368,36 +326,20 @@ public:
     // creating namespaces, etc) is explicitly forbidden via this interface.
     //
     // note: optimized for convenience, not performance.
+    future<::shared_ptr<untyped_result_set>> execute_internal(const sstring& query_string, db::consistency_level, const data_value_list&, cache_internal cache);
     future<::shared_ptr<untyped_result_set>> execute_internal(
-            const sstring& query_string,
-            db::consistency_level,
-            const data_value_list&,
-            cache_internal cache);
-    future<::shared_ptr<untyped_result_set>> execute_internal(
-            const sstring& query_string,
-            db::consistency_level,
-            service::query_state& query_state,
-            const data_value_list& values,
-            cache_internal cache);
-    future<::shared_ptr<untyped_result_set>> execute_internal(
-            const sstring& query_string,
-            db::consistency_level cl,
-            cache_internal cache) {
+            const sstring& query_string, db::consistency_level, service::query_state& query_state, const data_value_list& values, cache_internal cache);
+    future<::shared_ptr<untyped_result_set>> execute_internal(const sstring& query_string, db::consistency_level cl, cache_internal cache) {
         return execute_internal(query_string, cl, {}, cache);
     }
     future<::shared_ptr<untyped_result_set>> execute_internal(
-            const sstring& query_string,
-            db::consistency_level cl,
-            service::query_state& query_state,
-            cache_internal cache) {
+            const sstring& query_string, db::consistency_level cl, service::query_state& query_state, cache_internal cache) {
         return execute_internal(query_string, cl, query_state, {}, cache);
     }
-    future<::shared_ptr<untyped_result_set>>
-    execute_internal(const sstring& query_string, const data_value_list& values, cache_internal cache) {
+    future<::shared_ptr<untyped_result_set>> execute_internal(const sstring& query_string, const data_value_list& values, cache_internal cache) {
         return execute_internal(query_string, db::consistency_level::ONE, values, cache);
     }
-    future<::shared_ptr<untyped_result_set>>
-    execute_internal(const sstring& query_string, cache_internal cache) {
+    future<::shared_ptr<untyped_result_set>> execute_internal(const sstring& query_string, cache_internal cache) {
         return execute_internal(query_string, db::consistency_level::ONE, {}, cache);
     }
 
@@ -407,73 +349,46 @@ public:
     // and vice versa, split mutations from one query into separate commands.
     // It supports write-only queries, read-modified-writes not supported.
     future<utils::chunked_vector<mutation>> get_mutations_internal(
-        const sstring query_string,
-        service::query_state& query_state,
-        api::timestamp_type timestamp,
-        std::vector<data_value_or_unset> values);
+            const sstring query_string, service::query_state& query_state, api::timestamp_type timestamp, std::vector<data_value_or_unset> values);
 
     future<::shared_ptr<untyped_result_set>> execute_with_params(
-            statements::prepared_statement::checked_weak_ptr p,
-            db::consistency_level,
-            service::query_state& query_state,
-            const data_value_list& values = { });
+            statements::prepared_statement::checked_weak_ptr p, db::consistency_level, service::query_state& query_state, const data_value_list& values = {});
 
     future<::shared_ptr<cql_transport::messages::result_message>> do_execute_with_params(
-            service::query_state& query_state,
-            shared_ptr<cql_statement> statement,
-            const query_options& options,
-            std::optional<service::group0_guard> guard);
+            service::query_state& query_state, shared_ptr<cql_statement> statement, const query_options& options, std::optional<service::group0_guard> guard);
 
 
-    future<::shared_ptr<cql_transport::messages::result_message::prepared>>
-    prepare(sstring query_string, service::query_state& query_state, dialect d);
+    future<::shared_ptr<cql_transport::messages::result_message::prepared>> prepare(sstring query_string, service::query_state& query_state, dialect d);
 
-    future<::shared_ptr<cql_transport::messages::result_message::prepared>>
-    prepare(sstring query_string, const service::client_state& client_state, dialect d);
+    future<::shared_ptr<cql_transport::messages::result_message::prepared>> prepare(sstring query_string, const service::client_state& client_state, dialect d);
 
     future<> stop();
 
-    inline
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_batch(
-            ::shared_ptr<statements::batch_statement> stmt,
-            service::query_state& query_state,
-            query_options& options,
+    inline future<::shared_ptr<cql_transport::messages::result_message>> execute_batch(::shared_ptr<statements::batch_statement> stmt,
+            service::query_state& query_state, query_options& options,
             std::unordered_map<prepared_cache_key_type, authorized_prepared_statements_cache::value_type> pending_authorization_entries) {
-        return execute_batch_without_checking_exception_message(
-                std::move(stmt),
-                query_state,
-                options,
-                std::move(pending_authorization_entries))
+        return execute_batch_without_checking_exception_message(std::move(stmt), query_state, options, std::move(pending_authorization_entries))
                 .then(cql_transport::messages::propagate_exception_as_future<::shared_ptr<cql_transport::messages::result_message>>);
     }
 
     // Like execute_batch, but is allowed to return exceptions as result_message::exception.
     // The result_message::exception must be explicitly handled.
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_batch_without_checking_exception_message(
-            ::shared_ptr<statements::batch_statement>,
-            service::query_state& query_state,
-            query_options& options,
+    future<::shared_ptr<cql_transport::messages::result_message>> execute_batch_without_checking_exception_message(::shared_ptr<statements::batch_statement>,
+            service::query_state& query_state, query_options& options,
             std::unordered_map<prepared_cache_key_type, authorized_prepared_statements_cache::value_type> pending_authorization_entries);
 
-    future<service::broadcast_tables::query_result>
-    execute_broadcast_table_query(const service::broadcast_tables::query&);
+    future<service::broadcast_tables::query_result> execute_broadcast_table_query(const service::broadcast_tables::query&);
 
     // Splits given `mapreduce_request` and distributes execution of resulting subrequests across a cluster.
-    future<query::mapreduce_result>
-    mapreduce(query::mapreduce_request, tracing::trace_state_ptr);
+    future<query::mapreduce_result> mapreduce(query::mapreduce_request, tracing::trace_state_ptr);
 
     struct retry_statement_execution_error : public std::exception {};
 
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_schema_statement(const statements::schema_altering_statement&, service::query_state& state, const query_options& options, service::group0_batch& mc);
+    future<::shared_ptr<cql_transport::messages::result_message>> execute_schema_statement(
+            const statements::schema_altering_statement&, service::query_state& state, const query_options& options, service::group0_batch& mc);
     future<> announce_schema_statement(const statements::schema_altering_statement&, service::group0_batch& mc);
 
-    std::unique_ptr<statements::prepared_statement> get_statement(
-            const std::string_view& query,
-            const service::client_state& client_state,
-            dialect d);
+    std::unique_ptr<statements::prepared_statement> get_statement(const std::string_view& query, const service::client_state& client_state, dialect d);
 
     friend class migration_subscriber;
 
@@ -486,30 +401,22 @@ public:
     bool topology_global_queue_empty();
     future<bool> ongoing_rf_change(const service::group0_guard& guard, sstring ks);
 
-    query_options make_internal_options(
-            const statements::prepared_statement::checked_weak_ptr& p,
-            const std::vector<data_value_or_unset>& values,
-            db::consistency_level,
-            int32_t page_size = -1,
-            service::node_local_only node_local_only = service::node_local_only::no) const;
+    query_options make_internal_options(const statements::prepared_statement::checked_weak_ptr& p, const std::vector<data_value_or_unset>& values,
+            db::consistency_level, int32_t page_size = -1, service::node_local_only node_local_only = service::node_local_only::no) const;
 
 private:
     // Keep the holder until you stop using the `remote` services.
     std::pair<std::reference_wrapper<remote>, gate::holder> remote();
 
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    process_authorized_statement(const ::shared_ptr<cql_statement> statement, service::query_state& query_state, const query_options& options, std::optional<service::group0_guard> guard);
+    future<::shared_ptr<cql_transport::messages::result_message>> process_authorized_statement(const ::shared_ptr<cql_statement> statement,
+            service::query_state& query_state, const query_options& options, std::optional<service::group0_guard> guard);
 
     /*!
      * \brief created a state object for paging
      *
      * When using paging internally a state object is needed.
      */
-    internal_query_state create_paged_state(
-            const sstring& query_string,
-            db::consistency_level,
-            const data_value_list& values,
-            int32_t page_size,
+    internal_query_state create_paged_state(const sstring& query_string, db::consistency_level, const data_value_list& values, int32_t page_size,
             std::optional<service::query_state> qs = std::nullopt);
 
     /*!
@@ -524,9 +431,7 @@ private:
      *
      * \note Optimized for convenience, not performance.
      */
-    future<> for_each_cql_result(
-            cql3::internal_query_state& state,
-            noncopyable_function<future<stop_iteration>(const cql3::untyped_result_set_row&)> f);
+    future<> for_each_cql_result(cql3::internal_query_state& state, noncopyable_function<future<stop_iteration>(const cql3::untyped_result_set_row&)> f);
 
     /*!
      * \brief check, based on the state if there are additional results
@@ -534,14 +439,18 @@ private:
      */
     bool has_more_results(cql3::internal_query_state& state) const;
 
-    template<typename... Args>
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_maybe_with_guard(service::query_state& query_state, ::shared_ptr<cql_statement> statement, const query_options& options,
-        future<::shared_ptr<cql_transport::messages::result_message>>(query_processor::*fn)(service::query_state&, ::shared_ptr<cql_statement>, const query_options&, std::optional<service::group0_guard>, Args...), Args... args);
+    template <typename... Args>
+    future<::shared_ptr<cql_transport::messages::result_message>> execute_maybe_with_guard(service::query_state& query_state,
+            ::shared_ptr<cql_statement> statement, const query_options& options,
+            future<::shared_ptr<cql_transport::messages::result_message>> (query_processor::*fn)(
+                    service::query_state&, ::shared_ptr<cql_statement>, const query_options&, std::optional<service::group0_guard>, Args...),
+            Args... args);
 
     future<::shared_ptr<cql_transport::messages::result_message>> execute_with_guard(
-        std::function<future<::shared_ptr<cql_transport::messages::result_message>>(service::query_state&, ::shared_ptr<cql_statement>, const query_options&, std::optional<service::group0_guard>)> fn,
-        ::shared_ptr<cql_statement> statement, service::query_state& query_state, const query_options& options);
+            std::function<future<::shared_ptr<cql_transport::messages::result_message>>(
+                    service::query_state&, ::shared_ptr<cql_statement>, const query_options&, std::optional<service::group0_guard>)>
+                    fn,
+            ::shared_ptr<cql_statement> statement, service::query_state& query_state, const query_options& options);
 };
 
 class query_processor::migration_subscriber : public service::migration_listener {
@@ -574,10 +483,7 @@ public:
 private:
     void remove_invalid_prepared_statements(sstring ks_name, std::optional<sstring> cf_name);
 
-    bool should_invalidate(
-            sstring ks_name,
-            std::optional<sstring> cf_name,
-            ::shared_ptr<cql_statement> statement);
+    bool should_invalidate(sstring ks_name, std::optional<sstring> cf_name, ::shared_ptr<cql_statement> statement);
 };
 
-}
+} // namespace cql3

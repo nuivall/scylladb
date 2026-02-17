@@ -31,7 +31,7 @@ cql3::statements::list_service_level_attachments_statement::prepare(
     return std::make_unique<prepared_statement>(audit_info(), ::make_shared<list_service_level_attachments_statement>(*this));
 }
 
-future<> list_service_level_attachments_statement::check_access(query_processor& qp, const service::client_state &state) const {
+future<> list_service_level_attachments_statement::check_access(query_processor& qp, const service::auth_context &state) const {
     return state.ensure_has_permission(auth::command_desc{.permission = auth::permission::DESCRIBE, .resource = auth::root_service_level_resource()});
 }
 

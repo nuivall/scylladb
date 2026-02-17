@@ -29,7 +29,7 @@ public:
 
     bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const override;
 
-    future<> check_access(query_processor& qp, const service::client_state& state) const override;
+    future<> check_access(query_processor& qp, const service::auth_context& state) const override;
 
 protected:
     static void maybe_correct_resource(auth::resource&, const service::client_state&, query_processor&);
