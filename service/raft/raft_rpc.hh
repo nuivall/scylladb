@@ -59,6 +59,7 @@ public:
     future<raft::add_entry_reply> send_modify_config(raft::server_id id,
         const std::vector<raft::config_member>& add,
         const std::vector<raft::server_id>& del) override;
+    future<> send_read_barrier(raft::server_id id);
 
     future<> abort() override;
 
