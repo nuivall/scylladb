@@ -130,7 +130,7 @@ create_role_statement::execute(query_processor&,
         throw exceptions::invalid_request_exception(e.what());
     }
 
-    co_await auth::commit_mutations(as, std::move(mc));
+    co_await auth::commit_mutations(as, std::move(mc), service::group0_batch_barrier::global);
     co_return nullptr;
 }
 

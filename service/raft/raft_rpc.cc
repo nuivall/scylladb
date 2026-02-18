@@ -149,6 +149,21 @@ future<raft::read_barrier_reply> raft_rpc::execute_read_barrier_on_leader(raft::
     return two_way_rpc(sloc::current(), id, std::move(l));
 }
 
+future<> raft_rpc::send_group0_read_barrier(raft::server_id id) {
+    auto loc = sloc::current();
+    if (!_failure_detector->is_alive(id)) {
+        throw raft::destination_not_alive_error(id, loc);
+    }
+    try {
+        co_await ser::raft_rpc_verbs::send_raft_group0_read_barrier(
+                &_messaging, locator::host_id{id.uuid()}, db::no_timeout, _group_id, _my_id, id);
+    } catch (const seastar::rpc::closed_error& e) {
+        auto msg = fmt::format("Failed to execute {}, destination {}: {}", loc.function_name(), id, e);
+        rlogger.trace("{}", msg);
+        throw raft::transport_error(msg);
+    }
+}
+
 future<> raft_rpc::abort() {
     return _shutdown_gate.close();
 }

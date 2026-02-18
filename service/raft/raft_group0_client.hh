@@ -35,6 +35,14 @@ class system_keyspace;
 
 }
 
+namespace gms {
+class gossiper;
+}
+
+namespace netw {
+class messaging_service;
+}
+
 namespace locator {
 class shared_token_metadata;
 }
@@ -85,6 +93,7 @@ public:
 // Singleton that exists only on shard zero. Used to post commands to group zero
 class raft_group0_client {
     service::raft_group_registry& _raft_gr;
+    gms::gossiper& _gossiper;
     db::system_keyspace& _sys_ks;
     locator::shared_token_metadata& _token_metadata;
 
@@ -125,7 +134,8 @@ class raft_group0_client {
     void validate_change(const Command& change);
 
 public:
-    raft_group0_client(service::raft_group_registry&, db::system_keyspace&, locator::shared_token_metadata&, maintenance_mode_enabled);
+    raft_group0_client(service::raft_group_registry&, gms::gossiper&,
+                       db::system_keyspace&, locator::shared_token_metadata&, maintenance_mode_enabled);
 
     // Call after `system_keyspace` is initialized.
     future<> init();
@@ -211,9 +221,21 @@ public:
     void set_query_result(utils::UUID query_id, service::broadcast_tables::query_result qr);
     static utils::UUID generate_group0_state_id(utils::UUID prev_state_id);
     future<utils::UUID> get_last_group0_state_id();
+
+    // Sends an RPC to all live nodes (via gossiper) asking each to perform
+    // a raft read_barrier on group 0, ensuring they have applied all committed
+    // entries. Failures are best-effort: logged but not propagated.
+    future<> broadcast_group0_read_barrier(seastar::abort_source& as);
 };
 
 using mutations_generator = coroutine::experimental::generator<mutation>;
+
+// Controls whether group0_batch::commit() broadcasts a read barrier
+// to all live nodes after the raft entry is committed and applied locally.
+enum class group0_batch_barrier {
+    local,   // Return immediately after local apply
+    global   // Broadcast read_barrier to all live nodes (best-effort)
+};
 
 // group0_batch is used to gather mutations which are side effects
 // of functions execution. They need to be announced under single guard
@@ -266,7 +288,12 @@ public:
     void add_generator(generator_func f, std::string_view description = "");
 
     // Commits the data, nop if there was no guard provided.
-    future<> commit(::service::raft_group0_client& group0_client, seastar::abort_source& as, std::optional<::service::raft_timeout> timeout) &&;
+    // When barrier is group0_batch_barrier::yes, after committing the raft entry,
+    // broadcasts a read_barrier RPC to all live nodes (best-effort) to ensure
+    // they have applied the committed entry before returning.
+    future<> commit(::service::raft_group0_client& group0_client, seastar::abort_source& as,
+                    std::optional<::service::raft_timeout> timeout,
+                    group0_batch_barrier barrier = group0_batch_barrier::local) &&;
     // For rare cases where collector is used but announce logic is replaced with a custom one.
     future<std::pair<utils::chunked_vector<mutation>, ::service::group0_guard>> extract() &&;
 

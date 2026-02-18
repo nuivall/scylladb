@@ -202,6 +202,17 @@ void raft_group_registry::init_rpc_verbs() {
         });
     });
 
+    ser::raft_rpc_verbs::register_raft_group0_read_barrier(&_ms, [this] (const rpc::client_info& cinfo, rpc::opt_time_point timeout,
+            raft::group_id gid, raft::server_id from, raft::server_id dst) -> future<> {
+        if (_my_id != dst) {
+            throw raft_destination_id_not_correct{_my_id, dst};
+        }
+        co_await container().invoke_on(shard_for_group(gid),
+                [gid] (raft_group_registry& self) -> future<> {
+            co_await self.get_server(gid).read_barrier(nullptr);
+        });
+    });
+
     ser::raft_rpc_verbs::register_direct_fd_ping(&_ms,
             [this] (const rpc::client_info&, rpc::opt_time_point timeout, raft::server_id dst) -> future<direct_fd_ping_reply> {
 
@@ -222,14 +233,6 @@ void raft_group_registry::init_rpc_verbs() {
                 .group0_alive = _group0_is_alive,
             }
         });
-    });
-
-    ser::raft_rpc_verbs::register_raft_group0_read_barrier(&_ms,
-            [this] (const rpc::client_info&, rpc::opt_time_point timeout, raft::server_id dst) -> future<> {
-        if (_my_id != dst) {
-            throw raft_destination_id_not_correct{_my_id, dst};
-        }
-        co_await group0().read_barrier(nullptr);
     });
 }
 
@@ -337,6 +340,13 @@ raft::server& raft_group_registry::group0() {
         on_internal_error(rslog, "group0(): _group0_id not present");
     }
     return get_server(*_group0_id);
+}
+
+raft_rpc& raft_group_registry::group0_rpc() {
+    if (!_group0_id) {
+        on_internal_error(rslog, "group0_rpc(): _group0_id not present");
+    }
+    return get_rpc(*_group0_id);
 }
 
 raft_server_with_timeouts raft_group_registry::group0_with_timeouts() {
