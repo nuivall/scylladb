@@ -131,4 +131,6 @@ struct direct_fd_ping_reply {
 
 verb [[with_client_info, with_timeout, cancellable]] direct_fd_ping (raft::server_id dst_id) -> service::direct_fd_ping_reply;
 
+verb [[with_client_info, with_timeout]] raft_group0_read_barrier (raft::server_id dst_id);
+
 } // namespace service
