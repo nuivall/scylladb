@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 
+#include <seastar/core/coroutine.hh>
 #include <seastar/core/future.hh>
 #include <seastar/core/sstring.hh>
 #include <seastar/util/bool_class.hh>
@@ -197,7 +198,8 @@ public:
     }
 
     future<> commit_mutations(::service::group0_batch&& mc) {
-        return std::move(mc).commit(_group0_client, _as, ::service::raft_timeout{});
+        co_await std::move(mc).commit(_group0_client, _as, ::service::raft_timeout{});
+        co_await _group0_client.broadcast_group0_read_barrier();
     }
 
 private:
