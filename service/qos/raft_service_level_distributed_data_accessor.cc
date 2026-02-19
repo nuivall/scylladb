@@ -96,7 +96,8 @@ future<> raft_service_level_distributed_data_accessor::drop_service_level(sstrin
 }
 
 future<> raft_service_level_distributed_data_accessor::commit_mutations(service::group0_batch&& mc, abort_source& as) const {
-    return std::move(mc).commit(_group0_client, as, ::service::raft_timeout{});
+    co_await std::move(mc).commit(_group0_client, as, ::service::raft_timeout{});
+    co_await _group0_client.broadcast_group0_read_barrier();
 }
 
 bool raft_service_level_distributed_data_accessor::is_v2() const {
