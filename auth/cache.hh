@@ -61,6 +61,13 @@ public:
     future<> load_roles(std::unordered_set<role_name_t> roles);
     static bool includes_table(const table_id&) noexcept;
 
+    /// Returns the number of roles in the cache.
+    size_t size() const noexcept;
+
+    /// Iterates over all cached roles, invoking the callback for each entry.
+    /// The callback must not suspend (no co_await) and must not modify the cache.
+    void for_each_role(const std::function<void(const role_name_t&, const role_record&)>& func) const;
+
 private:
     using roles_map = absl::flat_hash_map<role_name_t, lw_shared_ptr<role_record>>;
     roles_map _roles;

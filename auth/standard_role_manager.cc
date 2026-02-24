@@ -659,7 +659,7 @@ future<role_set> standard_role_manager::query_granted(std::string_view grantee_n
     });
 }
 
-future<role_to_directly_granted_map> standard_role_manager::query_all_directly_granted(::service::query_state& qs) {
+future<role_to_directly_granted_map> standard_role_manager::query_all_directly_granted_legacy(::service::query_state& qs) {
     const sstring query = seastar::format("SELECT * FROM {}.{}",
             get_auth_ks_name(_qp),
             ROLE_MEMBERS_CF);
@@ -682,7 +682,20 @@ future<role_to_directly_granted_map> standard_role_manager::query_all_directly_g
     co_return roles_map;
 }
 
-future<role_set> standard_role_manager::query_all(::service::query_state& qs) {
+future<role_to_directly_granted_map> standard_role_manager::query_all_directly_granted(::service::query_state& qs) {
+    if (legacy_mode(_qp)) {
+        co_return co_await query_all_directly_granted_legacy(qs);
+    }
+    role_to_directly_granted_map roles_map;
+    _cache.for_each_role([&roles_map] (const cache::role_name_t& name, const cache::role_record& record) {
+        for (const auto& granted_role : record.member_of) {
+            roles_map.emplace(name, granted_role);
+        }
+    });
+    co_return roles_map;
+}
+
+future<role_set> standard_role_manager::query_all_legacy(::service::query_state& qs) {
     const sstring query = seastar::format("SELECT {} FROM {}.{}",
             meta::roles_table::role_col_name,
             get_auth_ks_name(_qp),
@@ -714,6 +727,18 @@ future<role_set> standard_role_manager::query_all(::service::query_state& qs) {
     co_return roles;
 }
 
+future<role_set> standard_role_manager::query_all(::service::query_state& qs) {
+    if (legacy_mode(_qp)) {
+        co_return co_await query_all_legacy(qs);
+    }
+    role_set roles;
+    roles.reserve(_cache.size());
+    _cache.for_each_role([&roles] (const cache::role_name_t& name, const cache::role_record&) {
+        roles.insert(name);
+    });
+    co_return roles;
+}
+
 future<bool> standard_role_manager::exists(std::string_view role_name) {
     return find_record(role_name).then([](std::optional<record> mr) {
         return static_cast<bool>(mr);
@@ -732,7 +757,7 @@ future<bool> standard_role_manager::can_login(std::string_view role_name) {
     });
 }
 
-future<std::optional<sstring>> standard_role_manager::get_attribute(std::string_view role_name, std::string_view attribute_name, ::service::query_state& qs) {
+future<std::optional<sstring>> standard_role_manager::get_attribute_legacy(std::string_view role_name, std::string_view attribute_name, ::service::query_state& qs) {
     const sstring query = seastar::format("SELECT name, value FROM {}.{} WHERE role = ? AND name = ?",
             get_auth_ks_name(_qp),
             ROLE_ATTRIBUTES_CF);
@@ -744,11 +769,26 @@ future<std::optional<sstring>> standard_role_manager::get_attribute(std::string_
     co_return std::optional<sstring>{};
 }
 
-future<role_manager::attribute_vals> standard_role_manager::query_attribute_for_all (std::string_view attribute_name, ::service::query_state& qs) {
-    return query_all(qs).then([this, attribute_name, &qs] (role_set roles) {
+future<std::optional<sstring>> standard_role_manager::get_attribute(std::string_view role_name, std::string_view attribute_name, ::service::query_state& qs) {
+    if (legacy_mode(_qp)) {
+        co_return co_await get_attribute_legacy(role_name, attribute_name, qs);
+    }
+    auto role = _cache.get(sstring(role_name));
+    if (!role) {
+        co_return std::optional<sstring>{};
+    }
+    auto it = role->attributes.find(sstring(attribute_name));
+    if (it != role->attributes.end()) {
+        co_return std::optional<sstring>(it->second);
+    }
+    co_return std::optional<sstring>{};
+}
+
+future<role_manager::attribute_vals> standard_role_manager::query_attribute_for_all_legacy (std::string_view attribute_name, ::service::query_state& qs) {
+    return query_all_legacy(qs).then([this, attribute_name, &qs] (role_set roles) {
         return do_with(attribute_vals{}, [this, attribute_name, roles = std::move(roles), &qs] (attribute_vals &role_to_att_val) {
             return parallel_for_each(roles.begin(), roles.end(), [this, &role_to_att_val, attribute_name, &qs] (sstring role) {
-                return get_attribute(role, attribute_name, qs).then([&role_to_att_val, role] (std::optional<sstring> att_val) {
+                return get_attribute_legacy(role, attribute_name, qs).then([&role_to_att_val, role] (std::optional<sstring> att_val) {
                     if (att_val) {
                         role_to_att_val.emplace(std::move(role), std::move(*att_val));
                     }
@@ -758,6 +798,21 @@ future<role_manager::attribute_vals> standard_role_manager::query_attribute_for_
             });
         });
     });
+}
+
+future<role_manager::attribute_vals> standard_role_manager::query_attribute_for_all (std::string_view attribute_name, ::service::query_state& qs) {
+    if (legacy_mode(_qp)) {
+        co_return co_await query_attribute_for_all_legacy(attribute_name, qs);
+    }
+    attribute_vals result;
+    sstring attr_name(attribute_name);
+    _cache.for_each_role([&result, &attr_name] (const cache::role_name_t& name, const cache::role_record& record) {
+        auto it = record.attributes.find(attr_name);
+        if (it != record.attributes.end()) {
+            result.emplace(name, it->second);
+        }
+    });
+    co_return result;
 }
 
 future<> standard_role_manager::set_attribute(std::string_view role_name, std::string_view attribute_name, std::string_view attribute_value, ::service::group0_batch& mc) {
