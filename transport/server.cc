@@ -763,6 +763,11 @@ future<> cql_server::connection::process_request() {
         auto op = f.opcode;
         auto stream = f.stream;
         auto mem_estimate = f.length * 2 + 8000; // Allow for extra copies and bookkeeping
+        // For QUERY and PREPARE, add the estimated parsing cost based on
+        // rolling maximum of gross bytes allocated during get_statement().
+        if (op == uint8_t(cql_binary_opcode::QUERY) || op == uint8_t(cql_binary_opcode::PREPARE)) {
+            mem_estimate += _server._query_processor.local().parsing_cost_estimate();
+        }
         if (mem_estimate > _server._config.max_request_size) {
             const auto message = format("request size too large (frame size {:d}; estimate {:d}; allowed {:d})",
                 uint32_t(f.length), mem_estimate, _server._config.max_request_size);
@@ -850,7 +855,16 @@ future<> cql_server::connection::process_request() {
                                                   message,
                                                   tracing::trace_state_ptr()));
                     } else {
-                        write_response(response_f.get(), std::move(mem_permit), _compression);
+                        auto response = response_f.get();
+                        // Account for response body size exceeding the initial estimate.
+                        auto resp_size = response->size();
+                        auto permit_size = mem_permit.count();
+                        if (resp_size > permit_size) {
+                            auto extra = resp_size - permit_size;
+                            auto extra_units = consume_units(_server._memory_available, extra);
+                            mem_permit.adopt(std::move(extra_units));
+                        }
+                        write_response(std::move(response), std::move(mem_permit), _compression);
                     }
                     _ready_to_respond = _ready_to_respond.finally([leave = std::move(leave)] {});
                 } catch (...) {
