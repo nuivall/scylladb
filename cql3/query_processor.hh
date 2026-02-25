@@ -31,6 +31,7 @@
 #include "vector_search/vector_store_client.hh"
 #include "utils/assert.hh"
 #include "utils/observable.hh"
+#include "utils/rolling_max_tracker.hh"
 #include "service/raft/raft_group0_client.hh"
 #include "types/types.hh"
 #include "db/auth_version.hh"
@@ -142,6 +143,9 @@ private:
     std::unordered_map<sstring, std::unique_ptr<statements::prepared_statement>> _internal_statements;
 
     lang::manager& _lang_manager;
+    // Tracks the rolling maximum of gross bytes allocated during CQL parsing
+    // (get_statement) over the last 1000 invocations.
+    utils::rolling_max_tracker _parsing_cost_tracker;
 public:
     static const sstring CQL_VERSION;
 
@@ -184,6 +188,11 @@ public:
 
     cql_stats& get_cql_stats() {
         return _cql_stats;
+    }
+
+    /// Returns the estimated peak memory cost of CQL parsing.
+    size_t parsing_cost_estimate() const noexcept {
+        return _parsing_cost_tracker.current_max();
     }
 
     lang::manager& lang() { return _lang_manager; }
