@@ -68,6 +68,10 @@ struct raw_cql_test_config {
     bool create_non_superuser = false;
     unsigned tables = 1;
     std::string json_result_file;
+    unsigned row_size = 0;  // approximate row size in bytes for pre-population (0 = tiny default)
+    unsigned rcvbuf = 0;    // SO_RCVBUF size for client sockets (0 = OS default)
+    int target_shard = -1;  // pin all connections to this shard via shard-aware port (-1 = disabled)
+    unsigned nr_shards = 0; // number of shards on the server (for shard-aware routing)
 };
 
 } // namespace perf
@@ -78,8 +82,9 @@ struct fmt::formatter<perf::raw_cql_test_config> {
         return ctx.begin();
     }
     auto format(const perf::raw_cql_test_config& c, format_context& ctx) const {
-        return fmt::format_to(ctx.out(), "{{workload={}, partitions={}, concurrency={}, connections={}, tables={}, duration={}, ops_per_shard={}{}{}{}{}}}",
-                c.workload, c.partitions, c.concurrency_per_connection, c.connections_per_shard, c.tables, c.duration_in_seconds, c.operations_per_shard,
+        return fmt::format_to(ctx.out(),
+                "{{workload={}, partitions={}, concurrency={}, connections={}, tables={}, duration={}, ops_per_shard={}, row_size={}{}{}{}{}}}", c.workload,
+                c.partitions, c.concurrency_per_connection, c.connections_per_shard, c.tables, c.duration_in_seconds, c.operations_per_shard, c.row_size,
                 (c.username.empty() ? "" : ", auth"), (c.connection_per_request ? ", connection_per_request" : ""), (c.use_prepared ? ", use_prepared" : ""),
                 (c.create_non_superuser ? ", create_non_superuser" : ""));
     }
@@ -214,6 +219,10 @@ public:
         , _password(std::move(password))
         , _use_prepared(use_prepared) {
         start_reader();
+    }
+
+    void set_sockopt(int level, int optname, const void* data, size_t len) {
+        _cs.set_sockopt(level, optname, data, len);
     }
 
     future<> stop() {
@@ -511,6 +520,19 @@ public:
         }
     }
 
+    // Insert a row with large blob values.
+    // Each of c0..c4 gets a blob of `col_size` bytes so the total row is
+    // approximately 5 * col_size.  Used during pre-population to create
+    // rows whose SELECT result is large relative to the tiny request frame.
+    future<> write_one_large(unsigned table_idx, uint64_t seq, unsigned col_size) {
+        auto key_hex = to_hex(make_key(seq));
+        // Content doesn't matter — fill with 'aa' bytes.
+        std::string blob_hex(col_size * 2, 'a');
+        auto q = fmt::format("INSERT INTO ks.cf{}(pk,c0,c1,c2,c3,c4) VALUES (0x{},0x{},0x{},0x{},0x{},0x{})", table_idx, key_hex, blob_hex, blob_hex, blob_hex,
+                blob_hex, blob_hex);
+        co_await query_simple(q);
+    }
+
     future<> read_one(unsigned table_idx, uint64_t seq) {
         auto key = make_key(seq);
         if (_use_prepared) {
@@ -534,6 +556,11 @@ public:
             fmt::format_to(std::back_inserter(buf), ")");
             co_await query_simple(std::string_view(buf.data(), buf.size()));
         }
+    }
+
+    // Full table scan — tiny request, potentially huge response.
+    future<> read_all(unsigned table_idx) {
+        co_await query_simple(fmt::format("SELECT * FROM ks.cf{} ALLOW FILTERING", table_idx));
     }
 };
 
@@ -559,6 +586,35 @@ static future<> create_role_with_permissions(raw_cql_connection& conn, std::stri
 static constexpr std::string_view non_superuser_name = "perf_test_user";
 static constexpr std::string_view non_superuser_password = "perf_test_password";
 
+// Thread-local counter for assigning unique source ports for shard-aware connections.
+static thread_local unsigned tl_shard_aware_port_seq = 0;
+
+// Connect to the regular (non-shard-aware) CQL port for setup operations
+// (wait_for_cql, prepopulate, schema creation).  Always uses port 9042
+// regardless of cfg.port so that these connections work even when the
+// workload targets the shard-aware port (19042).
+static future<connected_socket> connect_to_server_setup(const raw_cql_test_config& cfg) {
+    uint16_t setup_port = 9042;
+    co_return co_await connect(socket_address{net::inet_address{cfg.remote_host}, setup_port});
+}
+
+// Connect to the CQL server.  When target_shard >= 0, binds the client's
+// source port so that source_port % nr_shards == target_shard, which makes
+// the shard-aware transport route the connection to the desired shard.
+static future<connected_socket> connect_to_server(const raw_cql_test_config& cfg) {
+    auto remote = socket_address{net::inet_address{cfg.remote_host}, cfg.port};
+    if (cfg.target_shard >= 0 && cfg.nr_shards > 0) {
+        // Pick a unique source port that maps to the target shard.
+        // source_port % nr_shards == target_shard
+        unsigned base = 49152; // start in the ephemeral range
+        unsigned seq = tl_shard_aware_port_seq++;
+        uint16_t src_port = base + cfg.target_shard + seq * cfg.nr_shards;
+        auto local = socket_address{net::inet_address{"0.0.0.0"}, src_port};
+        co_return co_await connect(remote, local, transport::TCP);
+    }
+    co_return co_await connect(remote);
+}
+
 static std::unique_ptr<raw_cql_connection> make_connection(connected_socket cs, const raw_cql_test_config& cfg) {
     sstring username = cfg.create_non_superuser ? sstring(non_superuser_name) : sstring(cfg.username);
     sstring password = cfg.create_non_superuser ? sstring(non_superuser_password) : sstring(cfg.password);
@@ -572,6 +628,8 @@ static future<> do_request(raw_cql_connection& c, const raw_cql_test_config& cfg
     unsigned t = table_idx++ % cfg.tables;
     if (cfg.workload == "write") {
         co_await c.write_one(t, seq);
+    } else if (cfg.workload == "scan") {
+        co_await c.read_all(t);
     } else {
         co_await c.read_one(t, seq);
     }
@@ -581,7 +639,7 @@ static future<> do_request(raw_cql_connection& c, const raw_cql_test_config& cfg
 static future<> run_one_with_new_connection(const raw_cql_test_config& cfg) {
     connected_socket cs;
     try {
-        cs = co_await connect(socket_address{net::inet_address{cfg.remote_host}, cfg.port});
+        cs = co_await connect_to_server(cfg);
     } catch (...) {
         cs = connected_socket();
     }
@@ -660,7 +718,7 @@ static future<> prepare_thread_connections(const raw_cql_test_config& cfg) {
         connected_socket cs;
         for (int attempt = 0; attempt < 200; ++attempt) {
             try {
-                cs = co_await connect(socket_address{net::inet_address{cfg.remote_host}, cfg.port});
+                cs = co_await connect_to_server(cfg);
             } catch (...) {
                 cs = connected_socket();
             }
@@ -685,7 +743,7 @@ static void prepopulate(const raw_cql_test_config& cfg) {
             connected_socket superuser_cs;
             for (int attempt = 0; attempt < 200; ++attempt) {
                 try {
-                    superuser_cs = connect(socket_address{net::inet_address{cfg.remote_host}, cfg.port}).get();
+                    superuser_cs = connect_to_server_setup(cfg).get();
                 } catch (...) {
                     superuser_cs = connected_socket();
                 }
@@ -713,7 +771,7 @@ static void prepopulate(const raw_cql_test_config& cfg) {
         connected_socket cs;
         for (int attempt = 0; attempt < 200; ++attempt) {
             try {
-                cs = connect(socket_address{net::inet_address{cfg.remote_host}, cfg.port}).get();
+                cs = connect_to_server_setup(cfg).get();
             } catch (...) {
                 cs = connected_socket();
             }
@@ -734,7 +792,11 @@ static void prepopulate(const raw_cql_test_config& cfg) {
             conn->prepare_statements(cfg.tables).get();
             for (unsigned t = 0; t < cfg.tables; ++t) {
                 for (uint64_t seq = 0; seq < cfg.partitions; ++seq) {
-                    conn->write_one(t, seq).get();
+                    if (cfg.row_size > 0) {
+                        conn->write_one_large(t, seq, cfg.row_size / 5).get();
+                    } else {
+                        conn->write_one(t, seq).get();
+                    }
                 }
             }
         } catch (...) {
@@ -752,7 +814,7 @@ static void prepopulate(const raw_cql_test_config& cfg) {
 static void wait_for_cql(const raw_cql_test_config& cfg) {
     for (int attempt = 0; attempt < 3000; ++attempt) {
         try {
-            auto cs = connect(socket_address{net::inet_address{cfg.remote_host}, cfg.port}).get();
+            auto cs = connect_to_server_setup(cfg).get();
             auto conn = make_connection(std::move(cs), cfg);
             conn->startup().get();
             conn->stop().get();
@@ -802,6 +864,16 @@ static void workload_main(const raw_cql_test_config& cfg, sharded<abort_source>*
             throw;
         }
     }
+    // Apply tiny SO_RCVBUF on workload connections to create TCP backpressure.
+    // Done after setup so STARTUP/PREPARE responses aren't affected.
+    if (cfg.rcvbuf > 0) {
+        smp::invoke_on_all([rcvbuf = cfg.rcvbuf] {
+            for (auto& c : tl_conns) {
+                int val = rcvbuf;
+                c->set_sockopt(SOL_SOCKET, SO_RCVBUF, &val, sizeof(val));
+            }
+        }).get();
+    }
     auto results = time_parallel(
             [cfg, as]() -> future<> {
                 as->local().check();
@@ -831,6 +903,7 @@ static void workload_main(const raw_cql_test_config& cfg, sharded<abort_source>*
         params["connection_per_request"] = cfg.connection_per_request;
         params["use_prepared"] = cfg.use_prepared;
         params["create_non_superuser"] = cfg.create_non_superuser;
+        params["row_size"] = cfg.row_size;
         params["cpus"] = smp::count;
 
         perf::write_json_result(cfg.json_result_file, agg, params, cfg.workload);
@@ -862,7 +935,12 @@ std::function<int(int, char**)> perf_cql_raw(
                 "remote-host", bpo::value<std::string>()->default_value(""), "remote host to connect to, leave empty to run in-process server")(
                 "connection-per-request", bpo::value<bool>()->default_value(false), "create a fresh connection for every request")("use-prepared",
                 bpo::value<bool>()->default_value(true),
-                "use prepared statements")("json-result", bpo::value<std::string>()->default_value(""), "file to write json results to");
+                "use prepared statements")("json-result", bpo::value<std::string>()->default_value(""), "file to write json results to")(
+                "row-size", bpo::value<unsigned>()->default_value(0), "approximate row size in bytes for pre-population (0 = tiny default)")(
+                "rcvbuf", bpo::value<unsigned>()->default_value(0), "SO_RCVBUF size for client sockets in bytes (0 = OS default)")(
+                "target-shard", bpo::value<int>()->default_value(-1), "pin all connections to this shard via shard-aware port (-1 = disabled)")(
+                "nr-shards", bpo::value<unsigned>()->default_value(0), "number of shards on the server (for shard-aware routing, 0 = auto)")(
+                "port", bpo::value<uint16_t>()->default_value(0), "CQL native transport port (0 = auto: 9042 or from server config)");
         bpo::variables_map vm;
         bpo::store(bpo::command_line_parser(ac, av).options(opts_desc).allow_unregistered().run(), vm);
 
@@ -881,6 +959,14 @@ std::function<int(int, char**)> perf_cql_raw(
         c.connection_per_request = vm["connection-per-request"].as<bool>();
         c.use_prepared = vm["use-prepared"].as<bool>();
         c.json_result_file = vm["json-result"].as<std::string>();
+        c.row_size = vm["row-size"].as<unsigned>();
+        c.rcvbuf = vm["rcvbuf"].as<unsigned>();
+        c.target_shard = vm["target-shard"].as<int>();
+        c.nr_shards = vm["nr-shards"].as<unsigned>();
+        auto cli_port = vm["port"].as<uint16_t>();
+        if (cli_port > 0) {
+            c.port = cli_port;
+        }
 
         if (!c.username.empty() && c.password.empty()) {
             std::cerr << "--username specified without --password" << std::endl;
@@ -890,8 +976,12 @@ std::function<int(int, char**)> perf_cql_raw(
             std::cerr << "--create-non-superuser requires both --username and --password" << std::endl;
             return 1;
         }
-        if (c.workload != "read" && c.workload != "write" && c.workload != "connect") {
+        if (c.workload != "read" && c.workload != "write" && c.workload != "connect" && c.workload != "scan") {
             std::cerr << "Unknown workload: " << c.workload << "\n";
+            return 1;
+        }
+        if (c.target_shard >= 0 && c.nr_shards == 0) {
+            std::cerr << "--target-shard requires --nr-shards to be set\n";
             return 1;
         }
 
@@ -903,7 +993,9 @@ std::function<int(int, char**)> perf_cql_raw(
 
         if (!c.remote_host.empty()) {
             // if remote-host provided (non-empty) we run standalone
-            c.port = 9042; // TODO: make configurable
+            if (c.port == 0) {
+                c.port = 9042;
+            }
             app_template app;
             return app.run(ac, av, [c = std::move(c)]() -> future<> {
                 return run_standalone([c = std::move(c)](sharded<abort_source>* as) {
