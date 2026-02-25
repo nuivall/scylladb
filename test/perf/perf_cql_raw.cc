@@ -57,12 +57,12 @@ struct raw_cql_test_config {
     unsigned duration_in_seconds;
     unsigned operations_per_shard;
     unsigned concurrency_per_connection; // requests per connection
-    unsigned connections_per_shard; // connections per shard
+    unsigned connections_per_shard;      // connections per shard
     bool continue_after_error;
-    uint16_t port = 9042; // native transport port
-    std::string username = ""; // optional auth username
-    std::string password = ""; // optional auth password
-    std::string remote_host = ""; // target host for CQL + REST (empty => in-process server mode)
+    uint16_t port = 9042;                // native transport port
+    std::string username = "";           // optional auth username
+    std::string password = "";           // optional auth password
+    std::string remote_host = "";        // target host for CQL + REST (empty => in-process server mode)
     bool connection_per_request = false; // create and tear down a connection for every request
     bool use_prepared = true;
     bool create_non_superuser = false;
@@ -74,14 +74,14 @@ struct raw_cql_test_config {
 
 template <>
 struct fmt::formatter<perf::raw_cql_test_config> {
-    constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
+    constexpr auto parse(format_parse_context& ctx) {
+        return ctx.begin();
+    }
     auto format(const perf::raw_cql_test_config& c, format_context& ctx) const {
         return fmt::format_to(ctx.out(), "{{workload={}, partitions={}, concurrency={}, connections={}, tables={}, duration={}, ops_per_shard={}{}{}{}{}}}",
-            c.workload, c.partitions, c.concurrency_per_connection, c.connections_per_shard, c.tables, c.duration_in_seconds, c.operations_per_shard,
-            (c.username.empty() ? "" : ", auth"),
-            (c.connection_per_request ? ", connection_per_request" : ""),
-            (c.use_prepared ? ", use_prepared" : ""),
-            (c.create_non_superuser ? ", create_non_superuser" : ""));
+                c.workload, c.partitions, c.concurrency_per_connection, c.connections_per_shard, c.tables, c.duration_in_seconds, c.operations_per_shard,
+                (c.username.empty() ? "" : ", auth"), (c.connection_per_request ? ", connection_per_request" : ""), (c.use_prepared ? ", use_prepared" : ""),
+                (c.create_non_superuser ? ", create_non_superuser" : ""));
     }
 };
 
@@ -102,21 +102,40 @@ struct frame_builder {
     int16_t stream_id;
     temporary_buffer<char> body;
     size_t pos = header_size;
+    size_t capacity = initial_capacity;
 
-    frame_builder(int16_t stream) : stream_id(stream), body(initial_capacity) {}
+    frame_builder(int16_t stream)
+        : stream_id(stream)
+        , body(initial_capacity) {
+    }
+
+    void ensure_space(size_t needed) {
+        if (pos + needed <= capacity) {
+            return;
+        }
+        auto new_cap = std::max(capacity * 2, pos + needed);
+        temporary_buffer<char> new_body(new_cap);
+        std::memcpy(new_body.get_write(), body.get(), pos);
+        body = std::move(new_body);
+        capacity = new_cap;
+    }
 
     void write_int(int32_t v) {
+        ensure_space(4);
         write_be<int32_t>(body.get_write() + pos, v);
         pos += 4;
     }
     void write_short(uint16_t v) {
+        ensure_space(2);
         write_be<uint16_t>(body.get_write() + pos, v);
         pos += 2;
     }
     void write_byte(char c) {
+        ensure_space(1);
         body.get_write()[pos++] = c;
     }
     void write_raw(const char* data, size_t len) {
+        ensure_space(len);
         std::memcpy(body.get_write() + pos, data, len);
         pos += len;
     }
@@ -188,7 +207,12 @@ class raw_cql_connection {
 
 public:
     raw_cql_connection(connected_socket cs, sstring username = {}, sstring password = {}, bool use_prepared = false)
-        : _cs(std::move(cs)), _in(_cs.input()), _out(_cs.output()), _username(std::move(username)), _password(std::move(password)), _use_prepared(use_prepared) {
+        : _cs(std::move(cs))
+        , _in(_cs.input())
+        , _out(_cs.output())
+        , _username(std::move(username))
+        , _password(std::move(password))
+        , _use_prepared(use_prepared) {
         start_reader();
     }
 
@@ -233,14 +257,23 @@ public:
     struct stream_guard {
         raw_cql_connection* _c = nullptr;
         int16_t _id;
-        stream_guard(raw_cql_connection* c, int16_t id) : _c(c), _id(id) {}
-        stream_guard(stream_guard&& x) noexcept : _c(x._c), _id(x._id) { x._c = nullptr; }
+        stream_guard(raw_cql_connection* c, int16_t id)
+            : _c(c)
+            , _id(id) {
+        }
+        stream_guard(stream_guard&& x) noexcept
+            : _c(x._c)
+            , _id(x._id) {
+            x._c = nullptr;
+        }
         ~stream_guard() {
             if (_c) {
                 _c->release_stream(_id);
-             }
+            }
         }
-        operator int16_t() const { return _id; }
+        operator int16_t() const {
+            return _id;
+        }
     };
 
     void release_stream(int16_t stream) {
@@ -281,7 +314,8 @@ public:
         const char* h = hdr_buf.get();
         uint8_t version = h[0];
         (void)version; // unused currently
-        uint8_t flags = h[1]; (void)flags;
+        uint8_t flags = h[1];
+        (void)flags;
         uint16_t stream = read_be<uint16_t>(h + 2);
         auto opcode = static_cast<cql_binary_opcode>(h[4]);
         uint32_t len = read_be<uint32_t>(h + 5);
@@ -383,7 +417,7 @@ public:
         // QUERY frame (v4): <long string><short consistency><byte flags>
         fb.write_long_string(q);
         fb.write_short(0x0001); // ONE
-        fb.write_byte(0); // flags
+        fb.write_byte(0);       // flags
         auto f = co_await execute_request(stream, fb.finish(cql_binary_opcode::QUERY));
         if (f.opcode == cql_binary_opcode::ERROR) {
             throw std::runtime_error(format("server returned ERROR to QUERY: {}", std::string_view(f.payload.get(), f.payload.size())));
@@ -423,7 +457,7 @@ public:
     future<> execute_prepared(const sstring& id, std::string_view key) {
         auto stream = allocate_stream();
         frame_builder fb{stream};
-        fb.write_string(id); // [short bytes]
+        fb.write_string(id);    // [short bytes]
         fb.write_short(0x0001); // ONE
         // Flags: VALUES (0x01) | SKIP_METADATA (0x02) = 0x03
         fb.write_byte(0x03);
@@ -454,8 +488,26 @@ public:
         if (_use_prepared) {
             co_await execute_prepared(_write_stmt_ids[table_idx], key);
         } else {
+            // Build an INSERT with a large map literal.
+            // Map literals are the most memory-expensive CQL construct:
+            // 3 expression allocations per entry (key expr + value expr +
+            // tuple wrapper), while being compact on the wire.  This
+            // maximises the gap between mem_estimate (wire-based) and
+            // actual memory consumed by parsing/compilation.
             auto key_hex = to_hex(key);
-            co_await query_simple(fmt::format("INSERT INTO ks.cf{}(pk,c0,c1,c2,c3,c4) VALUES (0x{},0x01,0x02,0x03,0x04,0x05)", table_idx, key_hex));
+            fmt::memory_buffer buf;
+            fmt::format_to(std::back_inserter(buf), "INSERT INTO ks.cf{}(pk,c0,c1,c2,c3,c4,m0) VALUES (0x{},0x01,0x02,0x03,0x04,0x05,{{", table_idx, key_hex);
+            constexpr unsigned map_entries = 500;
+            for (unsigned i = 0; i < map_entries; ++i) {
+                if (i > 0) {
+                    fmt::format_to(std::back_inserter(buf), ",");
+                }
+                auto k = make_key(seq + i);
+                auto kh = to_hex(k);
+                fmt::format_to(std::back_inserter(buf), "0x{}:0x{}", kh, kh);
+            }
+            fmt::format_to(std::back_inserter(buf), "}})");
+            co_await query_simple(std::string_view(buf.data(), buf.size()));
         }
     }
 
@@ -464,8 +516,23 @@ public:
         if (_use_prepared) {
             co_await execute_prepared(_read_stmt_ids[table_idx], key);
         } else {
-            auto key_hex = to_hex(key);
-            co_await query_simple(fmt::format("SELECT * FROM ks.cf{} WHERE pk=0x{}", table_idx, key_hex));
+            // Build a complex query with a large IN clause.
+            // The frame length stays moderate but the CQL parser/compiler
+            // allocates many AST nodes per IN value, amplifying the gap
+            // between mem_estimate (based on frame length) and actual
+            // memory usage.
+            fmt::memory_buffer buf;
+            fmt::format_to(std::back_inserter(buf), "SELECT * FROM ks.cf{} WHERE pk IN (", table_idx);
+            constexpr unsigned in_values = 1000;
+            for (unsigned i = 0; i < in_values; ++i) {
+                if (i > 0) {
+                    fmt::format_to(std::back_inserter(buf), ",");
+                }
+                auto k = make_key(seq + i);
+                fmt::format_to(std::back_inserter(buf), "0x{}", to_hex(k));
+            }
+            fmt::format_to(std::back_inserter(buf), ")");
+            co_await query_simple(std::string_view(buf.data(), buf.size()));
         }
     }
 };
@@ -473,10 +540,11 @@ public:
 static future<> ensure_schema(raw_cql_connection& conn, unsigned tables) {
     co_await conn.query_simple("CREATE KEYSPACE IF NOT EXISTS ks WITH replication={'class': 'NetworkTopologyStrategy'}");
     for (unsigned i = 0; i < tables; ++i) {
-        if (tables > 100 && (i+1) % 100 == 0) {
-             std::cout << "Creating schema in progress [" << i+1 << "/" << tables << "]" << std::endl;
+        if (tables > 100 && (i + 1) % 100 == 0) {
+            std::cout << "Creating schema in progress [" << i + 1 << "/" << tables << "]" << std::endl;
         }
-        co_await conn.query_simple(fmt::format("CREATE TABLE IF NOT EXISTS ks.cf{} (pk blob primary key, c0 blob, c1 blob, c2 blob, c3 blob, c4 blob)", i));
+        co_await conn.query_simple(
+                fmt::format("CREATE TABLE IF NOT EXISTS ks.cf{} (pk blob primary key, c0 blob, c1 blob, c2 blob, c3 blob, c4 blob, m0 map<blob, blob>)", i));
     }
 }
 
@@ -545,8 +613,7 @@ static void wait_for_compactions(const raw_cql_test_config& cfg) {
     bool announced = false;
     for (unsigned attempt = 0; attempt < max_attempts; ++attempt) {
         try {
-            connected_socket http_cs = connect(socket_address{
-                    net::inet_address{cfg.remote_host}, 10000}).get();
+            connected_socket http_cs = connect(socket_address{net::inet_address{cfg.remote_host}, 10000}).get();
             input_stream<char> in = http_cs.input();
             output_stream<char> out = http_cs.output();
             sstring req = seastar::format("GET /compaction_manager/compactions HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", cfg.remote_host);
@@ -695,7 +762,7 @@ static void wait_for_cql(const raw_cql_test_config& cfg) {
         }
         sleep(std::chrono::milliseconds(100)).get();
         if (attempt >= 100 && attempt % 10 == 0) {
-            std::cout << format("Retrying connect to cql port (attempt {})", attempt+1) << std::endl;
+            std::cout << format("Retrying connect to cql port (attempt {})", attempt + 1) << std::endl;
         }
     }
     throw std::runtime_error("Timed out waiting for cql port to become ready");
@@ -707,7 +774,7 @@ static void workload_main(const raw_cql_test_config& cfg, sharded<abort_source>*
         // Cleanup thread-local connections to avoid destruction issues at exit
         smp::invoke_on_all([] {
             return parallel_for_each(tl_conns, [](std::unique_ptr<raw_cql_connection>& c) {
-                    return c->stop();
+                return c->stop();
             }).then([] {
                 tl_conns.clear();
             });
@@ -735,17 +802,19 @@ static void workload_main(const raw_cql_test_config& cfg, sharded<abort_source>*
             throw;
         }
     }
-    auto results = time_parallel([cfg, as] () -> future<> {
-        as->local().check();
-        if (cfg.connection_per_request || cfg.workload == "connect") {
-            co_await run_one_with_new_connection(cfg);
-        } else {
-            static thread_local size_t idx = 0;
-            // Round-robin over thread-local connections
-            auto& c = *tl_conns[idx++ % tl_conns.size()];
-            co_await do_request(c, cfg);
-        }
-    }, cfg.concurrency_per_connection * cfg.connections_per_shard, cfg.duration_in_seconds, cfg.operations_per_shard, !cfg.continue_after_error);
+    auto results = time_parallel(
+            [cfg, as]() -> future<> {
+                as->local().check();
+                if (cfg.connection_per_request || cfg.workload == "connect") {
+                    co_await run_one_with_new_connection(cfg);
+                } else {
+                    static thread_local size_t idx = 0;
+                    // Round-robin over thread-local connections
+                    auto& c = *tl_conns[idx++ % tl_conns.size()];
+                    co_await do_request(c, cfg);
+                }
+            },
+            cfg.concurrency_per_connection* cfg.connections_per_shard, cfg.duration_in_seconds, cfg.operations_per_shard, !cfg.continue_after_error);
     aggregated_perf_results agg(results);
     std::cout << agg << std::endl;
     if (!cfg.json_result_file.empty()) {
@@ -776,28 +845,26 @@ static void workload_main(const raw_cql_test_config& cfg, sharded<abort_source>*
 //
 // Example usage:
 // ./build/release/scylla perf-cql-raw --workdir /tmp/scylla-workdir --smp 1 --cpus 0 --developer-mode 1 --workload read 2> /dev/null
-std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scylla_main, std::function<future<>(lw_shared_ptr<db::config>, sharded<abort_source>& as)>* after_init_func) {
+std::function<int(int, char**)> perf_cql_raw(
+        std::function<int(int, char**)> scylla_main, std::function<future<>(lw_shared_ptr<db::config>, sharded<abort_source>& as)>* after_init_func) {
     return [=](int ac, char** av) -> int {
         raw_cql_test_config c;
         bpo::options_description opts_desc;
-        opts_desc.add_options()
-            ("workload", bpo::value<std::string>()->default_value("read"), "workload type: read|write|connect")
-            ("partitions", bpo::value<unsigned>()->default_value(10000), "number of partitions")
-            ("tables", bpo::value<unsigned>()->default_value(1), "number of tables")
-            ("duration", bpo::value<unsigned>()->default_value(5), "test duration seconds")
-            ("operations-per-shard", bpo::value<unsigned>()->default_value(0), "fixed op count per shard")
-            ("concurrency-per-shard", bpo::value<unsigned>()->default_value(10), "concurrent requests per connection")
-            ("connections-per-shard", bpo::value<unsigned>()->default_value(100), "connections per shard")
-            ("continue-after-error", bpo::value<bool>()->default_value(false), "continue after error")
-            ("username", bpo::value<std::string>()->default_value(""), "authentication username (used as superuser when create-non-superuser is set)")
-            ("password", bpo::value<std::string>()->default_value(""), "authentication password (used as superuser when create-non-superuser is set)")
-            ("create-non-superuser", bpo::value<bool>()->default_value(false), "create a non-superuser role using username/password as superuser credentials")
-            ("remote-host", bpo::value<std::string>()->default_value(""), "remote host to connect to, leave empty to run in-process server")
-            ("connection-per-request", bpo::value<bool>()->default_value(false), "create a fresh connection for every request")
-            ("use-prepared", bpo::value<bool>()->default_value(true), "use prepared statements")
-            ("json-result", bpo::value<std::string>()->default_value(""), "file to write json results to");
+        opts_desc.add_options()("workload", bpo::value<std::string>()->default_value("read"), "workload type: read|write|connect")("partitions",
+                bpo::value<unsigned>()->default_value(10000), "number of partitions")("tables", bpo::value<unsigned>()->default_value(1), "number of tables")(
+                "duration", bpo::value<unsigned>()->default_value(5), "test duration seconds")("operations-per-shard", bpo::value<unsigned>()->default_value(0),
+                "fixed op count per shard")("concurrency-per-shard", bpo::value<unsigned>()->default_value(10), "concurrent requests per connection")(
+                "connections-per-shard", bpo::value<unsigned>()->default_value(100), "connections per shard")("continue-after-error",
+                bpo::value<bool>()->default_value(false), "continue after error")("username", bpo::value<std::string>()->default_value(""),
+                "authentication username (used as superuser when create-non-superuser is set)")("password", bpo::value<std::string>()->default_value(""),
+                "authentication password (used as superuser when create-non-superuser is set)")("create-non-superuser",
+                bpo::value<bool>()->default_value(false), "create a non-superuser role using username/password as superuser credentials")(
+                "remote-host", bpo::value<std::string>()->default_value(""), "remote host to connect to, leave empty to run in-process server")(
+                "connection-per-request", bpo::value<bool>()->default_value(false), "create a fresh connection for every request")("use-prepared",
+                bpo::value<bool>()->default_value(true),
+                "use prepared statements")("json-result", bpo::value<std::string>()->default_value(""), "file to write json results to");
         bpo::variables_map vm;
-        bpo::store(bpo::command_line_parser(ac,av).options(opts_desc).allow_unregistered().run(), vm);
+        bpo::store(bpo::command_line_parser(ac, av).options(opts_desc).allow_unregistered().run(), vm);
 
         c.workload = vm["workload"].as<std::string>();
         c.partitions = vm["partitions"].as<unsigned>();
@@ -824,7 +891,8 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
             return 1;
         }
         if (c.workload != "read" && c.workload != "write" && c.workload != "connect") {
-            std::cerr << "Unknown workload: " << c.workload << "\n"; return 1;
+            std::cerr << "Unknown workload: " << c.workload << "\n";
+            return 1;
         }
 
         // Remove test options to not disturb scylla main app
@@ -837,8 +905,8 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
             // if remote-host provided (non-empty) we run standalone
             c.port = 9042; // TODO: make configurable
             app_template app;
-            return app.run(ac, av, [c = std::move(c)] () -> future<> {
-                return run_standalone([c = std::move(c)] (sharded<abort_source>* as) {
+            return app.run(ac, av, [c = std::move(c)]() -> future<> {
+                return run_standalone([c = std::move(c)](sharded<abort_source>* as) {
                     workload_main(c, as);
                 });
             });
