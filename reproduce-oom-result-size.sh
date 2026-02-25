@@ -86,13 +86,13 @@ $SCYLLA perf-cql-raw \
     --workload scan \
     --use-prepared 0 \
     --remote-host 127.0.0.1 \
-    --port 19042 \
-    --target-shard 0 \
-    --nr-shards $SMP \
+    --port 9042 \
+    --target-shard -1 \
+    --nr-shards 0 \
     --row-size 1000000 \
-    --rcvbuf 1024 \
-    --connections-per-shard 100 \
-    --concurrency-per-shard 50 \
+    --rcvbuf 0 \
+    --connections-per-shard 5 \
+    --concurrency-per-shard 200 \
     --tables 1 \
     --partitions 30 \
     --duration 30 \
