@@ -779,6 +779,7 @@ future<> cql_server::connection::process_request() {
         // For QUERY and PREPARE, add the estimated parsing cost based on
         // rolling maximum of gross bytes allocated during get_statement().
         if (op == uint8_t(cql_binary_opcode::QUERY) || op == uint8_t(cql_binary_opcode::PREPARE)) {
+            //clogger.warn("fefe est {} flen {}", _server._query_processor.local().parsing_cost_estimate(), uint32_t(f.length));
             mem_estimate += _server._query_processor.local().parsing_cost_estimate();
         }
         if (mem_estimate > _server._config.max_request_size) {
@@ -802,6 +803,10 @@ future<> cql_server::connection::process_request() {
                     tracing::trace_state_ptr()));
                 return make_ready_future<>();
             });
+        }
+
+        if (_server._memory_available.available_units() < 100'000) {
+            clogger.warn("fefe low units {}", _server._memory_available.available_units());
         }
 
         const auto shedding_timeout = std::chrono::milliseconds(50);
