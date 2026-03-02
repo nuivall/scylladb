@@ -11,6 +11,7 @@
 #include <seastar/util/std-compat.hh>
 #include "raft/raft.hh"
 #include "message/messaging_service_fwd.hh"
+#include "db/timeout_clock.hh"
 
 namespace service {
 
@@ -42,7 +43,7 @@ private:
     one_way_rpc(std::source_location loc, raft::server_id id, Verb&& verb, Msg&& msg);
 
     template <typename Verb, typename... Args> auto
-    two_way_rpc(std::source_location loc, raft::server_id id, Verb&& verb, Args&&... args);
+    two_way_rpc(std::source_location loc, raft::server_id id, Verb&& verb, db::timeout_clock::time_point tp, Args&&... args);
 
 public:
     future<raft::snapshot_reply> send_snapshot(raft::server_id server_id, const raft::install_snapshot& snap, seastar::abort_source& as) override;
