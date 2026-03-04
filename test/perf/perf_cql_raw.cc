@@ -64,9 +64,8 @@ struct raw_cql_test_config {
     std::string password = ""; // optional auth password
     std::string remote_host = ""; // target host for CQL + REST (empty => in-process server mode)
     bool connection_per_request = false; // create and tear down a connection for every request
-    bool use_prepared = true;
     bool create_non_superuser = false;
-    unsigned tables = 1;
+    std::string replication = "simple"; // "simple" => SimpleStrategy RF=1, "nts" => NTS AWS_US_WEST_2:3
     std::string json_result_file;
 };
 
@@ -76,11 +75,10 @@ template <>
 struct fmt::formatter<perf::raw_cql_test_config> {
     constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }
     auto format(const perf::raw_cql_test_config& c, format_context& ctx) const {
-        return fmt::format_to(ctx.out(), "{{workload={}, partitions={}, concurrency={}, connections={}, tables={}, duration={}, ops_per_shard={}{}{}{}{}}}",
-            c.workload, c.partitions, c.concurrency_per_connection, c.connections_per_shard, c.tables, c.duration_in_seconds, c.operations_per_shard,
+        return fmt::format_to(ctx.out(), "{{workload={}, partitions={}, concurrency={}, connections={}, replication={}, duration={}, ops_per_shard={}{}{}}}",
+            c.workload, c.partitions, c.concurrency_per_connection, c.connections_per_shard, c.replication, c.duration_in_seconds, c.operations_per_shard,
             (c.username.empty() ? "" : ", auth"),
             (c.connection_per_request ? ", connection_per_request" : ""),
-            (c.use_prepared ? ", use_prepared" : ""),
             (c.create_non_superuser ? ", create_non_superuser" : ""));
     }
 };
@@ -97,7 +95,7 @@ namespace perf {
 //  5..8: body length (big endian)
 struct frame_builder {
     static constexpr size_t header_size = 9;
-    static constexpr size_t initial_capacity = 256;
+    static constexpr size_t initial_capacity = 1024;
 
     int16_t stream_id;
     temporary_buffer<char> body;
@@ -145,22 +143,56 @@ struct frame_builder {
     }
 };
 
-static sstring make_key(uint64_t seq) {
-    sstring b(sstring::initialized_later(), sizeof(seq));
-    write_be<uint64_t>(b.begin(), seq);
-    return b;
+// Visitor attributes data model helpers.
+// Customers are picked deterministically from the sequence number.
+static constexpr std::string_view customer_names[] = {"foghorn", "loadtst", "acme", "wayne", "stark"};
+static constexpr size_t num_customers = std::size(customer_names);
+
+// Clustering key types matching the production IN-list query.
+static constexpr std::string_view type_names[] = {"tags", "events", "tracking", "exposure", "sticky", "top_id", "session"};
+static constexpr size_t num_types = std::size(type_names);
+
+static std::string_view customer_for(uint64_t seq) {
+    return customer_names[seq % num_customers];
 }
 
-static sstring to_hex(std::string_view b) {
-    static const char* digits = "0123456789abcdef";
-    sstring r;
-    r.resize(b.size() * 2);
-    for (size_t i = 0; i < b.size(); ++i) {
-        uint8_t v = b[i];
-        r[2 * i] = digits[(v >> 4) & 0xF];
-        r[2 * i + 1] = digits[v & 0xF];
+static sstring id_for(uint64_t seq) {
+    return fmt::format("{}", seq);
+}
+
+// Generate a realistic value string matching the production pattern.
+static sstring make_value(uint64_t seq, std::string_view type) {
+    // Deterministic "timestamp" suffix derived from seq.
+    auto ts = 1771380916 + seq;
+    if (type == "tags") {
+        return fmt::format("/DEPARTMENT=~technology~{}/DIVISION=~west~{}/GENDER=~male~{}/HAIR=~black~{}/HOBBY=~running~{}/LEAGUE=~national~{}/LOCATION=~san%20diego~{}/TEAM=~padres~{}",
+            ts, ts, ts, ts, ts, ts, ts, ts);
     }
-    return r;
+    // For other types, produce a shorter but still realistic-looking value.
+    return fmt::format("/SRC=~web~{}/ACTION=~view~{}/CATEGORY=~general~{}", ts, ts, ts);
+}
+
+// Escape single quotes in a string for safe CQL literal embedding.
+static sstring cql_escape(std::string_view s) {
+    // Count extra characters needed for escaping.
+    size_t extra = 0;
+    for (char c : s) {
+        if (c == '\'') {
+            ++extra;
+        }
+    }
+    if (extra == 0) {
+        return sstring(s.data(), s.size());
+    }
+    sstring result(sstring::initialized_later(), s.size() + extra);
+    size_t j = 0;
+    for (char c : s) {
+        if (c == '\'') {
+            result[j++] = '\'';
+        }
+        result[j++] = c;
+    }
+    return result;
 }
 
 class raw_cql_connection {
@@ -170,9 +202,6 @@ class raw_cql_connection {
     semaphore _connection_sem{1};
     sstring _username;
     sstring _password;
-    bool _use_prepared = false;
-    std::vector<sstring> _read_stmt_ids;
-    std::vector<sstring> _write_stmt_ids;
 
     struct frame {
         cql_binary_opcode opcode;
@@ -187,8 +216,8 @@ class raw_cql_connection {
     int16_t _next_new_stream = 0;
 
 public:
-    raw_cql_connection(connected_socket cs, sstring username = {}, sstring password = {}, bool use_prepared = false)
-        : _cs(std::move(cs)), _in(_cs.input()), _out(_cs.output()), _username(std::move(username)), _password(std::move(password)), _use_prepared(use_prepared) {
+    raw_cql_connection(connected_socket cs, sstring username = {}, sstring password = {})
+        : _cs(std::move(cs)), _in(_cs.input()), _out(_cs.output()), _username(std::move(username)), _password(std::move(password)) {
         start_reader();
     }
 
@@ -377,12 +406,16 @@ public:
         }
     }
 
-    future<> query_simple(std::string_view q) {
+    // CQL binary protocol consistency levels.
+    static constexpr uint16_t CL_ONE    = 0x0001;
+    static constexpr uint16_t CL_QUORUM = 0x0004;
+
+    future<> query_simple(std::string_view q, uint16_t consistency = CL_ONE) {
         auto stream = allocate_stream();
         frame_builder fb{stream};
         // QUERY frame (v4): <long string><short consistency><byte flags>
         fb.write_long_string(q);
-        fb.write_short(0x0001); // ONE
+        fb.write_short(consistency);
         fb.write_byte(0); // flags
         auto f = co_await execute_request(stream, fb.finish(cql_binary_opcode::QUERY));
         if (f.opcode == cql_binary_opcode::ERROR) {
@@ -390,102 +423,74 @@ public:
         }
     }
 
-    future<sstring> prepare_query(std::string_view q) {
-        auto stream = allocate_stream();
-        frame_builder fb{stream};
-        fb.write_long_string(q);
-        auto f = co_await execute_request(stream, fb.finish(cql_binary_opcode::PREPARE));
-        auto op = f.opcode;
-        auto payload = std::move(f.payload);
-
-        if (op != cql_binary_opcode::RESULT) {
-            throw std::runtime_error(fmt::format("expected RESULT for PREPARE, got {}", static_cast<int>(op)));
-        }
-        // RESULT body: [int kind][short id_len][bytes id]...
-        if (payload.size() < 4) {
-            throw std::runtime_error("short RESULT body");
-        }
-        int32_t kind = read_be<int32_t>(payload.get());
-        if (kind != 0x0004) { // PREPARED
-            throw std::runtime_error(fmt::format("expected RESULT kind PREPARED (4), got {}", kind));
-        }
-        if (payload.size() < 6) {
-            throw std::runtime_error("short PREPARED body");
-        }
-        uint16_t id_len = read_be<uint16_t>(payload.get() + 4);
-        if (payload.size() < 6 + id_len) {
-            throw std::runtime_error("short PREPARED id");
-        }
-        sstring id(payload.get() + 6, id_len);
-        co_return id;
+    future<> write_one(uint64_t seq) {
+        auto customer = customer_for(seq);
+        auto id = id_for(seq);
+        // Pick a random type for each write operation.
+        auto type_idx = tests::random::get_int<size_t>(num_types - 1);
+        auto type = type_names[type_idx];
+        auto value = cql_escape(make_value(seq, type));
+        auto q = fmt::format("INSERT INTO visitor.attributes (customer, id_name, id, type, value) "
+            "VALUES ('{}', 'VSVID', '{}', '{}', '{}')",
+            customer, id, type, value);
+        co_await query_simple(q);
     }
 
-    future<> execute_prepared(const sstring& id, std::string_view key) {
-        auto stream = allocate_stream();
-        frame_builder fb{stream};
-        fb.write_string(id); // [short bytes]
-        fb.write_short(0x0001); // ONE
-        // Flags: VALUES (0x01) | SKIP_METADATA (0x02) = 0x03
-        fb.write_byte(0x03);
-        fb.write_short(1); // 1 value
-        // Value is [int len] + bytes.
-        // Our key is bytes.
-        fb.write_int(key.size());
-        fb.write_raw(key.data(), key.size());
-
-        auto f = co_await execute_request(stream, fb.finish(cql_binary_opcode::EXECUTE));
-        if (f.opcode == cql_binary_opcode::ERROR) {
-            throw std::runtime_error("server returned ERROR to EXECUTE");
-        }
+    future<> write_one_type(uint64_t seq, std::string_view type) {
+        auto customer = customer_for(seq);
+        auto id = id_for(seq);
+        auto value = cql_escape(make_value(seq, type));
+        auto q = fmt::format("INSERT INTO visitor.attributes (customer, id_name, id, type, value) "
+            "VALUES ('{}', 'VSVID', '{}', '{}', '{}')",
+            customer, id, type, value);
+        co_await query_simple(q);
     }
 
-    future<> prepare_statements(unsigned tables) {
-        if (!_use_prepared) {
-            co_return;
-        }
-        for (unsigned i = 0; i < tables; ++i) {
-            _write_stmt_ids.push_back(co_await prepare_query(fmt::format("INSERT INTO ks.cf{}(pk,c0,c1,c2,c3,c4) VALUES (?,0x01,0x02,0x03,0x04,0x05)", i)));
-            _read_stmt_ids.push_back(co_await prepare_query(fmt::format("SELECT * FROM ks.cf{} WHERE pk=?", i)));
-        }
-    }
-
-    future<> write_one(unsigned table_idx, uint64_t seq) {
-        auto key = make_key(seq);
-        if (_use_prepared) {
-            co_await execute_prepared(_write_stmt_ids[table_idx], key);
-        } else {
-            auto key_hex = to_hex(key);
-            co_await query_simple(fmt::format("INSERT INTO ks.cf{}(pk,c0,c1,c2,c3,c4) VALUES (0x{},0x01,0x02,0x03,0x04,0x05)", table_idx, key_hex));
-        }
-    }
-
-    future<> read_one(unsigned table_idx, uint64_t seq) {
-        auto key = make_key(seq);
-        if (_use_prepared) {
-            co_await execute_prepared(_read_stmt_ids[table_idx], key);
-        } else {
-            auto key_hex = to_hex(key);
-            co_await query_simple(fmt::format("SELECT * FROM ks.cf{} WHERE pk=0x{}", table_idx, key_hex));
-        }
+    future<> read_one(uint64_t seq) {
+        auto customer = customer_for(seq);
+        auto id = id_for(seq);
+        auto q = fmt::format("SELECT type, value FROM visitor.attributes "
+            "WHERE customer = '{}' AND id_name = 'VSVID' AND id = '{}' "
+            "AND type IN ('tags','events','tracking','exposure','sticky','top_id','session') "
+            "USING TIMEOUT 2000ms",
+            customer, id);
+        co_await query_simple(q, CL_QUORUM);
     }
 };
 
-static future<> ensure_schema(raw_cql_connection& conn, unsigned tables) {
-    co_await conn.query_simple("CREATE KEYSPACE IF NOT EXISTS ks WITH replication={'class': 'NetworkTopologyStrategy'}");
-    for (unsigned i = 0; i < tables; ++i) {
-        if (tables > 100 && (i+1) % 100 == 0) {
-             std::cout << "Creating schema in progress [" << i+1 << "/" << tables << "]" << std::endl;
-        }
-        co_await conn.query_simple(fmt::format("CREATE TABLE IF NOT EXISTS ks.cf{} (pk blob primary key, c0 blob, c1 blob, c2 blob, c3 blob, c4 blob)", i));
+static future<> ensure_schema(raw_cql_connection& conn, const raw_cql_test_config& cfg) {
+    if (cfg.replication == "nts") {
+        co_await conn.query_simple(
+            "CREATE KEYSPACE IF NOT EXISTS visitor WITH replication = "
+            "{'class': 'org.apache.cassandra.locator.NetworkTopologyStrategy', 'AWS_US_WEST_2': '3'} "
+            "AND durable_writes = true AND tablets = {'enabled': false}");
+    } else {
+        co_await conn.query_simple(
+            "CREATE KEYSPACE IF NOT EXISTS visitor WITH replication = "
+            "{'class': 'NetworkTopologyStrategy'} AND tablets = {'enabled': false}");
     }
+    co_await conn.query_simple(
+        "CREATE TABLE IF NOT EXISTS visitor.attributes ("
+        "  customer text,"
+        "  id_name text,"
+        "  id text,"
+        "  type text,"
+        "  value text,"
+        "  PRIMARY KEY ((customer, id_name, id), type)"
+        ") WITH CLUSTERING ORDER BY (type ASC)"
+        "  AND bloom_filter_fp_chance = 0.01"
+        "  AND caching = {'keys': 'ALL', 'rows_per_partition': 'ALL'}"
+        "  AND compaction = {'class': 'IncrementalCompactionStrategy', 'min_threshold': '6', 'space_amplification_goal': '1.25'}"
+        "  AND compression = {'sstable_compression': 'org.apache.cassandra.io.compress.LZ4Compressor'}"
+        "  AND default_time_to_live = 0"
+        "  AND gc_grace_seconds = 864000"
+        "  AND speculative_retry = '99.0PERCENTILE'");
 }
 
-static future<> create_role_with_permissions(raw_cql_connection& conn, std::string_view username, std::string_view password, unsigned tables) {
+static future<> create_role_with_permissions(raw_cql_connection& conn, std::string_view username, std::string_view password) {
     co_await conn.query_simple(fmt::format("CREATE ROLE IF NOT EXISTS '{}' WITH PASSWORD = '{}' AND LOGIN = true", username, password));
-    for (unsigned i = 0; i < tables; ++i) {
-        co_await conn.query_simple(fmt::format("GRANT SELECT ON ks.cf{} TO {}", i, username));
-        co_await conn.query_simple(fmt::format("GRANT MODIFY ON ks.cf{} TO {}", i, username));
-    }
+    co_await conn.query_simple(fmt::format("GRANT SELECT ON visitor.attributes TO {}", username));
+    co_await conn.query_simple(fmt::format("GRANT MODIFY ON visitor.attributes TO {}", username));
 }
 
 static constexpr std::string_view non_superuser_name = "perf_test_user";
@@ -494,18 +499,16 @@ static constexpr std::string_view non_superuser_password = "perf_test_password";
 static std::unique_ptr<raw_cql_connection> make_connection(connected_socket cs, const raw_cql_test_config& cfg) {
     sstring username = cfg.create_non_superuser ? sstring(non_superuser_name) : sstring(cfg.username);
     sstring password = cfg.create_non_superuser ? sstring(non_superuser_password) : sstring(cfg.password);
-    return std::make_unique<raw_cql_connection>(std::move(cs), username, password, cfg.use_prepared);
+    return std::make_unique<raw_cql_connection>(std::move(cs), username, password);
 }
 
 // Perform one logical operation (write or read) using an existing connection.
 static future<> do_request(raw_cql_connection& c, const raw_cql_test_config& cfg) {
     auto seq = tests::random::get_int<uint64_t>(cfg.partitions - 1);
-    static thread_local unsigned table_idx = 0;
-    unsigned t = table_idx++ % cfg.tables;
     if (cfg.workload == "write") {
-        co_await c.write_one(t, seq);
+        co_await c.write_one(seq);
     } else {
-        co_await c.read_one(t, seq);
+        co_await c.read_one(seq);
     }
 }
 
@@ -525,7 +528,6 @@ static future<> run_one_with_new_connection(const raw_cql_test_config& cfg) {
     try {
         co_await c->startup();
         if (cfg.workload != "connect") {
-            co_await c->prepare_statements(cfg.tables);
             co_await do_request(*c, cfg);
         }
     } catch (...) {
@@ -607,7 +609,6 @@ static future<> prepare_thread_connections(const raw_cql_test_config& cfg) {
         }
         auto c = make_connection(std::move(cs), cfg);
         co_await c->startup();
-        co_await c->prepare_statements(cfg.tables);
         tl_conns.push_back(std::move(c));
     }
 }
@@ -630,17 +631,17 @@ static void prepopulate(const raw_cql_test_config& cfg) {
             if (!superuser_cs) {
                 throw std::runtime_error("populate phase: failed to connect as superuser");
             }
-            raw_cql_connection superuser_conn(std::move(superuser_cs), sstring(cfg.username), sstring(cfg.password), false);
+            raw_cql_connection superuser_conn(std::move(superuser_cs), sstring(cfg.username), sstring(cfg.password));
             try {
                 superuser_conn.startup().get();
-                ensure_schema(superuser_conn, cfg.tables).get();
-                create_role_with_permissions(superuser_conn, non_superuser_name, non_superuser_password, cfg.tables).get();
+                ensure_schema(superuser_conn, cfg).get();
+                create_role_with_permissions(superuser_conn, non_superuser_name, non_superuser_password).get();
             } catch (...) {
                 superuser_conn.stop().get();
                 throw;
             }
             superuser_conn.stop().get();
-            std::cout << "Created role '" << non_superuser_name << "' with SELECT, MODIFY permissions on all tables" << std::endl;
+            std::cout << "Created role '" << non_superuser_name << "' with SELECT, MODIFY permissions on visitor.attributes" << std::endl;
         }
 
         connected_socket cs;
@@ -662,12 +663,12 @@ static void prepopulate(const raw_cql_test_config& cfg) {
         try {
             conn->startup().get();
             if (!cfg.create_non_superuser) {
-                ensure_schema(*conn, cfg.tables).get();
+                ensure_schema(*conn, cfg).get();
             }
-            conn->prepare_statements(cfg.tables).get();
-            for (unsigned t = 0; t < cfg.tables; ++t) {
-                for (uint64_t seq = 0; seq < cfg.partitions; ++seq) {
-                    conn->write_one(t, seq).get();
+            // Write all 7 type rows per partition for realistic reads.
+            for (uint64_t seq = 0; seq < cfg.partitions; ++seq) {
+                for (size_t t = 0; t < num_types; ++t) {
+                    conn->write_one_type(seq, type_names[t]).get();
                 }
             }
         } catch (...) {
@@ -675,7 +676,7 @@ static void prepopulate(const raw_cql_test_config& cfg) {
             throw;
         }
         conn->stop().get();
-        std::cout << "Pre-populated " << cfg.partitions << " partitions" << std::endl;
+        std::cout << "Pre-populated " << cfg.partitions << " partitions (" << cfg.partitions * num_types << " rows)" << std::endl;
     } catch (...) {
         std::cerr << "Population failed: " << std::current_exception() << std::endl;
         throw;
@@ -752,7 +753,7 @@ static void workload_main(const raw_cql_test_config& cfg, sharded<abort_source>*
         Json::Value params;
         params["workload"] = cfg.workload;
         params["partitions"] = cfg.partitions;
-        params["tables"] = cfg.tables;
+        params["replication"] = cfg.replication;
         params["duration"] = cfg.duration_in_seconds;
         params["operations_per_shard"] = cfg.operations_per_shard;
         params["concurrency_per_connection"] = cfg.concurrency_per_connection;
@@ -760,7 +761,6 @@ static void workload_main(const raw_cql_test_config& cfg, sharded<abort_source>*
         params["username"] = cfg.username;
         params["remote_host"] = cfg.remote_host;
         params["connection_per_request"] = cfg.connection_per_request;
-        params["use_prepared"] = cfg.use_prepared;
         params["create_non_superuser"] = cfg.create_non_superuser;
         params["cpus"] = smp::count;
 
@@ -783,7 +783,6 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
         opts_desc.add_options()
             ("workload", bpo::value<std::string>()->default_value("read"), "workload type: read|write|connect")
             ("partitions", bpo::value<unsigned>()->default_value(10000), "number of partitions")
-            ("tables", bpo::value<unsigned>()->default_value(1), "number of tables")
             ("duration", bpo::value<unsigned>()->default_value(5), "test duration seconds")
             ("operations-per-shard", bpo::value<unsigned>()->default_value(0), "fixed op count per shard")
             ("concurrency-per-shard", bpo::value<unsigned>()->default_value(10), "concurrent requests per connection")
@@ -794,14 +793,13 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
             ("create-non-superuser", bpo::value<bool>()->default_value(false), "create a non-superuser role using username/password as superuser credentials")
             ("remote-host", bpo::value<std::string>()->default_value(""), "remote host to connect to, leave empty to run in-process server")
             ("connection-per-request", bpo::value<bool>()->default_value(false), "create a fresh connection for every request")
-            ("use-prepared", bpo::value<bool>()->default_value(true), "use prepared statements")
+            ("replication", bpo::value<std::string>()->default_value("simple"), "replication strategy: simple (RF=1) or nts (NTS AWS_US_WEST_2:3)")
             ("json-result", bpo::value<std::string>()->default_value(""), "file to write json results to");
         bpo::variables_map vm;
         bpo::store(bpo::command_line_parser(ac,av).options(opts_desc).allow_unregistered().run(), vm);
 
         c.workload = vm["workload"].as<std::string>();
         c.partitions = vm["partitions"].as<unsigned>();
-        c.tables = vm["tables"].as<unsigned>();
         c.duration_in_seconds = vm["duration"].as<unsigned>();
         c.operations_per_shard = vm["operations-per-shard"].as<unsigned>();
         c.concurrency_per_connection = vm["concurrency-per-shard"].as<unsigned>();
@@ -812,7 +810,7 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
         c.create_non_superuser = vm["create-non-superuser"].as<bool>();
         c.remote_host = vm["remote-host"].as<std::string>();
         c.connection_per_request = vm["connection-per-request"].as<bool>();
-        c.use_prepared = vm["use-prepared"].as<bool>();
+        c.replication = vm["replication"].as<std::string>();
         c.json_result_file = vm["json-result"].as<std::string>();
 
         if (!c.username.empty() && c.password.empty()) {
@@ -825,6 +823,9 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
         }
         if (c.workload != "read" && c.workload != "write" && c.workload != "connect") {
             std::cerr << "Unknown workload: " << c.workload << "\n"; return 1;
+        }
+        if (c.replication != "simple" && c.replication != "nts") {
+            std::cerr << "Unknown replication: " << c.replication << " (expected 'simple' or 'nts')\n"; return 1;
         }
 
         // Remove test options to not disturb scylla main app
