@@ -407,8 +407,8 @@ public:
     }
 
     // CQL binary protocol consistency levels.
-    static constexpr uint16_t CL_ONE    = 0x0001;
-    static constexpr uint16_t CL_QUORUM = 0x0004;
+    static constexpr uint16_t CL_ONE = 0x0001;
+    static constexpr uint16_t CL_ALL = 0x0005;
 
     future<> query_simple(std::string_view q, uint16_t consistency = CL_ONE) {
         auto stream = allocate_stream();
@@ -454,7 +454,7 @@ public:
             "AND type IN ('tags','events','tracking','exposure','sticky','top_id','session') "
             "USING TIMEOUT 2000ms",
             customer, id);
-        co_await query_simple(q, CL_QUORUM);
+        co_await query_simple(q, CL_ALL);
     }
 };
 

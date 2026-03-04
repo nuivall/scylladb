@@ -32,15 +32,15 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Defaults
 # -------------------------------------------------------------------
 WORKLOAD="read"
-PARTITIONS=1000000
+PARTITIONS=100000
 DURATION=300
-CONCURRENCY=100
-CONNECTIONS=20
+CONCURRENCY=20
+CONNECTIONS=1000
 SKIP_BUILD=false
 SCYLLA_PATH="$REPO_ROOT/build/release/scylla"
-NODE_SMP=2
-NODE_MEMORY="15G"
-LOADER_SMP=2
+NODE_SMP=1
+NODE_MEMORY="1G"
+LOADER_SMP=1
 
 # -------------------------------------------------------------------
 # Parse arguments
@@ -243,7 +243,7 @@ echo ""
     --continue-after-error false \
     --json-result "$LOGDIR/results.json" \
     --smp "$LOADER_SMP" \
-    --memory 1G \
+    --memory 2G \
     --overprovisioned \
     2>&1 | tee "$LOGDIR/benchmark.log"
 
