@@ -3,7 +3,7 @@
 # run_perf_cql_raw_benchmark.sh
 #
 # Starts a 3-node ScyllaDB cluster locally and runs the perf-cql-raw benchmark
-# against it using the visitor.attributes schema. Each node is sized to emulate
+# against it using the benchks.data schema (~1MB rows). Each node is sized to emulate
 # an i4i.xlarge with 2 cores (--smp 2, ~15G memory).
 #
 # All output is logged to a testlog/ directory.
@@ -32,7 +32,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Defaults
 # -------------------------------------------------------------------
 WORKLOAD="read"
-PARTITIONS=100000
+PARTITIONS=5000
 DURATION=300
 CONCURRENCY=20
 CONNECTIONS=1000
@@ -240,7 +240,7 @@ echo ""
     --concurrency-per-shard "$CONCURRENCY" \
     --connections-per-shard "$CONNECTIONS" \
     --replication nts \
-    --continue-after-error false \
+    --continue-after-error true \
     --json-result "$LOGDIR/results.json" \
     --smp "$LOADER_SMP" \
     --memory 2G \

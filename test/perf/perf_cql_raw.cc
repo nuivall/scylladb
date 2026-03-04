@@ -103,18 +103,33 @@ struct frame_builder {
 
     frame_builder(int16_t stream) : stream_id(stream), body(initial_capacity) {}
 
+    void ensure_space(size_t n) {
+        size_t cap = body.size();
+        if (pos + n <= cap) {
+            return;
+        }
+        size_t new_cap = std::max(cap * 2, pos + n);
+        temporary_buffer<char> nb(new_cap);
+        std::memcpy(nb.get_write(), body.get(), pos);
+        body = std::move(nb);
+    }
+
     void write_int(int32_t v) {
+        ensure_space(4);
         write_be<int32_t>(body.get_write() + pos, v);
         pos += 4;
     }
     void write_short(uint16_t v) {
+        ensure_space(2);
         write_be<uint16_t>(body.get_write() + pos, v);
         pos += 2;
     }
     void write_byte(char c) {
+        ensure_space(1);
         body.get_write()[pos++] = c;
     }
     void write_raw(const char* data, size_t len) {
+        ensure_space(len);
         std::memcpy(body.get_write() + pos, data, len);
         pos += len;
     }
@@ -143,56 +158,82 @@ struct frame_builder {
     }
 };
 
-// Visitor attributes data model helpers.
-// Customers are picked deterministically from the sequence number.
-static constexpr std::string_view customer_names[] = {"foghorn", "loadtst", "acme", "wayne", "stark"};
-static constexpr size_t num_customers = std::size(customer_names);
+// Benchmark data model constants.
+//
+// Schema: benchks.data (pk text, ck int, payload text, tags map<text,text>)
+// Each partition has `num_ck_rows` clustering rows (ck 0..6).
+// payload is ~100KB of deterministic text; tags is a map with ~50 entries of
+// ~1KB each (~50KB total). Together a row is ~150KB, and a full partition
+// read (~7 rows) returns ~1MB.
+//
+// Reads use a large IN clause (100 values 0..99) to stress the CQL3 parser;
+// only 7 rows actually exist per partition.
 
-// Clustering key types matching the production IN-list query.
-static constexpr std::string_view type_names[] = {"tags", "events", "tracking", "exposure", "sticky", "top_id", "session"};
-static constexpr size_t num_types = std::size(type_names);
+static constexpr unsigned num_ck_rows = 7;       // clustering rows per partition
+static constexpr unsigned in_clause_size = 100;   // IN list width for reads
+static constexpr size_t payload_size = 100'000;   // ~100KB text payload per row
+static constexpr size_t map_entries = 50;         // entries in the tags map
+static constexpr size_t map_value_size = 1'000;   // ~1KB per map value
 
-static std::string_view customer_for(uint64_t seq) {
-    return customer_names[seq % num_customers];
+// Partition key: "p-<seq>"
+static sstring pk_for(uint64_t seq) {
+    return fmt::format("p-{}", seq);
 }
 
-static sstring id_for(uint64_t seq) {
-    return fmt::format("{}", seq);
-}
-
-// Generate a realistic value string matching the production pattern.
-static sstring make_value(uint64_t seq, std::string_view type) {
-    // Deterministic "timestamp" suffix derived from seq.
-    auto ts = 1771380916 + seq;
-    if (type == "tags") {
-        return fmt::format("/DEPARTMENT=~technology~{}/DIVISION=~west~{}/GENDER=~male~{}/HAIR=~black~{}/HOBBY=~running~{}/LEAGUE=~national~{}/LOCATION=~san%20diego~{}/TEAM=~padres~{}",
-            ts, ts, ts, ts, ts, ts, ts, ts);
-    }
-    // For other types, produce a shorter but still realistic-looking value.
-    return fmt::format("/SRC=~web~{}/ACTION=~view~{}/CATEGORY=~general~{}", ts, ts, ts);
-}
-
-// Escape single quotes in a string for safe CQL literal embedding.
-static sstring cql_escape(std::string_view s) {
-    // Count extra characters needed for escaping.
-    size_t extra = 0;
-    for (char c : s) {
-        if (c == '\'') {
-            ++extra;
-        }
-    }
-    if (extra == 0) {
-        return sstring(s.data(), s.size());
-    }
-    sstring result(sstring::initialized_later(), s.size() + extra);
-    size_t j = 0;
-    for (char c : s) {
-        if (c == '\'') {
-            result[j++] = '\'';
-        }
-        result[j++] = c;
+// Generate deterministic payload text of `payload_size` bytes.
+static sstring make_payload(uint64_t seq, unsigned ck) {
+    // Build a seed string and repeat it to fill the target size.
+    auto seed = fmt::format("payload-{}-{}-", seq, ck);
+    sstring result(sstring::initialized_later(), payload_size);
+    size_t slen = seed.size();
+    for (size_t i = 0; i < payload_size; ++i) {
+        result[i] = seed[i % slen];
     }
     return result;
+}
+
+// Generate a CQL map literal: {'k0':'vvvv...', 'k1':'vvvv...', ...}
+// with `map_entries` entries each having a ~`map_value_size` value.
+static sstring make_map_literal(uint64_t seq, unsigned ck) {
+    // Pre-size: each entry is ~(key ~10 chars + value ~1000 chars + quotes/punctuation ~12)
+    // Total ~ map_entries * (map_value_size + 30) + 2 braces
+    std::string buf;
+    buf.reserve(map_entries * (map_value_size + 40) + 2);
+    buf.push_back('{');
+    for (size_t i = 0; i < map_entries; ++i) {
+        if (i > 0) buf.append(", ");
+        // Key
+        auto key = fmt::format("k{}", i);
+        buf.push_back('\'');
+        buf.append(key);
+        buf.push_back('\'');
+        buf.append(": '");
+        // Value: deterministic fill
+        auto vseed = fmt::format("v{}-{}-{}-", seq, ck, i);
+        size_t vslen = vseed.size();
+        for (size_t j = 0; j < map_value_size; ++j) {
+            buf.push_back(vseed[j % vslen]);
+        }
+        buf.push_back('\'');
+    }
+    buf.push_back('}');
+    return sstring(buf.data(), buf.size());
+}
+
+// Build the read-query IN list string once: "0,1,2,...,99"
+static sstring build_in_list() {
+    std::string buf;
+    buf.reserve(in_clause_size * 4); // generous
+    for (unsigned i = 0; i < in_clause_size; ++i) {
+        if (i > 0) buf.push_back(',');
+        buf.append(std::to_string(i));
+    }
+    return sstring(buf.data(), buf.size());
+}
+
+static const sstring& in_list_string() {
+    static const sstring s = build_in_list();
+    return s;
 }
 
 class raw_cql_connection {
@@ -424,36 +465,28 @@ public:
     }
 
     future<> write_one(uint64_t seq) {
-        auto customer = customer_for(seq);
-        auto id = id_for(seq);
-        // Pick a random type for each write operation.
-        auto type_idx = tests::random::get_int<size_t>(num_types - 1);
-        auto type = type_names[type_idx];
-        auto value = cql_escape(make_value(seq, type));
-        auto q = fmt::format("INSERT INTO visitor.attributes (customer, id_name, id, type, value) "
-            "VALUES ('{}', 'VSVID', '{}', '{}', '{}')",
-            customer, id, type, value);
-        co_await query_simple(q);
+        // Write a single random clustering row for the given partition.
+        auto pk = pk_for(seq);
+        unsigned ck = tests::random::get_int<unsigned>(num_ck_rows - 1);
+        co_await write_one_ck(seq, ck);
     }
 
-    future<> write_one_type(uint64_t seq, std::string_view type) {
-        auto customer = customer_for(seq);
-        auto id = id_for(seq);
-        auto value = cql_escape(make_value(seq, type));
-        auto q = fmt::format("INSERT INTO visitor.attributes (customer, id_name, id, type, value) "
-            "VALUES ('{}', 'VSVID', '{}', '{}', '{}')",
-            customer, id, type, value);
+    future<> write_one_ck(uint64_t seq, unsigned ck) {
+        auto pk = pk_for(seq);
+        auto payload = make_payload(seq, ck);
+        auto map_lit = make_map_literal(seq, ck);
+        auto q = fmt::format("INSERT INTO benchks.data (pk, ck, payload, tags) "
+            "VALUES ('{}', {}, '{}', {})",
+            pk, ck, payload, map_lit);
         co_await query_simple(q);
     }
 
     future<> read_one(uint64_t seq) {
-        auto customer = customer_for(seq);
-        auto id = id_for(seq);
-        auto q = fmt::format("SELECT type, value FROM visitor.attributes "
-            "WHERE customer = '{}' AND id_name = 'VSVID' AND id = '{}' "
-            "AND type IN ('tags','events','tracking','exposure','sticky','top_id','session') "
-            "USING TIMEOUT 2000ms",
-            customer, id);
+        auto pk = pk_for(seq);
+        auto q = fmt::format("SELECT payload, tags FROM benchks.data "
+            "WHERE pk = '{}' AND ck IN ({}) "
+            "USING TIMEOUT 10000ms",
+            pk, in_list_string());
         co_await query_simple(q, CL_ALL);
     }
 };
@@ -461,23 +494,22 @@ public:
 static future<> ensure_schema(raw_cql_connection& conn, const raw_cql_test_config& cfg) {
     if (cfg.replication == "nts") {
         co_await conn.query_simple(
-            "CREATE KEYSPACE IF NOT EXISTS visitor WITH replication = "
+            "CREATE KEYSPACE IF NOT EXISTS benchks WITH replication = "
             "{'class': 'org.apache.cassandra.locator.NetworkTopologyStrategy', 'AWS_US_WEST_2': '3'} "
             "AND durable_writes = true AND tablets = {'enabled': false}");
     } else {
         co_await conn.query_simple(
-            "CREATE KEYSPACE IF NOT EXISTS visitor WITH replication = "
+            "CREATE KEYSPACE IF NOT EXISTS benchks WITH replication = "
             "{'class': 'NetworkTopologyStrategy'} AND tablets = {'enabled': false}");
     }
     co_await conn.query_simple(
-        "CREATE TABLE IF NOT EXISTS visitor.attributes ("
-        "  customer text,"
-        "  id_name text,"
-        "  id text,"
-        "  type text,"
-        "  value text,"
-        "  PRIMARY KEY ((customer, id_name, id), type)"
-        ") WITH CLUSTERING ORDER BY (type ASC)"
+        "CREATE TABLE IF NOT EXISTS benchks.data ("
+        "  pk text,"
+        "  ck int,"
+        "  payload text,"
+        "  tags map<text, text>,"
+        "  PRIMARY KEY (pk, ck)"
+        ") WITH CLUSTERING ORDER BY (ck ASC)"
         "  AND bloom_filter_fp_chance = 0.01"
         "  AND caching = {'keys': 'ALL', 'rows_per_partition': 'ALL'}"
         "  AND compaction = {'class': 'IncrementalCompactionStrategy', 'min_threshold': '6', 'space_amplification_goal': '1.25'}"
@@ -489,8 +521,8 @@ static future<> ensure_schema(raw_cql_connection& conn, const raw_cql_test_confi
 
 static future<> create_role_with_permissions(raw_cql_connection& conn, std::string_view username, std::string_view password) {
     co_await conn.query_simple(fmt::format("CREATE ROLE IF NOT EXISTS '{}' WITH PASSWORD = '{}' AND LOGIN = true", username, password));
-    co_await conn.query_simple(fmt::format("GRANT SELECT ON visitor.attributes TO {}", username));
-    co_await conn.query_simple(fmt::format("GRANT MODIFY ON visitor.attributes TO {}", username));
+    co_await conn.query_simple(fmt::format("GRANT SELECT ON benchks.data TO {}", username));
+    co_await conn.query_simple(fmt::format("GRANT MODIFY ON benchks.data TO {}", username));
 }
 
 static constexpr std::string_view non_superuser_name = "perf_test_user";
@@ -641,7 +673,7 @@ static void prepopulate(const raw_cql_test_config& cfg) {
                 throw;
             }
             superuser_conn.stop().get();
-            std::cout << "Created role '" << non_superuser_name << "' with SELECT, MODIFY permissions on visitor.attributes" << std::endl;
+            std::cout << "Created role '" << non_superuser_name << "' with SELECT, MODIFY permissions on benchks.data" << std::endl;
         }
 
         connected_socket cs;
@@ -665,10 +697,10 @@ static void prepopulate(const raw_cql_test_config& cfg) {
             if (!cfg.create_non_superuser) {
                 ensure_schema(*conn, cfg).get();
             }
-            // Write all 7 type rows per partition for realistic reads.
+            // Write all clustering rows per partition for realistic reads.
             for (uint64_t seq = 0; seq < cfg.partitions; ++seq) {
-                for (size_t t = 0; t < num_types; ++t) {
-                    conn->write_one_type(seq, type_names[t]).get();
+                for (unsigned ck = 0; ck < num_ck_rows; ++ck) {
+                    conn->write_one_ck(seq, ck).get();
                 }
             }
         } catch (...) {
@@ -676,7 +708,8 @@ static void prepopulate(const raw_cql_test_config& cfg) {
             throw;
         }
         conn->stop().get();
-        std::cout << "Pre-populated " << cfg.partitions << " partitions (" << cfg.partitions * num_types << " rows)" << std::endl;
+        std::cout << "Pre-populated " << cfg.partitions << " partitions (" << cfg.partitions * num_ck_rows << " rows, ~"
+                  << (cfg.partitions * num_ck_rows * (payload_size + map_entries * map_value_size) / (1024*1024)) << " MB)" << std::endl;
     } catch (...) {
         std::cerr << "Population failed: " << std::current_exception() << std::endl;
         throw;
