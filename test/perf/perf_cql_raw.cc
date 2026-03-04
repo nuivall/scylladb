@@ -478,7 +478,7 @@ public:
         auto q = fmt::format("INSERT INTO benchks.data (pk, ck, payload, tags) "
             "VALUES ('{}', {}, '{}', {})",
             pk, ck, payload, map_lit);
-        co_await query_simple(q);
+        co_await query_simple(q, CL_ALL);
     }
 
     future<> read_one(uint64_t seq) {
