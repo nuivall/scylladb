@@ -619,6 +619,7 @@ scylla_tests = set([
     'test/boost/reservoir_sampling_test',
     'test/boost/result_utils_test',
     'test/boost/rest_client_test',
+    'test/boost/rolling_max_tracker_test',
     'test/boost/reusable_buffer_test',
     'test/boost/rust_test',
     'test/boost/s3_test',
@@ -1588,6 +1589,7 @@ pure_boost_tests = set([
     'test/boost/wrapping_interval_test',
     'test/boost/range_tombstone_list_test',
     'test/boost/reservoir_sampling_test',
+    'test/boost/rolling_max_tracker_test',
     'test/boost/serialization_test',
     'test/boost/small_vector_test',
     'test/boost/top_k_test',
@@ -1736,6 +1738,7 @@ deps['test/boost/url_parse_test'] = ['utils/http.cc', 'test/boost/url_parse_test
 deps['test/boost/murmur_hash_test'] = ['bytes.cc', 'utils/murmur_hash.cc', 'test/boost/murmur_hash_test.cc']
 deps['test/boost/allocation_strategy_test'] = ['test/boost/allocation_strategy_test.cc', 'utils/logalloc.cc', 'utils/dynamic_bitset.cc', 'utils/labels.cc']
 deps['test/boost/log_heap_test'] = ['test/boost/log_heap_test.cc']
+deps['test/boost/rolling_max_tracker_test'] = ['test/boost/rolling_max_tracker_test.cc']
 deps['test/boost/estimated_histogram_test'] = ['test/boost/estimated_histogram_test.cc']
 deps['test/boost/summary_test'] = ['test/boost/summary_test.cc']
 deps['test/boost/anchorless_list_test'] = ['test/boost/anchorless_list_test.cc']
