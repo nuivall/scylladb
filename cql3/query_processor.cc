@@ -11,6 +11,7 @@
 #include "cql3/query_processor.hh"
 
 #include <seastar/core/metrics.hh>
+#include <seastar/core/memory.hh>
 #include <seastar/core/shared_ptr.hh>
 #include <seastar/coroutine/parallel_for_each.hh>
 #include <seastar/coroutine/as_future.hh>
@@ -768,6 +769,10 @@ prepared_cache_key_type query_processor::compute_id(
 
 std::unique_ptr<prepared_statement>
 query_processor::get_statement(const std::string_view& query, const service::client_state& client_state, dialect d) {
+    // Measuring allocation cost requires that no yield points exist
+    // between bytes_before and bytes_after. It needs fixing if this
+    // function is ever futurized.
+    auto bytes_before = seastar::memory::stats().total_bytes_allocated();
     std::unique_ptr<raw::parsed_statement> statement = parse_statement(query, d);
 
     // Set keyspace for statement that require login
@@ -783,6 +788,8 @@ query_processor::get_statement(const std::string_view& query, const service::cli
         audit_info->set_query_string(query);
         p->statement->sanitize_audit_info();
     }
+    auto bytes_after = seastar::memory::stats().total_bytes_allocated();
+    _parsing_cost_tracker.add_sample(bytes_after - bytes_before);
     return p;
 }
 

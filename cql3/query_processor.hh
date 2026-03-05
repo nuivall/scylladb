@@ -31,6 +31,7 @@
 #include "vector_search/vector_store_client.hh"
 #include "utils/assert.hh"
 #include "utils/observable.hh"
+#include "utils/rolling_max_tracker.hh"
 #include "service/raft/raft_group0_client.hh"
 #include "types/types.hh"
 #include "db/auth_version.hh"
@@ -135,6 +136,9 @@ private:
     prepared_statements_cache _prepared_cache;
     authorized_prepared_statements_cache _authorized_prepared_cache;
 
+    // Tracks the rolling maximum of gross bytes allocated during CQL parsing
+    utils::rolling_max_tracker _parsing_cost_tracker{1000};
+
     std::function<void(uint32_t)> _auth_prepared_cache_cfg_cb;
     serialized_action _authorized_prepared_cache_config_action;
     utils::observer<uint32_t> _authorized_prepared_cache_update_interval_in_ms_observer;
@@ -211,6 +215,11 @@ public:
 
     cql_stats& get_cql_stats() {
         return _cql_stats;
+    }
+
+    /// Returns the estimated peak memory cost of CQL parsing.
+    size_t parsing_cost_estimate() const noexcept {
+        return _parsing_cost_tracker.current_max();
     }
 
     lang::manager& lang() { return _lang_manager; }
