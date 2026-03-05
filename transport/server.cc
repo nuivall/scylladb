@@ -515,7 +515,7 @@ future<foreign_ptr<std::unique_ptr<cql_server::response>>>
         case cql_binary_opcode::AUTH_RESPONSE: return wrap_in_foreign(process_auth_response(stream, std::move(in), client_state, trace_state));
         case cql_binary_opcode::OPTIONS:       return wrap_in_foreign(process_options(stream, std::move(in), client_state, trace_state));
         case cql_binary_opcode::QUERY:         return process_query(stream, std::move(in), client_state, std::move(permit), trace_state);
-        case cql_binary_opcode::PREPARE:       return wrap_in_foreign(process_prepare(stream, std::move(in), client_state, trace_state));
+        case cql_binary_opcode::PREPARE:       return wrap_in_foreign(process_prepare(stream, std::move(in), client_state, std::move(permit), trace_state));
         case cql_binary_opcode::EXECUTE:       return process_execute(stream, std::move(in), client_state, std::move(permit), trace_state);
         case cql_binary_opcode::BATCH:         return process_batch(stream, std::move(in), client_state, std::move(permit), trace_state);
         case cql_binary_opcode::REGISTER:      return wrap_in_foreign(process_register(stream, std::move(in), client_state, trace_state));
@@ -834,7 +834,7 @@ future<> cql_server::connection::process_request() {
               return make_ready_future<>();
           }
           semaphore_units<> mem_permit = mem_permit_fut.get();
-          return this->read_and_decompress_frame(length, flags).then([this, op, stream, tracing_requested, mem_permit = make_service_permit(std::move(mem_permit))] (fragmented_temporary_buffer buf) mutable {
+          return this->read_and_decompress_frame(length, flags).then([this, op, stream, tracing_requested, mem_permit = make_service_permit(std::move(mem_permit), _server._memory_available)] (fragmented_temporary_buffer buf) mutable {
 
             ++_server._stats.requests_served;
             ++_server._stats.requests_serving;
@@ -1219,7 +1219,7 @@ cql_server::connection::process_query(uint16_t stream, request_reader in, servic
 }
 
 future<std::unique_ptr<cql_server::response>> cql_server::connection::process_prepare(uint16_t stream, request_reader in, service::client_state& client_state,
-        tracing::trace_state_ptr trace_state) {
+        service_permit permit, tracing::trace_state_ptr trace_state) {
 
     utils::result_with_exception_ptr<std::string_view> query_sv = in.read_long_string_view();
     if (!query_sv) {
@@ -1233,9 +1233,9 @@ future<std::unique_ptr<cql_server::response>> cql_server::connection::process_pr
 
     return _server._query_processor.invoke_on_others([query, &client_state, dialect] (auto& qp) mutable {
             return qp.prepare(std::move(query), client_state, dialect).discard_result();
-    }).then([this, query, stream, &client_state, trace_state, dialect] () mutable {
+    }).then([this, query, stream, &client_state, trace_state, dialect, permit = std::move(permit)] () mutable {
         tracing::trace(trace_state, "Done preparing on remote shards");
-        return _server._query_processor.local().prepare(std::move(query), client_state, dialect).then([this, stream, &client_state, trace_state] (auto msg) {
+        return _server._query_processor.local().prepare(std::move(query), client_state, dialect, std::move(permit)).then([this, stream, &client_state, trace_state] (auto msg) {
             tracing::trace(trace_state, "Done preparing on a local shard - preparing a result. ID is [{}]", seastar::value_of([&msg] {
                 return messages::result_message::prepared::cql::get_id(msg);
             }));
@@ -1380,7 +1380,7 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
             if (!query) {
                 return make_exception_future<cql_server::process_fn_return_type>(std::move(query).assume_error());
             }
-            stmt_ptr = qp.local().get_statement(query.assume_value(), client_state, dialect);
+            stmt_ptr = qp.local().get_statement(query.assume_value(), client_state, dialect, permit);
             ps = stmt_ptr->checked_weak_from_this();
             if (init_trace) {
                 tracing::add_query(trace_state, query.assume_value());

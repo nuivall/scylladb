@@ -27,6 +27,7 @@
 #include "mutation/timestamp.hh"
 #include "transport/messages/result_message.hh"
 #include "service/client_state.hh"
+#include "service_permit.hh"
 #include "service/broadcast_tables/experimental/query_result.hh"
 #include "vector_search/vector_store_client.hh"
 #include "utils/assert.hh"
@@ -465,7 +466,7 @@ public:
     prepare(sstring query_string, service::query_state& query_state, dialect d);
 
     future<::shared_ptr<cql_transport::messages::result_message::prepared>>
-    prepare(sstring query_string, const service::client_state& client_state, dialect d);
+    prepare(sstring query_string, const service::client_state& client_state, dialect d, service_permit permit = empty_service_permit());
 
     future<> stop();
 
@@ -509,7 +510,8 @@ public:
     std::unique_ptr<statements::prepared_statement> get_statement(
             const std::string_view& query,
             const service::client_state& client_state,
-            dialect d);
+            dialect d,
+            service_permit permit = empty_service_permit());
 
     friend class migration_subscriber;
 

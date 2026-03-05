@@ -618,7 +618,7 @@ future<::shared_ptr<result_message>>
 query_processor::execute_direct_without_checking_exception_message(const std::string_view& query_string, service::query_state& query_state, dialect d, query_options& options) {
     log.trace("execute_direct: \"{}\"", query_string);
     tracing::trace(query_state.get_trace_state(), "Parsing a statement");
-    auto p = get_statement(query_string, query_state.get_client_state(), d);
+    auto p = get_statement(query_string, query_state.get_client_state(), d, query_state.get_permit());
     auto statement = p->statement;
     if (statement->get_bound_terms() != options.get_values_count()) {
         const auto msg = format("Invalid amount of bind variables: expected {:d} received {:d}",
@@ -721,15 +721,15 @@ query_processor::process_authorized_statement(const ::shared_ptr<cql_statement> 
 future<::shared_ptr<cql_transport::messages::result_message::prepared>>
 query_processor::prepare(sstring query_string, service::query_state& query_state, cql3::dialect d) {
     auto& client_state = query_state.get_client_state();
-    return prepare(std::move(query_string), client_state, d);
+    return prepare(std::move(query_string), client_state, d, query_state.get_permit());
 }
 
 future<::shared_ptr<cql_transport::messages::result_message::prepared>>
-query_processor::prepare(sstring query_string, const service::client_state& client_state, cql3::dialect d) {
+query_processor::prepare(sstring query_string, const service::client_state& client_state, cql3::dialect d, service_permit permit) {
     try {
         auto key = compute_id(query_string, client_state.get_raw_keyspace(), d);
-        auto prep_ptr = co_await _prepared_cache.get(key, [this, &query_string, &client_state, d] {
-                auto prepared = get_statement(query_string, client_state, d);
+        auto prep_ptr = co_await _prepared_cache.get(key, [this, &query_string, &client_state, d, permit] {
+                auto prepared = get_statement(query_string, client_state, d, permit);
                 prepared->calculate_metadata_id();
                 auto bound_terms = prepared->statement->get_bound_terms();
                 if (bound_terms > std::numeric_limits<uint16_t>::max()) {
@@ -768,7 +768,8 @@ prepared_cache_key_type query_processor::compute_id(
 }
 
 std::unique_ptr<prepared_statement>
-query_processor::get_statement(const std::string_view& query, const service::client_state& client_state, dialect d) {
+query_processor::get_statement(const std::string_view& query, const service::client_state& client_state, dialect d, service_permit permit) {
+    auto estimated = permit.count();
     auto bytes_before = seastar::memory::stats().total_bytes_allocated();
     std::unique_ptr<raw::parsed_statement> statement = parse_statement(query, d);
 
@@ -786,7 +787,16 @@ query_processor::get_statement(const std::string_view& query, const service::cli
         p->statement->sanitize_audit_info();
     }
     auto bytes_after = seastar::memory::stats().total_bytes_allocated();
-    _parsing_cost_tracker.add_sample(bytes_after - bytes_before);
+    auto actual_cost = bytes_after - bytes_before;
+    _parsing_cost_tracker.add_sample(actual_cost);
+
+    // Adjust semaphore admission: if the actual parsing cost exceeds
+    // the amount of units held by the permit, consume additional units
+    // so the semaphore accurately tracks memory usage.
+    if (actual_cost > estimated) {
+        permit.adopt_extra_units(actual_cost - estimated);
+    }
+
     return p;
 }
 
