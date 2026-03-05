@@ -786,6 +786,10 @@ future<> cql_server::connection::process_request() {
                 .then([this] { return _read_buf.close(); })
                 .then([this] { return util::skip_entire_stream(_read_buf); });
         }
+        // Add some upper bound estimation from previous parsing
+        if (op == uint8_t(cql_binary_opcode::QUERY) || op == uint8_t(cql_binary_opcode::PREPARE)) {
+            mem_estimate += _server._query_processor.local().parsing_cost_estimate();
+        }
 
         if (_server._stats.requests_serving > _server._config.max_concurrent_requests) {
             ++_server._stats.requests_shed;
