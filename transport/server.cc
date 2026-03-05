@@ -780,6 +780,7 @@ future<> cql_server::connection::process_request() {
         // rolling maximum of gross bytes allocated during get_statement().
         if (op == uint8_t(cql_binary_opcode::QUERY) || op == uint8_t(cql_binary_opcode::PREPARE)) {
             //clogger.warn("fefe est {} flen {}", _server._query_processor.local().parsing_cost_estimate(), uint32_t(f.length));
+
             mem_estimate += _server._query_processor.local().parsing_cost_estimate();
         }
         if (mem_estimate > _server._config.max_request_size) {
@@ -877,7 +878,8 @@ future<> cql_server::connection::process_request() {
                         // Account for response body size exceeding the initial estimate.
                         auto resp_size = response->size();
                         auto permit_size = mem_permit.count();
-                        if (resp_size > permit_size) {
+                        if (false && resp_size > permit_size) {
+                            // fefe
                             auto extra = resp_size - permit_size;
                             auto extra_units = consume_units(_server._memory_available, extra);
                             mem_permit.adopt(std::move(extra_units));

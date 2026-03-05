@@ -32,7 +32,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Defaults
 # -------------------------------------------------------------------
 WORKLOAD="read"
-PARTITIONS=5000
+PARTITIONS=1000
 DURATION=300
 CONCURRENCY=10
 CONNECTIONS=1000
