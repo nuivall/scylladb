@@ -1260,7 +1260,16 @@ future<> cql_server::connection::process_request() {
                                                   message,
                                                   tracing::trace_state_ptr()));
                     } else {
-                        write_response(response_f.get(), std::move(mem_permit), _compression);
+                        auto response = response_f.get();
+                        // Account for response body size exceeding the initial estimate.
+                        auto resp_size = response->size();
+                        auto permit_size = mem_permit.count();
+                        if (resp_size > permit_size) {
+                            auto extra = resp_size - permit_size;
+                            auto extra_units = consume_units(_server._memory_available, extra);
+                            mem_permit.adopt(std::move(extra_units));
+                        }
+                        write_response(std::move(response), std::move(mem_permit), _compression);
                     }
                     _ready_to_respond = _ready_to_respond.finally([leave = std::move(leave)] {});
                 } catch (...) {
