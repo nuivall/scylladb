@@ -1262,7 +1262,7 @@ future<> cql_server::connection::process_request() {
                     } else {
                         auto response = response_f.get();
                         // Account for response body size exceeding the initial estimate.
-                        auto resp_size = response->size() * 200;
+                        auto resp_size = response->size();
                         auto permit_size = mem_permit.count();
                         if (resp_size > permit_size) {
                             auto extra = resp_size - permit_size;
@@ -2135,7 +2135,9 @@ future<> cql_server::response::write_message(output_stream<char>& out, uint8_t v
     return out.write(std::move(frame).assume_value()).then([this, &out, del = std::move(del)] mutable {
         return do_for_each(_body.begin(), _body.end(), [&out, del = std::move(del)] (bytes_view fragment) mutable {
             temporary_buffer<char> buf(reinterpret_cast<char*>(const_cast<signed char*>(fragment.data())), fragment.size(), del.share());
-            return out.write(std::move(buf));
+            return sleep(std::chrono::milliseconds(10)).then([&out, buf = std::move(buf)] () mutable {
+                return out.write(std::move(buf));
+            });
         }).then([&out] {
             return out.flush();
         });

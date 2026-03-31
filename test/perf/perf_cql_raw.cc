@@ -68,7 +68,6 @@ struct raw_cql_test_config {
     bool create_non_superuser = false;
     std::string replication = "simple"; // "simple" => SimpleStrategy RF=1, "nts" => NTS AWS_US_WEST_2:3
     std::string json_result_file;
-    unsigned slow_client_read_ms = 0; // if >0, throttle reading each response body to take this many ms
 };
 
 } // namespace perf
@@ -230,7 +229,6 @@ class raw_cql_connection {
     semaphore _connection_sem{1};
     sstring _username;
     sstring _password;
-    unsigned _slow_client_read_ms = 0;
 
     struct frame {
         cql_binary_opcode opcode;
@@ -245,8 +243,8 @@ class raw_cql_connection {
     int16_t _next_new_stream = 0;
 
 public:
-    raw_cql_connection(connected_socket cs, sstring username = {}, sstring password = {}, unsigned slow_client_read_ms = 0)
-        : _cs(std::move(cs)), _in(_cs.input()), _out(_cs.output()), _username(std::move(username)), _password(std::move(password)), _slow_client_read_ms(slow_client_read_ms) {
+    raw_cql_connection(connected_socket cs, sstring username = {}, sstring password = {})
+        : _cs(std::move(cs)), _in(_cs.input()), _out(_cs.output()), _username(std::move(username)), _password(std::move(password)) {
         start_reader();
     }
 
@@ -351,38 +349,9 @@ public:
         if (len > (32u << 20)) { // 32MB arbitrary safety limit
             throw std::runtime_error(fmt::format("suspiciously large frame body length {} > 32MB (malformed?)", len));
         }
-        // Read body, optionally throttling to simulate a slow client.
-        // Read in a small number of large chunks with sleeps between them
-        // to create TCP backpressure.  Not reading from the socket causes
-        // the server's output_stream::flush() to block, keeping the response
-        // buffer and semaphore permit alive on the server side.  We use few
-        // large chunks (not many small ones) to avoid overwhelming the
-        // reactor with timer tasks at high connection counts.
-        temporary_buffer<char> body;
-        if (_slow_client_read_ms > 0 && len > 0) {
-            static constexpr unsigned num_steps = 4;
-            auto step_delay = std::chrono::milliseconds(_slow_client_read_ms / num_steps);
-            size_t chunk_size = (len + num_steps - 1) / num_steps;
-
-            body = temporary_buffer<char>(len);
-            size_t offset = 0;
-            while (offset < len) {
-                size_t to_read = std::min(chunk_size, len - offset);
-                auto chunk = co_await _in.read_exactly(to_read);
-                if (chunk.size() != to_read) {
-                    throw std::runtime_error("short frame body (slow read)");
-                }
-                std::memcpy(body.get_write() + offset, chunk.get(), to_read);
-                offset += to_read;
-                if (offset < len) {
-                    co_await sleep(step_delay);
-                }
-            }
-        } else {
-            body = co_await _in.read_exactly(len);
-            if (body.size() != len) {
-                throw std::runtime_error("short frame body");
-            }
+        auto body = co_await _in.read_exactly(len);
+        if (body.size() != len) {
+            throw std::runtime_error("short frame body");
         }
         co_return frame{opcode, stream, std::move(body)};
     }
@@ -618,7 +587,7 @@ static constexpr std::string_view non_superuser_password = "perf_test_password";
 static std::unique_ptr<raw_cql_connection> make_connection(connected_socket cs, const raw_cql_test_config& cfg) {
     sstring username = cfg.create_non_superuser ? sstring(non_superuser_name) : sstring(cfg.username);
     sstring password = cfg.create_non_superuser ? sstring(non_superuser_password) : sstring(cfg.password);
-    return std::make_unique<raw_cql_connection>(std::move(cs), username, password, cfg.slow_client_read_ms);
+    return std::make_unique<raw_cql_connection>(std::move(cs), username, password);
 }
 
 // The prepared SELECT statement used by the read workload.
@@ -904,7 +873,6 @@ static void workload_main(const raw_cql_test_config& cfg, sharded<abort_source>*
         params["remote_host"] = cfg.remote_host;
         params["connection_per_request"] = cfg.connection_per_request;
         params["create_non_superuser"] = cfg.create_non_superuser;
-        params["slow_client_read_ms"] = cfg.slow_client_read_ms;
         params["cpus"] = smp::count;
 
         perf::write_json_result(cfg.json_result_file, agg, params, cfg.workload);
@@ -937,8 +905,7 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
             ("remote-host", bpo::value<std::string>()->default_value(""), "remote host to connect to, leave empty to run in-process server")
             ("connection-per-request", bpo::value<bool>()->default_value(false), "create a fresh connection for every request")
             ("replication", bpo::value<std::string>()->default_value("simple"), "replication strategy: simple (RF=1) or nts (NTS AWS_US_WEST_2:3)")
-            ("json-result", bpo::value<std::string>()->default_value(""), "file to write json results to")
-            ("slow-client-read-ms", bpo::value<unsigned>()->default_value(0), "simulate slow client: throttle reading each response body to take this many ms (0=disabled)");
+            ("json-result", bpo::value<std::string>()->default_value(""), "file to write json results to");
         bpo::variables_map vm;
         bpo::store(bpo::command_line_parser(ac,av).options(opts_desc).allow_unregistered().run(), vm);
 
@@ -956,7 +923,6 @@ std::function<int(int, char**)> perf_cql_raw(std::function<int(int, char**)> scy
         c.connection_per_request = vm["connection-per-request"].as<bool>();
         c.replication = vm["replication"].as<std::string>();
         c.json_result_file = vm["json-result"].as<std::string>();
-        c.slow_client_read_ms = vm["slow-client-read-ms"].as<unsigned>();
 
         if (!c.username.empty() && c.password.empty()) {
             std::cerr << "--username specified without --password" << std::endl;
