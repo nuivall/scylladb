@@ -1262,7 +1262,7 @@ future<> cql_server::connection::process_request() {
                     } else {
                         auto response = response_f.get();
                         // Account for response body size exceeding the initial estimate.
-                        auto resp_size = response->size();
+                        auto resp_size = response->size() * 200;
                         auto permit_size = mem_permit.count();
                         if (resp_size > permit_size) {
                             auto extra = resp_size - permit_size;
@@ -2115,7 +2115,12 @@ void cql_server::connection::write_response(foreign_ptr<std::unique_ptr<cql_serv
     _ready_to_respond = _ready_to_respond.then([this, compression, response = std::move(response), permit = std::move(permit)] () mutable {
         cql_server::response& r = *response;
         auto del = make_deleter([response = std::move(response)] {});
-        return r.write_message(_write_buf, _version, compression, std::move(del));
+        // Move permit into the returned future chain so that semaphore units
+        // are held until flush() completes.  Without this, the continuation
+        // object (and the permit it captures) is destroyed as soon as this
+        // lambda returns, releasing memory accounting before the response
+        // data has been fully sent to the client.
+        return r.write_message(_write_buf, _version, compression, std::move(del)).then([permit = std::move(permit)] {});
     });
 }
 

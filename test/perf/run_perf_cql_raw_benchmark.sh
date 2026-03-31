@@ -18,6 +18,7 @@
 #   --duration <seconds>      Benchmark duration per iteration (default: 300)
 #   --concurrency <N>         Concurrent requests per connection (default: 100)
 #   --connections <N>         Connections per shard (default: 10)
+#   --slow-client <ms>        Simulate slow client: throttle reading each response to take <ms> ms (default: 0=off)
 #   --skip-build              Skip building the scylla binary
 #   --scylla-path <path>      Path to scylla binary (default: build/release/scylla)
 #   --smp <N>                 Number of cores per node (default: 2)
@@ -37,6 +38,7 @@ PARTITIONS=1000
 DURATION=300
 CONCURRENCY=10
 CONNECTIONS=1000
+SLOW_CLIENT=100
 SKIP_BUILD=false
 SCYLLA_PATH="$REPO_ROOT/build/release/scylla"
 NODE_SMP=1
@@ -53,6 +55,7 @@ while [[ $# -gt 0 ]]; do
         --duration)       DURATION="$2"; shift 2 ;;
         --concurrency)    CONCURRENCY="$2"; shift 2 ;;
         --connections)    CONNECTIONS="$2"; shift 2 ;;
+        --slow-client)    SLOW_CLIENT="$2"; shift 2 ;;
         --skip-build)     SKIP_BUILD=true; shift ;;
         --scylla-path)    SCYLLA_PATH="$2"; shift 2 ;;
         --smp)            NODE_SMP="$2"; shift 2 ;;
@@ -240,6 +243,7 @@ echo ""
     --duration "$DURATION" \
     --concurrency-per-shard "$CONCURRENCY" \
     --connections-per-shard "$CONNECTIONS" \
+    --slow-client-read-ms "$SLOW_CLIENT" \
     --replication nts \
     --continue-after-error true \
     --json-result "$LOGDIR/results.json" \
