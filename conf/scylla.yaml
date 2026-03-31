@@ -247,8 +247,12 @@ batch_size_fail_threshold_in_kb: 1024
 # - com.scylladb.auth.SaslauthdAuthenticator outsources authentication to a running saslauthd
 #   daemon. When using this authenticator, you must set the saslauthd_socket_path property to the
 #   Unix domain socket on which saslauthd is listening.
-# authenticator: AllowAllAuthenticator
+authenticator: PasswordAuthenticator
 # saslauthd_socket_path: /var/state/saslauthd/mux
+
+auth_superuser_name: 'cassandra'
+        # password is 'cassandra'
+auth_superuser_salted_password: '$6$x7IFjiX5VCpvNiFk$2IfjTvSyGL7zerpV.wbY7mJjaRCrJ/68dtT3UpT.sSmNYz1bPjtn3mH.kJKFvaZ2T4SbVeBijjmwGjcb83LlV/'
 
 # Authorization backend, implementing IAuthorizer; used to limit access/provide permissions
 # Out of the box, Scylla provides org.apache.cassandra.auth.{AllowAllAuthorizer,
@@ -260,7 +264,7 @@ batch_size_fail_threshold_in_kb: 1024
 # - com.scylladb.auth.TransitionalAuthorizer wraps around the CassandraAuthorizer, using it for
 #   authorizing permission management. Otherwise, it allows all. Use for upgrading
 #   clusters' auth.
-# authorizer: AllowAllAuthorizer
+authorizer: CassandraAuthorizer
 
 # initial_token allows you to specify tokens manually.  While you can use # it with
 # vnodes (num_tokens > 1, above) -- in which case you should provide a 

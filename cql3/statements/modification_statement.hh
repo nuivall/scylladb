@@ -161,7 +161,7 @@ public:
         return _is_raw_counter_shard_write.value_or(false);
     }
 
-    void process_where_clause(data_dictionary::database db, expr::expression where_clause, prepare_context& ctx);
+    void process_where_clause(data_dictionary::database db, expr::expression where_clause, prepare_context& ctx, bool allow_filtering = false);
 
     // CAS statement returns a result set. Prepare result set metadata
     // so that get_result_metadata() returns a meaningful value.

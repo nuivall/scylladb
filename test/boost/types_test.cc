@@ -23,6 +23,7 @@
 #include "types/list.hh"
 #include "types/set.hh"
 #include "types/vector.hh"
+#include "types/user.hh"
 #include "test/lib/exception_utils.hh"
 #include "test/lib/test_utils.hh"
 
@@ -1023,4 +1024,94 @@ SEASTAR_TEST_CASE(test_list_type_serialization) {
     BOOST_REQUIRE_EQUAL(*ser, to_bytes(sstring("\0\0\0\3\0\0\0\4\0\0\0\7\xff\xff\xff\xff\0\0\0\4\0\0\0\6"sv)));
     BOOST_REQUIRE_EQUAL(list, list_type->deserialize_value(managed_bytes_view(*ser)));
     return make_ready_future<>();
+}
+
+// Tests for to_parsable_string() producing valid, re-parsable CQL literals.
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_text_with_single_quotes) {
+    // A text value containing single quotes must be escaped by doubling them.
+    data_value val(sstring("it's a 'test'"));
+    auto result = val.to_parsable_string();
+    // Expected: 'it''s a ''test'''
+    BOOST_REQUIRE_EQUAL(result, "'it''s a ''test'''");
+}
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_text_plain) {
+    // A text value without special characters should be wrapped in single quotes.
+    data_value val(sstring("hello world"));
+    auto result = val.to_parsable_string();
+    BOOST_REQUIRE_EQUAL(result, "'hello world'");
+}
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_text_empty) {
+    // An empty text value should produce ''
+    data_value val(sstring(""));
+    auto result = val.to_parsable_string();
+    BOOST_REQUIRE_EQUAL(result, "''");
+}
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_ascii_with_single_quotes) {
+    // ASCII type also uses single_quote() escaping.
+    auto val = data_value(ascii_native_type{sstring("it's")});
+    auto result = val.to_parsable_string();
+    BOOST_REQUIRE_EQUAL(result, "'it''s'");
+}
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_blob_hex_prefix) {
+    // Blob values must have a 0x prefix in CQL.
+    bytes blob_val{int8_t(0xde), int8_t(0xad), int8_t(0xbe), int8_t(0xef)};
+    data_value val(blob_val);
+    auto result = val.to_parsable_string();
+    BOOST_REQUIRE_EQUAL(result, "0xdeadbeef");
+}
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_blob_empty) {
+    // An empty blob should produce 0x
+    data_value val(bytes{});
+    auto result = val.to_parsable_string();
+    BOOST_REQUIRE_EQUAL(result, "0x");
+}
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_udt_field_names_quoted) {
+    // UDT field names that are CQL reserved words or contain special
+    // characters should be properly quoted.
+    auto udt = user_type_impl::get_instance(
+        "ks", to_bytes("test_type"),
+        {to_bytes("select"), to_bytes("normal"), to_bytes("With Spaces")},
+        {int32_type, utf8_type, int32_type},
+        true);
+    std::vector<data_value> fields;
+    fields.push_back(data_value(int32_t(42)));
+    fields.push_back(data_value(sstring("hello")));
+    fields.push_back(data_value(int32_t(7)));
+    auto val = make_user_value(udt, std::move(fields));
+    auto result = val.to_parsable_string();
+    // "select" is a reserved word -> must be double-quoted
+    // "normal" needs no quoting
+    // "With Spaces" has uppercase and spaces -> must be double-quoted
+    BOOST_REQUIRE(result.find("\"select\"") != sstring::npos);
+    BOOST_REQUIRE(result.find("normal") != sstring::npos);
+    BOOST_REQUIRE(result.find("\"With Spaces\"") != sstring::npos);
+}
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_udt_text_field_escaping) {
+    // UDT text field values should have their single quotes escaped.
+    auto udt = user_type_impl::get_instance(
+        "ks", to_bytes("test_type"),
+        {to_bytes("name")},
+        {utf8_type},
+        true);
+    std::vector<data_value> fields;
+    fields.push_back(data_value(sstring("it's")));
+    auto val = make_user_value(udt, std::move(fields));
+    auto result = val.to_parsable_string();
+    // The text value inside the UDT should be properly escaped
+    BOOST_REQUIRE(result.find("'it''s'") != sstring::npos);
+}
+
+BOOST_AUTO_TEST_CASE(test_to_parsable_string_int) {
+    // Simple integer should not be quoted.
+    data_value val(int32_t(42));
+    auto result = val.to_parsable_string();
+    BOOST_REQUIRE_EQUAL(result, "42");
 }

@@ -412,6 +412,31 @@ std::ostream& operator<<(std::ostream& out, const query::mapreduce_result::print
     return out << "]";
 }
 
+std::ostream& operator<<(std::ostream& out, const query::filtering_delete_request::tier& t) {
+    switch (t) {
+    case query::filtering_delete_request::tier::partition_only: return out << "partition_only";
+    case query::filtering_delete_request::tier::clustering: return out << "clustering";
+    case query::filtering_delete_request::tier::regular_column: return out << "regular_column";
+    }
+    return out << "unknown";
+}
+
+std::ostream& operator<<(std::ostream& out, const query::filtering_delete_request& r) {
+    return out << "filtering_delete_request{"
+        << "schema_id=" << r.schema_id
+        << ", schema_version=" << r.schema_version
+        << ", where_clause=" << r.where_clause
+        << ", pr_size=" << r.pr.size()
+        << ", cl=" << fmt::format("{}", r.cl)
+        << ", tier=" << r.optimization_tier
+        << ", timestamp=" << r.timestamp
+        << "}";
+}
+
+std::ostream& operator<<(std::ostream& out, const query::filtering_delete_result& r) {
+    return out << "filtering_delete_result{rows_deleted=" << r.rows_deleted << "}";
+}
+
 }
 
 std::optional<query::clustering_range> position_range_to_clustering_range(const position_range& r, const schema& s) {

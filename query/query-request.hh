@@ -539,6 +539,39 @@ struct mapreduce_result {
 };
 
 std::ostream& operator<<(std::ostream& out, const query::mapreduce_result::printer&);
+
+// Request to perform a filtering delete (DELETE ... ALLOW FILTERING).
+// This is dispatched to shards in parallel, where each shard scans its local
+// data and applies tombstones for matching rows/partitions.
+struct filtering_delete_request {
+    enum class tier : uint8_t {
+        // partition tombstones
+        partition_only,
+        // range/row tombstones
+        clustering,
+        // read-before-delete, per-row tombstones
+        regular_column
+    };
+
+    table_id schema_id;                // Table identity
+    table_schema_version schema_version; // Schema version for validation
+    sstring where_clause;              // CQL WHERE clause with bind variables inlined
+    dht::partition_range_vector pr;    // Partition ranges to scan
+    db::consistency_level cl;          // Consistency level for writes
+    lowres_system_clock::time_point deadline;
+    api::timestamp_type timestamp;     // Timestamp for tombstones
+    tier optimization_tier;
+    std::optional<shard_id> shard_id_hint;
+};
+
+std::ostream& operator<<(std::ostream& out, const filtering_delete_request& r);
+std::ostream& operator<<(std::ostream& out, const filtering_delete_request::tier& t);
+
+struct filtering_delete_result {
+    uint64_t rows_deleted = 0;
+};
+
+std::ostream& operator<<(std::ostream& out, const filtering_delete_result& r);
 }
 
 
@@ -549,3 +582,6 @@ template <> struct fmt::formatter<query::mapreduce_request> : fmt::ostream_forma
 template <> struct fmt::formatter<query::mapreduce_request::reduction_type> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<query::mapreduce_request::aggregation_info> : fmt::ostream_formatter {};
 template <> struct fmt::formatter<query::mapreduce_result::printer> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<query::filtering_delete_request> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<query::filtering_delete_request::tier> : fmt::ostream_formatter {};
+template <> struct fmt::formatter<query::filtering_delete_result> : fmt::ostream_formatter {};

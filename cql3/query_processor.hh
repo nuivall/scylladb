@@ -497,6 +497,10 @@ public:
     future<query::mapreduce_result>
     mapreduce(query::mapreduce_request, tracing::trace_state_ptr);
 
+    // Splits given `filtering_delete_request` and distributes execution across a cluster.
+    future<query::filtering_delete_result>
+    filtering_delete(query::filtering_delete_request, tracing::trace_state_ptr);
+
     struct retry_statement_execution_error : public std::exception {};
 
     future<::shared_ptr<cql_transport::messages::result_message>>

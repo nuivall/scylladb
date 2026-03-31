@@ -389,6 +389,11 @@ query_processor::query_processor(service::storage_proxy& proxy, data_dictionary:
                             _cql_stats.filtered_reads,
                             sm::description("Counts the total number of CQL read requests that required ALLOW FILTERING. See filtered_rows_read_total to compare how many rows needed to be filtered."))(basic_level).set_skip_when_empty(),
 
+                    sm::make_counter(
+                            "filtered_delete_requests",
+                            _cql_stats.filtered_deletes,
+                            sm::description("Counts the total number of CQL delete requests that required ALLOW FILTERING."))(basic_level).set_skip_when_empty(),
+
                     // rows read with filtering enabled (because ALLOW FILTERING was required)
                     sm::make_counter(
                             "filtered_rows_read_total",
@@ -1106,6 +1111,12 @@ future<query::mapreduce_result>
 query_processor::mapreduce(query::mapreduce_request req, tracing::trace_state_ptr tr_state) {
     auto [remote_, holder] = remote();
     co_return co_await remote_.get().mapreducer.dispatch(std::move(req), std::move(tr_state));
+}
+
+future<query::filtering_delete_result>
+query_processor::filtering_delete(query::filtering_delete_request req, tracing::trace_state_ptr tr_state) {
+    auto [remote_, holder] = remote();
+    co_return co_await remote_.get().mapreducer.dispatch_delete(std::move(req), std::move(tr_state));
 }
 
 future<::shared_ptr<messages::result_message>>

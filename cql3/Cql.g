@@ -637,19 +637,22 @@ deleteStatement returns [std::unique_ptr<raw::delete_statement> expr]
         std::vector<std::unique_ptr<cql3::operation::raw_deletion>> column_deletions;
         bool if_exists = false;
         std::optional<expression> cond_opt;
+        bool allow_filtering = false;
     }
     : K_DELETE ( dels=deleteSelection { column_deletions = std::move(dels); } )?
       K_FROM cf=columnFamilyName
       ( usingTimestampTimeoutClause[attrs] )?
       K_WHERE wclause=whereClause
       ( K_IF ( K_EXISTS { if_exists = true; } | conditions=updateConditions { cond_opt = std::move(conditions); } ))?
+      ( K_ALLOW K_FILTERING { allow_filtering = true; } )?
       {
           return std::make_unique<raw::delete_statement>(cf,
                                             std::move(attrs),
                                             std::move(column_deletions),
                                             std::move(wclause),
                                             std::move(cond_opt),
-                                            if_exists);
+                                            if_exists,
+                                            allow_filtering);
       }
     ;
 

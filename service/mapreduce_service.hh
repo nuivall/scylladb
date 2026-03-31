@@ -26,7 +26,16 @@ class trace_info;
 namespace service {
 
 class storage_proxy;
-class retrying_dispatcher;
+template<typename Request, typename Result> class retrying_dispatcher;
+class tablet_algorithm;
+
+// Called per range+host to dispatch a request and merge the partial result
+// into the shared accumulator.
+using dispatch_and_merge_fn = noncopyable_function<future<>(
+    const locator::effective_replication_map_ptr&,
+    locator::host_id,
+    dht::partition_range_vector,
+    std::optional<shard_id>)>;
 
 // `mapreduce_service` is a sharded service responsible for distributing and
 // executing aggregation requests across a cluster.
@@ -177,22 +186,35 @@ public:
     // subrequests across a cluster.
     future<query::mapreduce_result> dispatch(query::mapreduce_request req, tracing::trace_state_ptr tr_state);
 
+    // Splits given `filtering_delete_request` and distributes execution of resulting
+    // subrequests across a cluster. Each shard scans its local data and applies
+    // tombstones for matching rows/partitions.
+    future<query::filtering_delete_result> dispatch_delete(query::filtering_delete_request req, tracing::trace_state_ptr tr_state);
+
 private:
-    future<> dispatch_range_and_reduce(const locator::effective_replication_map_ptr& erm, retrying_dispatcher& dispatcher, query::mapreduce_request const& req, query::mapreduce_request&& req_with_modified_pr, locator::host_id addr, query::mapreduce_result& result_, tracing::trace_state_ptr tr_state);
-    future<> dispatch_to_vnodes(schema_ptr schema, replica::column_family& cf, query::mapreduce_request& req, query::mapreduce_result& result, tracing::trace_state_ptr tr_state);
-    future<> dispatch_to_tablets(schema_ptr schema, replica::column_family& cf, query::mapreduce_request& req, query::mapreduce_result& result, tracing::trace_state_ptr tr_state);
+    future<> dispatch_range_and_reduce(const locator::effective_replication_map_ptr& erm, retrying_dispatcher<query::mapreduce_request, query::mapreduce_result>& dispatcher, query::mapreduce_request const& req, query::mapreduce_request&& req_with_modified_pr, locator::host_id addr, query::mapreduce_result& result_, tracing::trace_state_ptr tr_state);
+
+    // Unified dispatch methods — used by both mapreduce and filtering_delete paths.
+    // The dispatch_and_merge_fn callback captures all type-specific logic.
+    future<> dispatch_to_vnodes(schema_ptr schema, replica::column_family& cf, const dht::partition_range_vector& pr, db::consistency_level cl, tracing::trace_state_ptr tr_state, dispatch_and_merge_fn dispatch);
+    future<> dispatch_to_tablets(schema_ptr schema, replica::column_family& cf, const dht::partition_range_vector& pr, db::consistency_level cl, tracing::trace_state_ptr tr_state, dispatch_and_merge_fn dispatch);
 
     // Used to distribute given `mapreduce_request` across shards.
-    future<query::mapreduce_result> dispatch_to_shards(query::mapreduce_request req, std::optional<tracing::trace_info> tr_info);
+    future<query::mapreduce_result> dispatch_mapreduce_to_shards(query::mapreduce_request req, std::optional<tracing::trace_info> tr_info);
     // Used to execute a `mapreduce_request` on a shard.
-    future<query::mapreduce_result> execute_on_this_shard(query::mapreduce_request req, std::optional<tracing::trace_info> tr_info);
+    future<query::mapreduce_result> execute_mapreduce_on_this_shard(query::mapreduce_request req, std::optional<tracing::trace_info> tr_info);
+
+    // Filtering delete shard-level dispatch and execution
+    future<query::filtering_delete_result> dispatch_delete_to_shards(query::filtering_delete_request req, std::optional<tracing::trace_info> tr_info);
+    future<query::filtering_delete_result> execute_delete_on_this_shard(query::filtering_delete_request req, std::optional<tracing::trace_info> tr_info);
 
     void register_metrics();
     void init_messaging_service();
     future<> uninit_messaging_service();
 
-    friend class retrying_dispatcher;
-    friend class mapreduce_tablet_algorithm;
+    friend class retrying_dispatcher<query::mapreduce_request, query::mapreduce_result>;
+    friend class retrying_dispatcher<query::filtering_delete_request, query::filtering_delete_result>;
+    friend class tablet_algorithm;
 };
 
 } // namespace service

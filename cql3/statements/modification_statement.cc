@@ -495,9 +495,9 @@ void modification_statement::build_cas_result_set_metadata() {
 }
 
 void
-modification_statement::process_where_clause(data_dictionary::database db, expr::expression where_clause, prepare_context& ctx) {
+modification_statement::process_where_clause(data_dictionary::database db, expr::expression where_clause, prepare_context& ctx, bool allow_filtering) {
     _restrictions = restrictions::analyze_statement_restrictions(db, s, type, where_clause, ctx,
-            applies_only_to_static_columns(), _selects_a_collection, false /* allow_filtering */, restrictions::check_indexes::no);
+            applies_only_to_static_columns(), _selects_a_collection, allow_filtering, restrictions::check_indexes::no);
     /*
      * If there's no clustering columns restriction, we may assume that EXISTS
      * check only selects static columns and hence we can use any row from the
@@ -511,12 +511,12 @@ modification_statement::process_where_clause(data_dictionary::database db, expr:
             _has_regular_column_conditions = true;
         }
     }
-    if (_restrictions->has_token_restrictions()) {
-        throw exceptions::invalid_request_exception(format("The token function cannot be used in WHERE clauses for UPDATE and DELETE statements: {}",
+    if (!allow_filtering && _restrictions->has_token_restrictions()) {
+        throw exceptions::invalid_request_exception(format("The token function cannot be used in WHERE clauses for UPDATE and DELETE statements without ALLOW FILTERING: {}",
                 to_string(_restrictions->get_partition_key_restrictions())));
     }
-    if (!_restrictions->get_non_pk_restriction().empty()) {
-        throw exceptions::invalid_request_exception(seastar::format("Invalid where clause contains non PRIMARY KEY columns: {}",
+    if (!allow_filtering && !_restrictions->get_non_pk_restriction().empty()) {
+        throw exceptions::invalid_request_exception(seastar::format("Invalid where clause contains non PRIMARY KEY columns without ALLOW FILTERING: {}",
                                                                     fmt::join(_restrictions->get_non_pk_restriction()
                                          | std::views::keys
                                          | std::views::transform([](const column_definition* c) {
@@ -553,8 +553,8 @@ modification_statement::process_where_clause(data_dictionary::database db, expr:
             }
         }
     }
-    if (_restrictions->has_partition_key_unrestricted_components()) {
-        throw exceptions::invalid_request_exception(format("Missing mandatory PRIMARY KEY part {}",
+    if (!allow_filtering && _restrictions->has_partition_key_unrestricted_components()) {
+        throw exceptions::invalid_request_exception(format("Missing mandatory PRIMARY KEY part {} or ALLOW FILTERING",
             _restrictions->unrestricted_column(column_kind::partition_key).name_as_text()));
     }
     if (has_conditions()) {

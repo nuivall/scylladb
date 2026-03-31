@@ -290,4 +290,12 @@ struct aggregation_split_result {
 // are empty, and outer_loop should be evaluated for each loop.
 aggregation_split_result split_aggregation(std::span<const expression> aggregation);
 
+// Replaces all bind_variable nodes in the expression tree with constant nodes
+// whose values are taken from the given query_options. This is used to produce
+// an expression that can be serialized to CQL text.
+//
+// The expression must be prepared (bind_variable receivers must be set).
+// Throws if a bind variable value is unset.
+expression inline_bind_variables(const expression& e, const query_options& options);
+
 }

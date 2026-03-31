@@ -201,6 +201,12 @@ public:
         return _clustering_columns_restrictions;
     }
 
+    /// Returns the full WHERE clause expression, if available.
+    /// This is the conjunction of all restrictions as received from the parser.
+    const std::optional<expr::expression>& where() const {
+        return _where;
+    }
+
     // Get a set of columns restricted by the IS NOT NULL restriction.
     // IS NOT NULL is a special case that is handled separately from other restrictions.
     const std::unordered_set<const column_definition*> get_not_null_columns() const;

@@ -4818,3 +4818,101 @@ BOOST_AUTO_TEST_CASE(test_levellize_aggregation_depth) {
     // Somewhat fragile, but easiest way to test entire structure
     BOOST_REQUIRE_EQUAL(fmt::format("{:debug}", e2), "foo.my_agg(system.sum(system.$$first$$(r)), system.$$first$$(system.$$first$$(TTL(r))))");
 }
+
+// Tests for proper escaping in expression formatting.
+
+BOOST_AUTO_TEST_CASE(expr_printer_text_constant_with_quotes) {
+    // A text constant containing single quotes must be properly escaped
+    // when printed with {:user} formatter.
+    auto val = make_text_const("it's a 'test'");
+    auto result = expr_print(val);
+    BOOST_REQUIRE_EQUAL(result, "'it''s a ''test'''");
+}
+
+BOOST_AUTO_TEST_CASE(expr_printer_untyped_string_constant_with_quotes) {
+    // An untyped_constant of string type with embedded quotes must be escaped.
+    auto val = make_string_untyped("it's");
+    auto result = expr_print(val);
+    BOOST_REQUIRE_EQUAL(result, "'it''s'");
+}
+
+BOOST_AUTO_TEST_CASE(expr_printer_text_constant_round_trip) {
+    // Formatting a text constant and re-parsing should yield the same WHERE clause.
+    // This tests the full round-trip: constant -> CQL text -> parse -> CQL text
+    auto text_const = make_text_const("it's a 'test'");
+    binary_operator eq {
+        make_column("col"),
+        oper_t::EQ,
+        text_const
+    };
+    auto printed = expr_print(eq);
+    BOOST_REQUIRE_EQUAL(printed, "col = 'it''s a ''test'''");
+
+    // Parse it back and print again — should be stable
+    expression reparsed = cql3::util::where_clause_to_relations(printed, cql3::dialect{});
+    sstring reprinted = cql3::util::relations_to_where_clause(reparsed);
+    BOOST_REQUIRE_EQUAL(printed, reprinted);
+}
+
+BOOST_AUTO_TEST_CASE(expr_printer_blob_constant_format) {
+    // A blob constant should be printed with 0x prefix.
+    bytes blob_val{int8_t(0xca), int8_t(0xfe)};
+    auto raw = cql3::raw_value::make_value(blob_val);
+    constant c(raw, bytes_type);
+    auto result = expr_print(c);
+    BOOST_REQUIRE_EQUAL(result, "0xcafe");
+}
+
+BOOST_AUTO_TEST_CASE(test_inline_bind_variables) {
+    // inline_bind_variables should replace bind_variable nodes with constant nodes
+    // using values from query_options.
+    auto bv = new_bind_variable(0, int32_type);
+    binary_operator eq {
+        make_column("col"),
+        oper_t::EQ,
+        bv
+    };
+
+    // Create query options with bind variable value = 42
+    auto raw_values = cql3::raw_value_vector_with_unset({cql3::raw_value::make_value(int32_type->decompose(int32_t(42)))});
+    cql3::query_options opts(std::move(raw_values));
+
+    auto inlined = inline_bind_variables(eq, opts);
+    auto printed = expr_print(inlined);
+    BOOST_REQUIRE_EQUAL(printed, "col = 42");
+}
+
+BOOST_AUTO_TEST_CASE(test_inline_bind_variables_text_with_quotes) {
+    // inline_bind_variables + formatting should produce properly escaped CQL text.
+    auto bv = new_bind_variable(0, utf8_type);
+    binary_operator eq {
+        make_column("col"),
+        oper_t::EQ,
+        bv
+    };
+
+    // Create query options with bind variable value = "it's"
+    auto raw_values = cql3::raw_value_vector_with_unset({cql3::raw_value::make_value(utf8_type->decompose(sstring("it's")))});
+    cql3::query_options opts(std::move(raw_values));
+
+    auto inlined = inline_bind_variables(eq, opts);
+    auto printed = expr_print(inlined);
+    BOOST_REQUIRE_EQUAL(printed, "col = 'it''s'");
+}
+
+BOOST_AUTO_TEST_CASE(test_inline_bind_variables_null) {
+    // inline_bind_variables should handle null bind variable values.
+    auto bv = new_bind_variable(0, int32_type);
+    binary_operator eq {
+        make_column("col"),
+        oper_t::EQ,
+        bv
+    };
+
+    auto raw_values = cql3::raw_value_vector_with_unset({cql3::raw_value::make_null()});
+    cql3::query_options opts(std::move(raw_values));
+
+    auto inlined = inline_bind_variables(eq, opts);
+    auto printed = expr_print(inlined);
+    BOOST_REQUIRE_EQUAL(printed, "col = null");
+}

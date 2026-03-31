@@ -12,6 +12,7 @@
 
 #include "data_dictionary/data_dictionary.hh"
 #include "delete_statement.hh"
+#include "filtering_delete_statement.hh"
 #include "raw/delete_statement.hh"
 #include "mutation/mutation.hh"
 #include "cql3/expr/expression.hh"
@@ -59,8 +60,29 @@ void delete_statement::add_update_for_key(mutation& m, const query::clustering_r
 namespace raw {
 
 ::shared_ptr<cql3::statements::modification_statement>
-delete_statement::prepare_internal(data_dictionary::database db, schema_ptr schema, prepare_context& ctx,
+delete_statement::prepare_statement(data_dictionary::database db, schema_ptr schema, prepare_context& ctx,
         std::unique_ptr<attributes> attrs, cql_stats& stats) const {
+    if (_allow_filtering) {
+        // DELETE ... ALLOW FILTERING: column-specific deletions are not supported.
+        // Only whole-row/partition deletion makes sense with filtering.
+        if (!_deletions.empty()) {
+            throw exceptions::invalid_request_exception(
+                "Column-specific deletions are not supported with ALLOW FILTERING. "
+                "Use DELETE FROM ... WHERE ... ALLOW FILTERING to delete entire rows.");
+        }
+
+        // Conditions (IF EXISTS, IF ...) are not supported with ALLOW FILTERING.
+        // Check early, before process_where_clause() which validates conditions
+        // against PK restrictions and would give a confusing error message.
+        if (_if_exists || _conditions.has_value()) {
+            throw exceptions::invalid_request_exception(
+                "Conditional DELETE (IF) is not supported with ALLOW FILTERING");
+        }
+        return ::make_shared<cql3::statements::filtering_delete_statement>(
+            audit_info(), statement_type::DELETE, ctx.bound_variables_size(),
+            schema, std::move(attrs), stats);
+    }
+
     auto stmt = ::make_shared<cql3::statements::delete_statement>(audit_info(), statement_type::DELETE, ctx.bound_variables_size(), schema, std::move(attrs), stats);
 
     for (auto&& deletion : _deletions) {
@@ -80,14 +102,21 @@ delete_statement::prepare_internal(data_dictionary::database db, schema_ptr sche
         op->fill_prepare_context(ctx);
         stmt->add_operation(op);
     }
+    return stmt;
+}
+
+::shared_ptr<cql3::statements::modification_statement>
+delete_statement::prepare_internal(data_dictionary::database db, schema_ptr schema, prepare_context& ctx,
+        std::unique_ptr<attributes> attrs, cql_stats& stats) const {
+    auto stmt = prepare_statement(db, schema, ctx, std::move(attrs), stats);
     prepare_conditions(db, *schema, ctx, *stmt);
-    stmt->process_where_clause(db, _where_clause, ctx);
-    if (has_slice(stmt->restrictions().get_clustering_columns_restrictions())) {
+    stmt->process_where_clause(db, _where_clause, ctx, _allow_filtering);
+    if (!_allow_filtering && has_slice(stmt->restrictions().get_clustering_columns_restrictions())) {
         if (!schema->is_compound()) {
-            throw exceptions::invalid_request_exception("Range deletions on \"compact storage\" schemas are not supported");
+            throw exceptions::invalid_request_exception("Range deletions on \"compact storage\" schemas are not supported without ALLOW FILTERING");
         }
         if (!_deletions.empty()) {
-            throw exceptions::invalid_request_exception("Range deletions are not supported for specific columns");
+            throw exceptions::invalid_request_exception("Range deletions are not supported for specific columns without ALLOW FILTERING");
         }
     }
     return stmt;
@@ -98,10 +127,12 @@ delete_statement::delete_statement(cf_name name,
                                  std::vector<std::unique_ptr<operation::raw_deletion>> deletions,
                                  expr::expression where_clause,
                                  std::optional<expr::expression> conditions,
-                                 bool if_exists)
+                                 bool if_exists,
+                                 bool allow_filtering)
     : raw::modification_statement(std::move(name), std::move(attrs), std::move(conditions), false, if_exists)
     , _deletions(std::move(deletions))
     , _where_clause(std::move(where_clause))
+    , _allow_filtering(allow_filtering)
 {
     throwing_assert(!_attrs->time_to_live.has_value());
 }

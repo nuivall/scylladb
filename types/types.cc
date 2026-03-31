@@ -3965,7 +3965,7 @@ sstring data_value::to_parsable_string() const {
             if (i != 0) {
                 result << ", ";
             }
-            result << user_typ->string_field_names().at(i) << ":" << (*field_values)[i].to_parsable_string();
+            result << cql3::util::maybe_quote(user_typ->string_field_names().at(i)) << ":" << (*field_values)[i].to_parsable_string();
         }
         result << "}";
         return std::move(result).str();
@@ -4009,8 +4009,15 @@ sstring data_value::to_parsable_string() const {
         || type_kind == abstract_type::kind::date
         || type_kind == abstract_type::kind::timestamp
     ) {
-        // Put quotes on types that require it
-        return fmt::format("'{}'", *this);
+        // Put quotes on types that require it.
+        // Use single_quote() to properly escape embedded single quotes
+        // (e.g. "it's" becomes "'it''s'").
+        return cql3::util::single_quote(fmt::format("{}", *this));
+    }
+
+    if (type_kind == abstract_type::kind::bytes) {
+        // Blob literals in CQL require a 0x prefix (e.g. 0xdeadbeef)
+        return fmt::format("0x{}", *this);
     }
 
     // For simple types the default operator<< should work ok

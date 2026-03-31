@@ -134,6 +134,8 @@
 #include "idl/node_ops.dist.impl.hh"
 #include "idl/mapreduce_request.dist.hh"
 #include "idl/mapreduce_request.dist.impl.hh"
+#include "idl/filtering_delete_request.dist.hh"
+#include "idl/filtering_delete_request.dist.impl.hh"
 #include "idl/storage_service.dist.impl.hh"
 #include "idl/join_node.dist.impl.hh"
 #include "idl/tasks.dist.impl.hh"
@@ -761,6 +763,7 @@ static constexpr unsigned do_get_rpc_client_idx(messaging_verb verb) {
     case messaging_verb::MUTATION_FAILED:
         return 3;
     case messaging_verb::MAPREDUCE_REQUEST:
+    case messaging_verb::FILTERING_DELETE_REQUEST:
         return 4;
     case messaging_verb::LAST:
         return -1; // should never happen

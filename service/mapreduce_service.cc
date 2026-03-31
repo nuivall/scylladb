@@ -13,6 +13,7 @@
 #include <seastar/coroutine/parallel_for_each.hh>
 #include <seastar/core/future-util.hh>
 #include <seastar/core/smp.hh>
+#include <concepts>
 #include <stdexcept>
 
 #include "db/consistency_level.hh"
@@ -20,6 +21,7 @@
 #include "exceptions/exceptions.hh"
 #include "gms/gossiper.hh"
 #include "idl/mapreduce_request.dist.hh"
+#include "idl/filtering_delete_request.dist.hh"
 #include "locator/abstract_replication_strategy.hh"
 #include "utils/error_injection.hh"
 #include "utils/log.hh"
@@ -29,6 +31,9 @@
 #include "replica/database.hh"
 #include "schema/schema.hh"
 #include "schema/schema_registry.hh"
+#include "mutation/mutation.hh"
+#include "mutation/range_tombstone.hh"
+#include "keys/clustering_bounds_comparator.hh"
 #include <seastar/core/future.hh>
 #include <seastar/core/on_internal_error.hh>
 #include <seastar/core/when_all.hh>
@@ -47,6 +52,9 @@
 #include "cql3/functions/functions.hh"
 #include "cql3/functions/aggregate_fcts.hh"
 #include "cql3/expr/expr-utils.hh"
+#include "cql3/restrictions/statement_restrictions.hh"
+#include "cql3/statements/select_statement.hh"
+#include "cql3/util.hh"
 
 namespace service {
 
@@ -83,7 +91,6 @@ public:
 mapreduce_aggregates::mapreduce_aggregates(const query::mapreduce_request& request) {
     _funcs = get_functions(request);
     std::vector<db::functions::stateless_aggregate_function> aggrs;
-
     for (auto& func: _funcs) {
         aggrs.push_back(func->get_aggregate());
     }
@@ -263,17 +270,33 @@ public:
     }
 };
 
-// `retrying_dispatcher` is a class that dispatches mapreduce_requests to other
+// `retrying_dispatcher` is a class template that dispatches requests to other
 // nodes. In case of a failure, local retries are available - request being
 // retried is executed on the super-coordinator.
+//
+// Constrained to the two supported request/result type pairs:
+//   - mapreduce_request / mapreduce_result
+//   - filtering_delete_request / filtering_delete_result
+template<typename Request, typename Result>
 class retrying_dispatcher {
+    static_assert(
+        (std::same_as<Request, query::mapreduce_request> && std::same_as<Result, query::mapreduce_result>)
+        || (std::same_as<Request, query::filtering_delete_request> && std::same_as<Result, query::filtering_delete_result>),
+        "retrying_dispatcher only supports mapreduce_request/mapreduce_result and filtering_delete_request/filtering_delete_result type pairs");
+
+    static constexpr bool is_mapreduce = std::same_as<Request, query::mapreduce_request>;
+
     mapreduce_service& _mapreducer;
     tracing::trace_state_ptr _tr_state;
     std::optional<tracing::trace_info> _tr_info;
 
-    future<query::mapreduce_result> dispatch_to_shards_locally(query::mapreduce_request req, std::optional<tracing::trace_info> tr_info) {
+    future<Result> dispatch_to_shards_locally(Request req, std::optional<tracing::trace_info> tr_info) {
         try {
-            co_return co_await _mapreducer.dispatch_to_shards(req, _tr_info);
+            if constexpr (is_mapreduce) {
+                co_return co_await _mapreducer.dispatch_mapreduce_to_shards(req, _tr_info);
+            } else {
+                co_return co_await _mapreducer.dispatch_delete_to_shards(req, _tr_info);
+            }
         } catch (const std::exception& e) {
             // For remote rpc_calls, the remote exceptions are converted to rpc::remote_verb_error.
             // This catch behaves similarly for local dispatch_to_shards, to prevent from having two different
@@ -283,45 +306,53 @@ class retrying_dispatcher {
     }
 public:
     retrying_dispatcher(mapreduce_service& mapreducer, tracing::trace_state_ptr tr_state)
-        : _mapreducer(mapreducer),
-        _tr_state(tr_state),
-        _tr_info(tracing::make_trace_info(tr_state))
+        : _mapreducer(mapreducer)
+        , _tr_state(tr_state)
+        , _tr_info(tracing::make_trace_info(tr_state))
     {}
 
-    future<query::mapreduce_result> dispatch_to_node(const locator::effective_replication_map& erm, locator::host_id id, query::mapreduce_request req) {
+    future<Result> dispatch_to_node(const locator::effective_replication_map& erm, locator::host_id id, Request req) {
         if (_mapreducer._proxy.is_me(erm, id)) {
             co_return co_await dispatch_to_shards_locally(req, _tr_info);
         }
 
         _mapreducer._stats.requests_dispatched_to_other_nodes += 1;
 
-        // Check for a shutdown request before sending a mapreduce_request to
-        // another node. During the drain process, the messaging service is shut
-        // down early (but not earlier than the mapreduce_service::shutdown
-        // invocation), so by performing this check, we can prevent hanging on
-        // the RPC call.
+        // Check for a shutdown request before sending a request to another node.
+        // During the drain process, the messaging service is shut down early
+        // (but not earlier than the mapreduce_service::shutdown invocation), so
+        // by performing this check, we can prevent hanging on the RPC call.
         if (_mapreducer._shutdown) {
             throw std::runtime_error("mapreduce_service is shutting down");
         }
 
-        // Try to send this mapreduce_request to another node.
+        // Try to send this request to another node.
         try {
-            co_return co_await ser::mapreduce_request_rpc_verbs::send_mapreduce_request(
-                &_mapreducer._messaging, id, _mapreducer._abort_outgoing_tasks, req, _tr_info
-            );
+            if constexpr (is_mapreduce) {
+                co_return co_await ser::mapreduce_request_rpc_verbs::send_mapreduce_request(
+                    &_mapreducer._messaging, id, _mapreducer._abort_outgoing_tasks, req, _tr_info
+                );
+            } else {
+                co_return co_await ser::filtering_delete_request_rpc_verbs::send_filtering_delete_request(
+                    &_mapreducer._messaging, id, _mapreducer._abort_outgoing_tasks, req, _tr_info
+                );
+            }
         } catch (rpc::closed_error& e) {
             if (_mapreducer._shutdown) {
                 // Do not retry if shutting down.
                 throw;
             }
-            // In case of mapreduce failure, retry using super-coordinator as a coordinator
-            flogger.warn("retrying mapreduce_request={} on a super-coordinator after failing to send it to {} ({})", req, id, e.what());
-            tracing::trace(_tr_state, "retrying mapreduce_request={} on a super-coordinator after failing to send it to {} ({})", req, id, e.what());
+            // In case of failure, retry using super-coordinator as a coordinator
+            flogger.warn("retrying request on a super-coordinator after failing to send it to {} ({})", id, e.what());
+            tracing::trace(_tr_state, "retrying request on a super-coordinator after failing to send it to {} ({})", id, e.what());
             // Fall through since we cannot co_await in a catch block.
         }
         co_return co_await dispatch_to_shards_locally(req, _tr_info);
     }
 };
+
+using mapreduce_retrying_dispatcher = retrying_dispatcher<query::mapreduce_request, query::mapreduce_result>;
+using filtering_delete_retrying_dispatcher = retrying_dispatcher<query::filtering_delete_request, query::filtering_delete_result>;
 
 future<> mapreduce_service::stop() {
     return uninit_messaging_service();
@@ -380,7 +411,7 @@ static shared_ptr<cql3::selection::selection> mock_selection(
     return cql3::selection::selection::from_selectors(db.as_data_dictionary(), schema, schema->ks_name(), std::move(prepared_selectors));
 }
 
-future<query::mapreduce_result> mapreduce_service::dispatch_to_shards(
+future<query::mapreduce_result> mapreduce_service::dispatch_mapreduce_to_shards(
     query::mapreduce_request req,
     std::optional<tracing::trace_info> tr_info
 ) {
@@ -392,7 +423,7 @@ future<query::mapreduce_result> mapreduce_service::dispatch_to_shards(
 
     for (const auto& s : smp::all_cpus()) {
         futures.push_back(container().invoke_on(s, [req, tr_info] (auto& fs) {
-            return fs.execute_on_this_shard(req, tr_info);
+            return fs.execute_mapreduce_on_this_shard(req, tr_info);
         }));
     }
     auto results = co_await when_all_succeed(futures.begin(), futures.end());
@@ -429,7 +460,7 @@ static lowres_clock::time_point compute_timeout(const query::mapreduce_request& 
 // This function executes mapreduce_request on a shard.
 // It retains partition ranges owned by this shard from requested partition
 // ranges vector, so that only owned ones are queried.
-future<query::mapreduce_result> mapreduce_service::execute_on_this_shard(
+future<query::mapreduce_result> mapreduce_service::execute_mapreduce_on_this_shard(
     query::mapreduce_request req,
     std::optional<tracing::trace_info> tr_info
 ) {
@@ -547,16 +578,23 @@ void mapreduce_service::init_messaging_service() {
     ser::mapreduce_request_rpc_verbs::register_mapreduce_request(
         &_messaging,
         [this](query::mapreduce_request req, std::optional<tracing::trace_info> tr_info) -> future<query::mapreduce_result> {
-            return dispatch_to_shards(req, tr_info);
+            return dispatch_mapreduce_to_shards(req, tr_info);
+        }
+    );
+    ser::filtering_delete_request_rpc_verbs::register_filtering_delete_request(
+        &_messaging,
+        [this](query::filtering_delete_request req, std::optional<tracing::trace_info> tr_info) -> future<query::filtering_delete_result> {
+            return dispatch_delete_to_shards(req, tr_info);
         }
     );
 }
 
 future<> mapreduce_service::uninit_messaging_service() {
-    return ser::mapreduce_request_rpc_verbs::unregister(&_messaging);
+    co_await ser::mapreduce_request_rpc_verbs::unregister(&_messaging);
+    co_await ser::filtering_delete_request_rpc_verbs::unregister(&_messaging);
 }
 
-future<> mapreduce_service::dispatch_range_and_reduce(const locator::effective_replication_map_ptr& erm, retrying_dispatcher& dispatcher, const query::mapreduce_request& req, query::mapreduce_request&& req_with_modified_pr, locator::host_id addr, query::mapreduce_result& shared_accumulator, tracing::trace_state_ptr tr_state) {
+future<> mapreduce_service::dispatch_range_and_reduce(const locator::effective_replication_map_ptr& erm, mapreduce_retrying_dispatcher& dispatcher, const query::mapreduce_request& req, query::mapreduce_request&& req_with_modified_pr, locator::host_id addr, query::mapreduce_result& shared_accumulator, tracing::trace_state_ptr tr_state) {
     tracing::trace(tr_state, "Sending mapreduce_request to {}", addr);
     flogger.debug("dispatching mapreduce_request={} to address={}", req_with_modified_pr, addr);
 
@@ -594,16 +632,18 @@ std::optional<dht::partition_range> get_next_partition_range(query_ranges_to_vno
     return {};
 } 
 
-future<> mapreduce_service::dispatch_to_vnodes(schema_ptr schema, replica::column_family& cf, query::mapreduce_request& req, query::mapreduce_result& result, tracing::trace_state_ptr tr_state) {
+future<> mapreduce_service::dispatch_to_vnodes(schema_ptr schema, replica::column_family& cf,
+        const dht::partition_range_vector& pr, db::consistency_level cl,
+        tracing::trace_state_ptr tr_state, dispatch_and_merge_fn dispatch) {
     auto erm = cf.get_effective_replication_map();
     // Group vnodes by assigned endpoint.
     std::map<locator::host_id, dht::partition_range_vector> vnodes_per_addr;
     const auto& topo = erm->get_topology();
-    auto generator = query_ranges_to_vnodes_generator(erm->make_splitter(), schema, req.pr);
+    auto generator = query_ranges_to_vnodes_generator(erm->make_splitter(), schema, pr);
     while (std::optional<dht::partition_range> vnode = get_next_partition_range(generator)) {
         host_id_vector_replica_set live_endpoints = _proxy.get_live_endpoints(*erm, end_token(*vnode));
         // Do not choose an endpoint outside the current datacenter if a request has a local consistency
-        if (db::is_datacenter_local(req.cl)) {
+        if (db::is_datacenter_local(cl)) {
             retain_local_endpoints(topo, live_endpoints);
         }
 
@@ -616,39 +656,47 @@ future<> mapreduce_service::dispatch_to_vnodes(schema_ptr schema, replica::colum
         co_await coroutine::maybe_yield();
     }
 
-    tracing::trace(tr_state, "Dispatching mapreduce_request to {} endpoints", vnodes_per_addr.size());
-    flogger.debug("dispatching mapreduce_request to {} endpoints", vnodes_per_addr.size());
-
-    retrying_dispatcher dispatcher(*this, tr_state);
+    tracing::trace(tr_state, "Dispatching request to {} endpoints", vnodes_per_addr.size());
+    flogger.debug("dispatching request to {} endpoints", vnodes_per_addr.size());
 
     co_await coroutine::parallel_for_each(vnodes_per_addr,
             [&] (std::pair<const locator::host_id, dht::partition_range_vector>& vnodes_with_addr) -> future<> {
         co_await utils::get_local_injector().inject("mapreduce_pause_parallel_dispatch", utils::wait_for_message(5min));
         locator::host_id addr = vnodes_with_addr.first;
-        query::mapreduce_request req_with_modified_pr = req;
-        req_with_modified_pr.pr = std::move(vnodes_with_addr.second);
-        co_await dispatch_range_and_reduce(erm, dispatcher, req, std::move(req_with_modified_pr), addr, result, tr_state);
+        co_await dispatch(erm, addr, std::move(vnodes_with_addr.second), std::nullopt);
     });
 }
 
-class mapreduce_tablet_algorithm {
+// Called per range+host to dispatch a request and merge the partial result
+// into the shared accumulator. Captures the request, result, dispatcher,
+// and merge logic — keeping the tablet/vnode algorithms type-agnostic.
+// Parameters: (erm, host_id, partition_ranges, shard_hint)
+using dispatch_and_merge_fn = noncopyable_function<future<>(
+    const locator::effective_replication_map_ptr&,
+    locator::host_id,
+    dht::partition_range_vector,
+    std::optional<shard_id>)>;
+
+class tablet_algorithm {
 private:
     class ranges_per_tablet_replica_t;
 public:
-    mapreduce_tablet_algorithm(mapreduce_service& mapreducer, schema_ptr schema, replica::column_family& cf,  query::mapreduce_request& req, query::mapreduce_result& result, tracing::trace_state_ptr tr_state)
-        : _mapreducer(mapreducer),
-        _schema(schema),
-        _cf(cf),
-        _req(req),
-        _result(result),
-        _tr_state(tr_state),
-        _dispatcher(_mapreducer, tr_state),
-        _limit_per_replica(2)
+    tablet_algorithm(mapreduce_service& svc, schema_ptr schema, replica::column_family& cf,
+                     const dht::partition_range_vector& pr, db::consistency_level cl,
+                     tracing::trace_state_ptr tr_state, dispatch_and_merge_fn dispatch)
+        : _svc(svc)
+        , _schema(schema)
+        , _cf(cf)
+        , _pr(pr)
+        , _cl(cl)
+        , _tr_state(tr_state)
+        , _dispatch(std::move(dispatch))
+        , _limit_per_replica(2)
     {}
 
     future<> initialize_ranges_left() {
         auto erm = _cf.get_effective_replication_map();
-        auto generator = query_ranges_to_vnodes_generator(erm->make_splitter(), _schema, _req.pr);
+        auto generator = query_ranges_to_vnodes_generator(erm->make_splitter(), _schema, _pr);
         while (std::optional<dht::partition_range> range = get_next_partition_range(generator)) {
             _ranges_left.insert(std::move(*range));
             // can potentially stall e.g. with a large tablet count.
@@ -671,8 +719,8 @@ public:
 
             size_t skipped_replicas = 0;
             for (auto& replica : tablet_info.replicas) {
-                bool is_alive = _mapreducer._proxy.is_alive(*erm, replica.host);
-                bool has_correct_locality = !db::is_datacenter_local(_req.cl) || topo.get_datacenter(replica.host) == topo.get_datacenter();
+                bool is_alive = _svc._proxy.is_alive(*erm, replica.host);
+                bool has_correct_locality = !db::is_datacenter_local(_cl) || topo.get_datacenter(replica.host) == topo.get_datacenter();
                 if (is_alive && has_correct_locality) {
                     ranges_per_tablet_replica_map[replica].push_back(range);
                 } else {
@@ -718,10 +766,7 @@ public:
                     auto it = _ranges_left.find(range);
                     if (it != _ranges_left.end()) {
                         _ranges_left.erase(it);
-                        query::mapreduce_request req_with_modified_pr = _req;
-                        req_with_modified_pr.pr = dht::partition_range_vector{range};
-                        req_with_modified_pr.shard_id_hint = replica.shard;
-                        co_await _mapreducer.dispatch_range_and_reduce(erm, _dispatcher, _req, std::move(req_with_modified_pr), replica.host, _result, _tr_state);
+                        co_await _dispatch(erm, replica.host, dht::partition_range_vector{range}, replica.shard);
                     }
 
                     // can potentially stall e.g. with a large tablet count.
@@ -757,13 +802,13 @@ private:
         std::map<locator::tablet_replica, dht::partition_range_vector> _map;
     };
 
-    mapreduce_service& _mapreducer;
+    mapreduce_service& _svc;
     schema_ptr _schema;
     replica::column_family& _cf;
-    query::mapreduce_request& _req;
-    query::mapreduce_result& _result;
+    const dht::partition_range_vector& _pr;
+    db::consistency_level _cl;
     tracing::trace_state_ptr _tr_state;
-    retrying_dispatcher _dispatcher;
+    dispatch_and_merge_fn _dispatch;
     size_t _limit_per_replica;
 
     struct partition_range_cmp {
@@ -776,8 +821,10 @@ private:
     ranges_per_tablet_replica_t _ranges_per_replica;
 };
 
-future<> mapreduce_service::dispatch_to_tablets(schema_ptr schema, replica::column_family& cf, query::mapreduce_request& req, query::mapreduce_result& result, tracing::trace_state_ptr tr_state) {
-    mapreduce_tablet_algorithm algorithm(*this, schema, cf, req, result, tr_state);
+future<> mapreduce_service::dispatch_to_tablets(schema_ptr schema, replica::column_family& cf,
+        const dht::partition_range_vector& pr, db::consistency_level cl,
+        tracing::trace_state_ptr tr_state, dispatch_and_merge_fn dispatch) {
+    tablet_algorithm algorithm(*this, schema, cf, pr, cl, tr_state, std::move(dispatch));
     co_await algorithm.initialize_ranges_left();
     co_await algorithm.dispatch_work_and_wait_to_finish();
 }
@@ -787,10 +834,21 @@ future<query::mapreduce_result> mapreduce_service::dispatch(query::mapreduce_req
     replica::table& cf = _db.local().find_column_family(schema);
     
     query::mapreduce_result result;
+    mapreduce_retrying_dispatcher dispatcher(*this, tr_state);
+
+    auto dispatch_fn = [this, &dispatcher, &req, &result, &tr_state]
+            (const locator::effective_replication_map_ptr& erm, locator::host_id addr,
+             dht::partition_range_vector ranges, std::optional<shard_id> shard_hint) -> future<> {
+        query::mapreduce_request req_with_modified_pr = req;
+        req_with_modified_pr.pr = std::move(ranges);
+        req_with_modified_pr.shard_id_hint = shard_hint;
+        co_await dispatch_range_and_reduce(erm, dispatcher, req, std::move(req_with_modified_pr), addr, result, tr_state);
+    };
+
     if (cf.uses_tablets()) {
-        co_await dispatch_to_tablets(schema, cf, req, result, tr_state);
+        co_await dispatch_to_tablets(schema, cf, req.pr, req.cl, tr_state, std::move(dispatch_fn));
     } else {
-        co_await dispatch_to_vnodes(schema, cf, req, result, tr_state);
+        co_await dispatch_to_vnodes(schema, cf, req.pr, req.cl, tr_state, std::move(dispatch_fn));
     }
 
     mapreduce_aggregates aggrs(req);
@@ -814,6 +872,303 @@ future<query::mapreduce_result> mapreduce_service::dispatch(query::mapreduce_req
     } else {
         co_return merge_result();
     }
+}
+
+static constexpr int DEFAULT_DELETE_PAGING_SIZE = 1000;
+
+future<query::filtering_delete_result> mapreduce_service::dispatch_delete_to_shards(
+    query::filtering_delete_request req,
+    std::optional<tracing::trace_info> tr_info
+) {
+    _stats.requests_dispatched_to_own_shards += 1;
+    std::vector<future<query::filtering_delete_result>> futures;
+
+    for (const auto& s : smp::all_cpus()) {
+        futures.push_back(container().invoke_on(s, [req, tr_info] (auto& fs) {
+            return fs.execute_delete_on_this_shard(req, tr_info);
+        }));
+    }
+    auto results = co_await when_all_succeed(futures.begin(), futures.end());
+
+    query::filtering_delete_result combined;
+    for (auto&& r : results) {
+        combined.rows_deleted += r.rows_deleted;
+    }
+    co_return combined;
+}
+
+future<query::filtering_delete_result> mapreduce_service::execute_delete_on_this_shard(
+    query::filtering_delete_request req,
+    std::optional<tracing::trace_info> tr_info
+) {
+    tracing::trace_state_ptr tr_state;
+    if (tr_info) {
+        tr_state = tracing::tracing::get_local_tracing_instance().create_session(*tr_info);
+        tracing::begin(tr_state);
+    }
+
+    tracing::trace(tr_state, "Executing filtering_delete_request");
+    _stats.requests_executed += 1;
+
+    schema_ptr schema = local_schema_registry().get(req.schema_version);
+    auto db = _db.local().as_data_dictionary();
+
+    lowres_system_clock::duration time_left = req.deadline - lowres_system_clock::now();
+    lowres_clock::time_point timeout_point = lowres_clock::now() + time_left;
+
+    auto now = gc_clock::now();
+    auto ts = req.timestamp;
+    auto cl = req.cl;
+
+    // Re-parse the WHERE clause and prepare a select statement (MV pattern).
+    // This gives us: restrictions (for filtering), selection (all columns),
+    // and a partition_slice (with clustering bounds from the WHERE clause).
+    auto raw = cql3::util::build_select_statement(
+        schema->cf_name(), req.where_clause, true /* select_all_columns */, schema->all_columns());
+    raw->prepare_keyspace(schema->ks_name());
+    raw->set_bound_variables({});
+    cql3::cql_stats ignored_stats;
+    auto prepared = raw->prepare(db, ignored_stats, true /* for_view */);
+    auto select_stmt = static_pointer_cast<cql3::statements::select_statement>(prepared->statement);
+
+    // Build selection, partition_slice, and read_command from the re-prepared statement.
+    auto empty_options = cql3::query_options({});
+    auto slice = select_stmt->make_partition_slice(empty_options);
+    // Ensure the pager sends partition and clustering keys so we can reconstruct them
+    slice.options.set<query::partition_slice::option::send_partition_key>();
+    slice.options.set<query::partition_slice::option::send_clustering_key>();
+    slice.options.set<query::partition_slice::option::allow_short_read>();
+
+    auto max_result_size = _proxy.get_max_result_size(slice);
+
+    auto command = make_lw_shared<query::read_command>(
+        schema->id(),
+        schema->version(),
+        std::move(slice),
+        max_result_size,
+        query::tombstone_limit(_proxy.get_tombstone_limit()),
+        query::row_limit::max,
+        query::partition_limit::max,
+        now,
+        tracing::make_trace_info(tr_state),
+        query_id::create_null_id(),
+        query::is_first_page::no,
+        ts);
+
+    // Build a selection that includes all columns (for predicate evaluation and key extraction)
+    auto all_columns = std::ranges::to<std::vector<const column_definition*>>(
+        schema->all_columns()
+        | std::views::transform([] (const column_definition& cdef) { return &cdef; }));
+    auto selection = cql3::selection::selection::for_columns(schema, std::move(all_columns));
+
+    // Get filtering restrictions from the re-prepared select statement
+    auto filtering_restrictions = select_stmt->get_restrictions();
+
+    auto query_state = make_lw_shared<service::query_state>(
+        client_state::for_internal_calls(),
+        tr_state,
+        empty_service_permit()
+    );
+    auto query_opts = make_lw_shared<cql3::query_options>(
+        cql3::default_cql_config,
+        cl,
+        std::optional<std::vector<std::string_view>>(),
+        std::vector<cql3::raw_value>(),
+        true, // skip metadata
+        cql3::query_options::specific_options::DEFAULT
+    );
+
+    // For clustering tier with prefix restrictions, prepare clustering bounds for range tombstones
+    bool use_range_tombstones = (req.optimization_tier == query::filtering_delete_request::tier::clustering
+                                 && !filtering_restrictions->clustering_key_restrictions_need_filtering());
+    auto ck_bounds_for_tombstones = use_range_tombstones
+        ? filtering_restrictions->get_clustering_bounds(empty_options)
+        : std::vector<query::clustering_range>();
+
+    // Iterate through partition ranges owned by this shard
+    static constexpr size_t max_ranges = 256;
+    dht::partition_range_vector ranges_owned_by_this_shard;
+    ranges_owned_by_this_shard.reserve(std::min(max_ranges, req.pr.size()));
+    partition_ranges_owned_by_this_shard owned_iter(schema, std::move(req.pr), req.shard_id_hint);
+
+    uint64_t total_deleted = 0;
+    std::optional<dht::partition_range> current_range;
+
+    // For partition_only and clustering-prefix, collect unique partition keys and apply
+    // bulk tombstones after the scan.
+    bool collect_partitions = (req.optimization_tier == query::filtering_delete_request::tier::partition_only
+                               || use_range_tombstones);
+    std::set<dht::decorated_key, dht::decorated_key::less_comparator> bulk_partitions{
+        dht::decorated_key::less_comparator(schema)};
+
+    do {
+        while ((current_range = owned_iter.next(*schema))) {
+            ranges_owned_by_this_shard.push_back(std::move(*current_range));
+            if (ranges_owned_by_this_shard.size() >= max_ranges) {
+                break;
+            }
+        }
+        if (ranges_owned_by_this_shard.empty()) {
+            break;
+        }
+
+        flogger.trace("Filtering delete: processing {} ranges on this shard", ranges_owned_by_this_shard.size());
+
+        auto pager = service::pager::query_pagers::pager(
+            _proxy,
+            schema,
+            selection,
+            *query_state,
+            *query_opts,
+            command,
+            std::move(ranges_owned_by_this_shard),
+            filtering_restrictions
+        );
+
+        while (!pager->is_exhausted()) {
+            if (_shutdown) {
+                throw std::runtime_error("mapreduce_service is shutting down");
+            }
+
+            auto rs_builder = cql3::selection::result_set_builder(
+                *selection,
+                now,
+                nullptr,
+                std::vector<size_t>()
+            );
+            co_await pager->fetch_page(rs_builder, DEFAULT_DELETE_PAGING_SIZE, now, timeout_point);
+
+            auto rs = rs_builder.build();
+            auto& rows = rs->rows();
+
+            if (rows.empty()) {
+                continue;
+            }
+
+            // Build tombstone mutations from the scanned rows
+            utils::chunked_vector<mutation> mutations;
+            auto tombstone_ts = tombstone(ts, now);
+
+            for (auto& row : rows) {
+                // Extract partition key from the result row
+                std::vector<bytes> pk_values;
+                pk_values.reserve(schema->partition_key_size());
+                for (size_t i = 0; i < schema->partition_key_size(); ++i) {
+                    auto& val = row[i];
+                    if (!val) {
+                        // Should not happen for PK columns, but be safe
+                        break;
+                    }
+                    pk_values.push_back(to_bytes(*val));
+                }
+                if (pk_values.size() != schema->partition_key_size()) {
+                    continue;
+                }
+                auto pk = partition_key::from_exploded(pk_values);
+                auto dk = dht::decorate_key(*schema, pk);
+
+                if (collect_partitions) {
+                    // Collect unique partition keys; apply bulk tombstones after the scan
+                    bulk_partitions.insert(std::move(dk));
+                } else {
+                    // clustering-nonprefix / regular_column: per-row tombstones
+                    std::vector<bytes> ck_values;
+                    ck_values.reserve(schema->clustering_key_size());
+                    for (size_t i = schema->partition_key_size();
+                         i < schema->partition_key_size() + schema->clustering_key_size(); ++i) {
+                        auto& val = row[i];
+                        if (!val) {
+                            break;
+                        }
+                        ck_values.push_back(to_bytes(*val));
+                    }
+
+                    mutation m(schema, dk);
+                    if (ck_values.empty() || schema->clustering_key_size() == 0) {
+                        m.partition().apply(tombstone_ts);
+                    } else {
+                        auto ck = clustering_key::from_exploded(ck_values);
+                        m.partition().apply_delete(*schema, ck, tombstone_ts);
+                    }
+                    mutations.push_back(std::move(m));
+                    total_deleted++;
+                }
+            }
+
+            if (!mutations.empty()) {
+                auto write_timeout = db::timeout_clock::now() + std::chrono::duration_cast<db::timeout_clock::duration>(time_left);
+                co_await _proxy.mutate(std::move(mutations), cl, write_timeout, tr_state, empty_service_permit(), db::allow_per_partition_rate_limit::no);
+            }
+        }
+
+        ranges_owned_by_this_shard.clear();
+    } while (current_range);
+
+    // For partition_only/clustering-prefix, apply bulk tombstones for all collected partition keys
+    if (collect_partitions && !bulk_partitions.empty()) {
+        utils::chunked_vector<mutation> mutations;
+        auto tombstone_ts = tombstone(ts, now);
+        for (auto& dk : bulk_partitions) {
+            mutation m(schema, dk);
+            if (req.optimization_tier == query::filtering_delete_request::tier::partition_only) {
+                // Partition tombstone — deletes entire partition
+                m.partition().apply(tombstone_ts);
+            } else {
+                // Clustering-prefix: range tombstone(s) — deletes matching CK ranges
+                for (auto& range : ck_bounds_for_tombstones) {
+                    if (range.is_full()) {
+                        m.partition().apply(tombstone_ts);
+                    } else if (range.is_singular()) {
+                        m.partition().apply_delete(*schema, range.start()->value(), tombstone_ts);
+                    } else {
+                        auto bvs = bound_view::from_range(range);
+                        m.partition().apply_delete(*schema, range_tombstone(bvs.first, bvs.second, tombstone_ts));
+                    }
+                }
+            }
+            mutations.push_back(std::move(m));
+            total_deleted++;
+        }
+        auto write_timeout = db::timeout_clock::now() + std::chrono::duration_cast<db::timeout_clock::duration>(time_left);
+        co_await _proxy.mutate(std::move(mutations), cl, write_timeout, tr_state, empty_service_permit(), db::allow_per_partition_rate_limit::no);
+    }
+
+    flogger.debug("Filtering delete: deleted {} rows on this shard", total_deleted);
+    tracing::trace(tr_state, "Filtering delete: deleted {} rows on this shard", total_deleted);
+
+    co_return query::filtering_delete_result{total_deleted};
+}
+
+future<query::filtering_delete_result> mapreduce_service::dispatch_delete(
+    query::filtering_delete_request req,
+    tracing::trace_state_ptr tr_state
+) {
+    schema_ptr schema = local_schema_registry().get(req.schema_version);
+    replica::table& cf = _db.local().find_column_family(schema);
+
+    query::filtering_delete_result result;
+    filtering_delete_retrying_dispatcher dispatcher(*this, tr_state);
+
+    auto dispatch_fn = [&dispatcher, &req, &result]
+            (const locator::effective_replication_map_ptr& erm, locator::host_id addr,
+             dht::partition_range_vector ranges, std::optional<shard_id> shard_hint) -> future<> {
+        query::filtering_delete_request req_with_modified_pr = req;
+        req_with_modified_pr.pr = std::move(ranges);
+        req_with_modified_pr.shard_id_hint = shard_hint;
+        auto partial_result = co_await dispatcher.dispatch_to_node(*erm, addr, std::move(req_with_modified_pr));
+        result.rows_deleted += partial_result.rows_deleted;
+    };
+
+    if (cf.uses_tablets()) {
+        co_await dispatch_to_tablets(schema, cf, req.pr, req.cl, tr_state, std::move(dispatch_fn));
+    } else {
+        co_await dispatch_to_vnodes(schema, cf, req.pr, req.cl, tr_state, std::move(dispatch_fn));
+    }
+
+    flogger.debug("filtering delete completed: {} rows deleted", result.rows_deleted);
+    tracing::trace(tr_state, "filtering delete completed: {} rows deleted", result.rows_deleted);
+
+    co_return result;
 }
 
 void mapreduce_service::register_metrics() {

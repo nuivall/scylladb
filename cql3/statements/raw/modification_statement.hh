@@ -32,7 +32,6 @@ class modification_statement : public cf_statement {
 protected:
     const std::unique_ptr<attributes::raw> _attrs;
     const std::optional<expr::expression> _conditions;
-private:
     const bool _if_not_exists;
     const bool _if_exists;
 protected:

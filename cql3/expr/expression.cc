@@ -776,7 +776,7 @@ auto fmt::formatter<cql3::expr::expression::printer>::format(const cql3::expr::e
             },
             [&] (const untyped_constant& uc) {
                 if (uc.partial_type == untyped_constant::type_class::string) {
-                    out = fmt::format_to(out, "'{}'", uc.raw_text);
+                    out = fmt::format_to(out, "{}", cql3::util::single_quote(uc.raw_text));
                 } else {
                     out = fmt::format_to(out, "{}", uc.raw_text);
                 }
@@ -896,6 +896,23 @@ expression replace_partition_token(const expression& expr, const column_definiti
         } else {
             return std::nullopt;
         }
+    });
+}
+
+expression inline_bind_variables(const expression& e, const query_options& options) {
+    return search_and_replace(e, [&] (const expression& node) -> std::optional<expression> {
+        if (auto bv = as_if<bind_variable>(&node)) {
+            if (!bv->receiver) {
+                on_internal_error(expr_logger,
+                    "inline_bind_variables() called on unprepared expression (bind_variable has no receiver)");
+            }
+            auto value = options.get_value_at(bv->bind_index);
+            if (value.is_null()) {
+                return constant::make_null(bv->receiver->type);
+            }
+            return constant(cql3::raw_value::make_value(value), bv->receiver->type);
+        }
+        return std::nullopt;
     });
 }
 
