@@ -164,6 +164,8 @@ add_scylla_test(managed_bytes_test
   LIBRARIES Seastar::seastar_testing)
 add_scylla_test(managed_vector_test
   KIND SEASTAR)
+add_scylla_test(memory_limiter_test
+  KIND SEASTAR)
 add_scylla_test(map_difference_test
   KIND BOOST)
 add_scylla_test(murmur_hash_test

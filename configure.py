@@ -599,6 +599,7 @@ scylla_tests = set([
     'test/boost/lru_string_map_test',
     'test/boost/managed_bytes_test',
     'test/boost/managed_vector_test',
+    'test/boost/memory_limiter_test',
     'test/boost/map_difference_test',
     'test/boost/murmur_hash_test',
     'test/boost/mutation_fragment_test',
