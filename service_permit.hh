@@ -15,7 +15,6 @@ class service_permit {
     seastar::lw_shared_ptr<service::memory_units> _permit;
     service_permit(service::memory_units&& u) : _permit(seastar::make_lw_shared<service::memory_units>(std::move(u))) {}
     friend service_permit make_service_permit(service::memory_units&& permit);
-    friend service_permit make_service_permit(seastar::semaphore_units<>&& permit);
     friend service_permit empty_service_permit();
 public:
     size_t count() const { return _permit ? _permit->count() : 0; };
@@ -29,11 +28,6 @@ public:
 
 inline service_permit make_service_permit(service::memory_units&& permit) {
     return service_permit(std::move(permit));
-}
-
-/// Deprecated overload for callers not yet migrated to memory_units.
-inline service_permit make_service_permit(seastar::semaphore_units<>&& permit) {
-    return service_permit(service::memory_units(std::move(permit), nullptr, nullptr, 0));
 }
 
 inline service_permit empty_service_permit() {

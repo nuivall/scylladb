@@ -19,6 +19,7 @@
 #include "seastarx.hh"
 #include "error.hh"
 #include "service/client_state.hh"
+#include "service/memory_limiter.hh"
 #include "service/qos/service_level_controller.hh"
 #include "utils/assert.hh"
 #include "timeout_config.hh"
@@ -61,6 +62,44 @@ inline std::vector<std::string_view> split(std::string_view text, char separator
         }
     }
     return tokens;
+}
+
+// Lightweight extraction of the username from an AWS4-HMAC-SHA256 Authorization
+// header's Credential field: "AWS4-HMAC-SHA256 Credential=USERNAME/date/..."
+// Returns empty string if the header is missing or malformed.
+std::string server::extract_username_from_authorization(std::string_view authorization_header) {
+    // Skip "AWS4-HMAC-SHA256 " prefix
+    auto pos = authorization_header.find_first_of(' ');
+    if (pos == std::string_view::npos) {
+        return {};
+    }
+    authorization_header.remove_prefix(pos + 1);
+    // Find "Credential=" entry
+    while (!authorization_header.empty()) {
+        pos = authorization_header.find_first_of(" ,");
+        std::string_view entry = authorization_header.substr(0, pos);
+        if (pos != std::string_view::npos) {
+            authorization_header.remove_prefix(pos + 1);
+        } else {
+            authorization_header = {};
+        }
+        if (entry.empty()) {
+            continue;
+        }
+        auto eq = entry.find('=');
+        if (eq == std::string_view::npos) {
+            continue;
+        }
+        if (entry.substr(0, eq) == "Credential") {
+            std::string_view credential = entry.substr(eq + 1);
+            auto slash = credential.find('/');
+            if (slash == std::string_view::npos) {
+                return std::string(credential);
+            }
+            return std::string(credential.substr(0, slash));
+        }
+    }
+    return {};
 }
 
 // Handle CORS (Cross-origin resource sharing) in the HTTP request:
@@ -710,17 +749,36 @@ future<executor::request_return_type> server::handle_api_request(std::unique_ptr
     }
     _pending_requests.enter();
     auto leave = defer([this] () noexcept { _pending_requests.leave(); });
+
+    // Extract the username from the Authorization header BEFORE reading the body.
+    // This is a lightweight string parse — no crypto or database lookups — so we can
+    // use it to look up the user's service level and acquire per-SL memory units.
+    std::optional<auth::authenticated_user> unverified_user;
+    auto authorization_it = req->_headers.find("Authorization");
+    if (authorization_it != req->_headers.end()) {
+        auto uname = extract_username_from_authorization(authorization_it->second);
+        if (!uname.empty()) {
+            unverified_user = auth::authenticated_user(std::move(uname));
+        }
+    }
+
+    // Look up the scheduling group for this user's service level from the cache.
+    // If the user is unknown or has no special SL, falls back to the default scheduling group.
+    scheduling_group sg = _sl_controller.get_cached_user_scheduling_group(unverified_user);
+
     // JSON parsing can allocate up to roughly 2x the size of the raw
     // document, + a couple of bytes for maintenance.
     // If the Content-Length of the request is not available, we assume
     // the largest possible request (request_content_length_limit, i.e., 16 MB)
     // and after reading the request we return_units() the excess.
     size_t mem_estimate = (req->content_length ? req->content_length : request_content_length_limit) * 2 + 8000;
-    auto units_fut = get_units(*_memory_limiter, mem_estimate);
-    if (_memory_limiter->waiters()) {
+    // Cap the estimate to prevent deadlock in the per-SL memory limiter
+    mem_estimate = std::min(mem_estimate, _memory_limiter->total_memory());
+    auto units_fut = _memory_limiter->get_units(sg, mem_estimate);
+    if (_memory_limiter->has_waiters(sg)) {
         ++_executor._stats.requests_blocked_memory;
     }
-    auto units = co_await std::move(units_fut);
+    service::memory_units units = co_await std::move(units_fut);
     throwing_assert(req->content_stream);
     chunked_content content = co_await read_entire_stream(*req->content_stream, request_content_length_limit);
     // If the request had no Content-Length, we reserved too many units
@@ -913,7 +971,7 @@ future<> server::init(net::inet_address addr, std::optional<uint16_t> port, std:
         std::optional<uint16_t> port_proxy_protocol, std::optional<uint16_t> https_port_proxy_protocol,
         std::optional<tls::credentials_builder> creds,
         utils::updateable_value<bool> enforce_authorization, utils::updateable_value<bool> warn_authorization, utils::updateable_value<uint64_t> max_users_query_size_in_trace_output,
-        semaphore* memory_limiter, utils::updateable_value<uint32_t> max_concurrent_requests) {
+        service::memory_limiter* memory_limiter, utils::updateable_value<uint32_t> max_concurrent_requests) {
     _memory_limiter = memory_limiter;
     _enforce_authorization = std::move(enforce_authorization);
     _warn_authorization = std::move(warn_authorization);
@@ -1062,4 +1120,3 @@ const char* api_error::what() const noexcept {
 }
 
 }
-

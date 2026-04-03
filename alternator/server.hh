@@ -16,6 +16,7 @@
 #include <seastar/net/tls.hh>
 #include <optional>
 #include "alternator/auth.hh"
+#include "service/memory_limiter.hh"
 #include "service/qos/service_level_controller.hh"
 #include "utils/small_vector.hh"
 #include "utils/updateable_value.hh"
@@ -59,7 +60,7 @@ class server : public peering_sharded_service<server> {
 
     alternator_callbacks_map _callbacks;
 
-    semaphore* _memory_limiter;
+    service::memory_limiter* _memory_limiter;
     utils::updateable_value<uint32_t> _max_concurrent_requests;
 
     ::shared_ptr<seastar::tls::server_credentials> _credentials;
@@ -104,7 +105,7 @@ public:
             std::optional<uint16_t> port_proxy_protocol, std::optional<uint16_t> https_port_proxy_protocol,
             std::optional<tls::credentials_builder> creds,
             utils::updateable_value<bool> enforce_authorization, utils::updateable_value<bool> warn_authorization, utils::updateable_value<uint64_t> max_users_query_size_in_trace_output,
-            semaphore* memory_limiter, utils::updateable_value<uint32_t> max_concurrent_requests);
+            service::memory_limiter* memory_limiter, utils::updateable_value<uint32_t> max_concurrent_requests);
     future<> stop();
     // get_client_data() is called (on each shard separately) when the virtual
     // table "system.clients" is read. It is expected to generate a list of
@@ -115,8 +116,10 @@ private:
     void set_routes(seastar::httpd::routes& r);
     // If verification succeeds, returns the authenticated user's username
     future<std::string> verify_signature(const seastar::http::request&, const chunked_content&);
+    // Lightweight extraction of username from the Authorization header's Credential field.
+    // Does NOT verify the signature; returns empty string if parsing fails.
+    static std::string extract_username_from_authorization(std::string_view authorization_header);
     future<executor::request_return_type> handle_api_request(std::unique_ptr<http::request> req);
 };
 
 }
-
