@@ -1083,12 +1083,6 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
                 sst_dir_semaphore.stop().get();
             });
 
-            service_memory_limiter.start(memory::stats().total_memory()).get();
-            auto stop_mem_limiter = defer_verbose_shutdown("service_memory_limiter", [] {
-                // Uncomment this once services release all the memory on stop
-                // service_memory_limiter.stop().get();
-            });
-
             checkpoint(stop_signal, "creating and verifying directories");
             utils::directories::set dir_set;
             dir_set.add(cfg->commitlog_directory());
@@ -1237,6 +1231,17 @@ To start the scylla server proper, simply invoke as: scylla server (or just scyl
             sl_controller.invoke_on_all(&qos::service_level_controller::start).get();
             auto stop_sl_controller = defer_verbose_shutdown("service level controller", [] {
                 sl_controller.stop().get();
+            });
+
+            checkpoint(stop_signal, "starting per-service-level transport memory limiter");
+            service_memory_limiter.start(memory::stats().total_memory()).get();
+            service_memory_limiter.invoke_on_all([] (service::memory_limiter& ml) {
+                return ml.start(sl_controller.local());
+            }).get();
+            auto stop_mem_limiter = defer_verbose_shutdown("service_memory_limiter", [&service_memory_limiter] {
+                service_memory_limiter.invoke_on_all([] (service::memory_limiter& ml) {
+                    return ml.stop();
+                }).get();
             });
 
             lang::manager::config lang_config;
