@@ -291,8 +291,7 @@ cql_server::cql_server(sharded<cql3::query_processor>& qp, auth::service& auth_s
     , _query_processor(qp)
     , _ms(ms)
     , _config(std::move(config))
-    , _memory_available(ml.get_semaphore())
-    , _total_memory(ml.total_memory())
+    , _mem_limiter(ml)
     , _notifier(std::make_unique<event_notifier>(*this))
     , _auth_service(auth_service)
     , _sl_controller(sl_controller)
@@ -321,9 +320,9 @@ cql_server::cql_server(sharded<cql3::query_processor>& qp, auth::service& auth_s
         sm::make_gauge("requests_serving", _stats.requests_serving,
                         sm::description("Holds a number of requests that are being processed right now.")),
 
-        sm::make_gauge("requests_blocked_memory_current", [this] { return _memory_available.waiters(); },
+        sm::make_gauge("requests_blocked_memory_current", [this] { return _mem_limiter.has_waiters() ? 1 : 0; },
                         sm::description(
-                            seastar::format("Holds the number of requests that are currently blocked due to reaching the memory quota limit ({}B). "
+                            seastar::format("Holds whether any requests are currently blocked due to reaching the memory quota limit ({}B). "
                                             "Non-zero value indicates that our bottleneck is memory and more specifically - the memory quota allocated for the \"CQL transport\" component.", _config.max_request_size))),
         sm::make_counter("requests_blocked_memory", _stats.requests_blocked_memory,
                         sm::description(
@@ -338,7 +337,7 @@ cql_server::cql_server(sharded<cql3::query_processor>& qp, auth::service& auth_s
         sm::make_counter("connections_blocked", _blocked_connections,
             sm::description("Holds an incrementing counter with the CQL connections that were blocked before being processed due to threshold configured via uninitialized_connections_semaphore_cpu_concurrency. "
                                             "Blocks are normal when we have multiple connections initialized at once. If connections are timing out and this value is high it indicates either connections storm or unusually slow processing.")),
-        sm::make_gauge("requests_memory_available", [this] { return _memory_available.current(); },
+        sm::make_gauge("requests_memory_available", [this] { return _mem_limiter.available_memory(); },
                         sm::description(
                             seastar::format("Holds the amount of available memory for admitting new requests (max is {}B)."
                                             "Zero value indicates that our bottleneck is memory and more specifically - the memory quota allocated for the \"CQL transport\" component.", _config.max_request_size))),
@@ -1166,7 +1165,7 @@ future<> cql_server::connection::process_request() {
 
         auto op = f.opcode;
         auto stream = f.stream;
-        auto mem_estimate = f.length * 2 + 8000; // Allow for extra copies and bookkeeping
+        size_t mem_estimate = f.length * 2 + 8000; // Allow for extra copies and bookkeeping
         if (mem_estimate > _server._config.max_request_size) {
             const auto message = format("request size too large (frame size {:d}; estimate {:d}; allowed {:d})",
                 uint32_t(f.length), mem_estimate, _server._config.max_request_size);
@@ -1180,8 +1179,8 @@ future<> cql_server::connection::process_request() {
         if (op == uint8_t(cql_binary_opcode::QUERY) || op == uint8_t(cql_binary_opcode::PREPARE)) {
             mem_estimate += _server._query_processor.local().parsing_cost_estimate();
         }
-        // Cap the estimate, otherwise get_units call later would deadlock
-        mem_estimate = std::min(mem_estimate, _server._total_memory);
+        // Cap the estimate to prevent deadlock in the per-SL memory limiter
+        mem_estimate = std::min(mem_estimate, _server._mem_limiter.total_memory());
 
         if (_server._stats.requests_serving > _server._config.max_concurrent_requests) {
             ++_server._stats.requests_shed;
@@ -1198,21 +1197,25 @@ future<> cql_server::connection::process_request() {
 
         const auto shedding_timeout = std::chrono::milliseconds(50);
         auto fut = allow_shedding
-                ? get_units(_server._memory_available, mem_estimate, shedding_timeout).then_wrapped([this, length = f.length] (auto f) {
+                ? _server._mem_limiter.get_units(mem_estimate, shedding_timeout).then_wrapped([this, length = f.length] (auto f) {
                     try {
-                        return make_ready_future<semaphore_units<>>(f.get());
+                        return make_ready_future<service::memory_units>(f.get());
                     } catch (semaphore_timed_out& sto) {
                         // Cancel shedding in case no more requests are going to do that on completion
                         if (_pending_requests_gate.get_count() == 0) {
                             _shed_incoming_requests = false;
                         }
                         return _read_buf.skip(length).then([sto = std::move(sto)] () mutable {
-                            return make_exception_future<semaphore_units<>>(std::move(sto));
+                            return make_exception_future<service::memory_units>(std::move(sto));
+                        });
+                    } catch (service::request_too_large_for_service_level& e) {
+                        return _read_buf.skip(length).then([e = std::move(e)] () mutable {
+                            return make_exception_future<service::memory_units>(std::move(e));
                         });
                     }
                 })
-                : get_units(_server._memory_available, mem_estimate);
-        if (_server._memory_available.waiters()) {
+                : _server._mem_limiter.get_units(mem_estimate);
+        if (_server._mem_limiter.has_waiters()) {
             if (allow_shedding && !_shedding_timer.armed()) {
                 _shedding_timer.arm(shedding_timeout);
             }
@@ -1221,11 +1224,22 @@ future<> cql_server::connection::process_request() {
 
         return fut.then_wrapped([this, length = f.length, flags = f.flags, op, stream, tracing_requested] (auto mem_permit_fut) {
           if (mem_permit_fut.failed()) {
-              // Ignore semaphore errors - they are expected if load shedding took place
-              mem_permit_fut.ignore_ready_future();
-              return make_ready_future<>();
+              try {
+                  std::rethrow_exception(mem_permit_fut.get_exception());
+              } catch (service::request_too_large_for_service_level& e) {
+                  // Request is too large for the service level's capacity
+                  auto message = sstring(e.what());
+                  clogger.debug("{}: {}, request dropped", _client_state.get_remote_address(), message);
+                  write_response(_server.make_error(stream, exceptions::exception_code::INVALID, message, tracing::trace_state_ptr()));
+                  return std::exchange(_ready_to_respond, make_ready_future<>())
+                      .then([this] { return _read_buf.close(); })
+                      .then([this] { return util::skip_entire_stream(_read_buf); });
+              } catch (...) {
+                  // Ignore other errors (semaphore_timed_out) - expected from load shedding
+                  return make_ready_future<>();
+              }
           }
-          semaphore_units<> mem_permit = mem_permit_fut.get();
+          service::memory_units mem_permit = mem_permit_fut.get();
           return this->read_and_decompress_frame(length, flags).then([this, op, stream, tracing_requested, mem_permit = make_service_permit(std::move(mem_permit))] (fragmented_temporary_buffer buf) mutable {
 
             ++_server._stats.requests_served;

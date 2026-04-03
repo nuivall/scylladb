@@ -213,8 +213,7 @@ private:
     sharded<cql3::query_processor>& _query_processor;
     netw::messaging_service& _ms;
     cql_server_config _config;
-    semaphore& _memory_available;
-    const uint32_t _total_memory;
+    service::memory_limiter& _mem_limiter;
     seastar::metrics::metric_groups _metrics;
     std::unique_ptr<event_notifier> _notifier;
 private:
