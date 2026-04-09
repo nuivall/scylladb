@@ -5,6 +5,7 @@ target_sources(service
     client_state.cc
     client_routes.cc
     mapreduce_service.cc
+    memory_limiter.cc
     migration_manager.cc
     misc_services.cc
     pager/paging_state.cc
