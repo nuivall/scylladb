@@ -18,7 +18,7 @@ class memory_limiter final {
 
 public:
     memory_limiter(size_t available_memory) noexcept
-        : _mem_total(available_memory / 10)
+        : _mem_total(available_memory / 20)
         , _sem(_mem_total) {}
 
     future<> stop() {
