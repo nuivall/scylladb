@@ -29,6 +29,7 @@
 #include "cql3/untyped_result_set.hh"
 #include "db/config.hh"
 #include "data_dictionary/data_dictionary.hh"
+#include "gms/feature_service.hh"
 #include "utils/hashers.hh"
 #include "utils/error_injection.hh"
 #include "service/migration_manager.hh"
@@ -737,28 +738,89 @@ query_processor::prepare(sstring query_string, service::query_state& query_state
 future<::shared_ptr<cql_transport::messages::result_message::prepared>>
 query_processor::prepare(sstring query_string, const service::client_state& client_state, cql3::dialect d) {
     try {
-        auto key = compute_id(query_string, client_state.get_raw_keyspace(), d);
-        auto prep_entry = co_await _prepared_cache.get_pinned(key, [this, &query_string, &client_state, d] {
-                auto prepared = get_statement(query_string, client_state, d);
-                prepared->calculate_metadata_id();
-                auto bound_terms = prepared->statement->get_bound_terms();
-                if (bound_terms > std::numeric_limits<uint16_t>::max()) {
-                    throw exceptions::invalid_request_exception(
-                            format("Too many markers(?). {:d} markers exceed the allowed maximum of {:d}",
-                                bound_terms,
-                                std::numeric_limits<uint16_t>::max()));
-                }
-                throwing_assert(bound_terms == prepared->bound_names.size());
-                return make_ready_future<std::unique_ptr<statements::prepared_statement>>(std::move(prepared));
-            });
+        // The prepared statement id is normally MD5(keyspace || query). For
+        // fully qualified queries the connection's USE keyspace is irrelevant
+        // to the parsed statement, so we hash without it. This makes the id
+        // stable across USE statements and lets drivers reprepare transparently
+        // when an entry is evicted from the server cache after a USE.
+        // Mirrors Cassandra's CASSANDRA-15252 behavior; tracked as
+        // SCYLLADB-1224.
+        //
+        // Behavior is gated on the QUALIFIED_PREPARED_STATEMENT_ID cluster
+        // feature so that all nodes hash forwarded prepares the same way
+        // during a rolling upgrade.
+        const bool new_behaviour = bool(_db.features().qualified_prepared_statement_id);
+        const auto raw_keyspace = client_state.get_raw_keyspace();
+        auto id_with_ks = compute_id(query_string, raw_keyspace, d);
+        // Only meaningful if new_behaviour is true; computed unconditionally to
+        // simplify control flow and because md5 of a short string is cheap.
+        auto id_no_ks = compute_id(query_string, "", d);
+
+        auto build_msg = [&] (const prepared_cache_key_type& key,
+                              prepared_statements_cache::pinned_value_type entry) {
+            return ::make_shared<result_message::prepared::cql>(
+                    prepared_cache_key_type::cql_id(key), std::move(entry),
+                    client_state.is_protocol_extension_set(
+                            cql_transport::cql_protocol_extension::LWT_ADD_METADATA_MARK));
+        };
+
+        // Fast path: try cache lookups without parsing.
+        if (new_behaviour) {
+            // Qualified statements live under the keyspace-free id.
+            if (auto pinned = _prepared_cache.try_find_pinned(id_no_ks);
+                    pinned && (*pinned)->is_fully_qualified) {
+                co_await utils::get_local_injector().inject(
+                        "query_processor_prepare_wait_after_cache_get",
+                        utils::wait_for_message(std::chrono::seconds(60)));
+                co_return build_msg(id_no_ks, std::move(pinned));
+            }
+        }
+        // Unqualified statements (and, when the feature is off, all statements)
+        // live under the with-keyspace id. When the feature is on we still
+        // accept hits at this key only for unqualified entries; a fully
+        // qualified entry erroneously cached under id_with_ks would fall
+        // through and be re-resolved at id_no_ks.
+        if (auto pinned = _prepared_cache.try_find_pinned(id_with_ks);
+                pinned && (!new_behaviour || !(*pinned)->is_fully_qualified)) {
+            co_await utils::get_local_injector().inject(
+                    "query_processor_prepare_wait_after_cache_get",
+                    utils::wait_for_message(std::chrono::seconds(60)));
+            co_return build_msg(id_with_ks, std::move(pinned));
+        }
+
+        // Slow path: parse, decide which key the entry belongs under, then
+        // populate the cache. We parse outside the cache loader because we
+        // need the parsed AST to choose the key; the cache itself is keyed by
+        // a single MD5.
+        auto prepared = get_statement(query_string, client_state, d);
+        prepared->calculate_metadata_id();
+        const auto bound_terms = prepared->statement->get_bound_terms();
+        if (bound_terms > std::numeric_limits<uint16_t>::max()) {
+            throw exceptions::invalid_request_exception(
+                    format("Too many markers(?). {:d} markers exceed the allowed maximum of {:d}",
+                            bound_terms,
+                            std::numeric_limits<uint16_t>::max()));
+        }
+        throwing_assert(bound_terms == prepared->bound_names.size());
+
+        const bool fully_qualified = prepared->is_fully_qualified;
+
+        const auto& chosen_key = (new_behaviour && fully_qualified) ? id_no_ks : id_with_ks;
+        // The cache loader is invoked through a const lambda inside
+        // prepared_statements_cache::get_pinned(), so the captured prepared
+        // statement must be movable out of a const context. Wrap it in a
+        // shared_ptr to a movable holder.
+        auto holder = seastar::make_lw_shared<std::unique_ptr<statements::prepared_statement>>(std::move(prepared));
+        auto load = [holder] {
+            return make_ready_future<std::unique_ptr<statements::prepared_statement>>(std::move(*holder));
+        };
+        auto prep_entry = co_await _prepared_cache.get_pinned(chosen_key, std::move(load));
 
         co_await utils::get_local_injector().inject(
                 "query_processor_prepare_wait_after_cache_get",
                 utils::wait_for_message(std::chrono::seconds(60)));
-  
-        auto msg = ::make_shared<result_message::prepared::cql>(prepared_cache_key_type::cql_id(key), std::move(prep_entry),
-                    client_state.is_protocol_extension_set(cql_transport::cql_protocol_extension::LWT_ADD_METADATA_MARK));
-        co_return std::move(msg);
+
+        co_return build_msg(chosen_key, std::move(prep_entry));
     } catch(typename prepared_statements_cache::statement_is_too_big&) {
         throw prepared_statement_is_too_big(query_string);
     }
@@ -775,6 +837,29 @@ prepared_cache_key_type query_processor::compute_id(
         std::string_view keyspace,
         dialect d) {
     return prepared_cache_key_type(md5_hasher::calculate(hash_target(query_string, keyspace)), d);
+}
+
+bytes query_processor::get_prepared_id_for_query(
+        std::string_view query_string,
+        std::string_view raw_keyspace,
+        dialect d) {
+    // Mirrors the lookup order in prepare(): if the new behaviour is enabled
+    // and the cached entry is fully qualified, it lives under the
+    // keyspace-free key; otherwise it lives under the with-keyspace key.
+    const bool new_behaviour = bool(_db.features().qualified_prepared_statement_id);
+    if (new_behaviour) {
+        auto id_no_ks = compute_id(query_string, "", d);
+        if (auto pinned = _prepared_cache.try_find_pinned(id_no_ks);
+                pinned && (*pinned)->is_fully_qualified) {
+            return id_no_ks.key();
+        }
+    }
+    auto id_with_ks = compute_id(query_string, raw_keyspace, d);
+    if (auto pinned = _prepared_cache.try_find_pinned(id_with_ks)) {
+        return id_with_ks.key();
+    }
+
+    throw exceptions::prepared_query_not_found_exception(id_with_ks.key());
 }
 
 std::unique_ptr<prepared_statement>

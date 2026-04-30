@@ -180,6 +180,17 @@ public:
             std::string_view keyspace,
             dialect d);
 
+    // Returns the prepared statement id for a query already cached on this
+    // shard. The id depends on whether the query is fully qualified and on
+    // the cluster feature gating; we therefore can't reconstruct it from the
+    // (query, keyspace) pair alone. Used by the forward-prepare RPC handler
+    // to report the id back to the originating coordinator. Throws if the
+    // entry isn't present in the local prepared cache. SCYLLADB-1224.
+    bytes get_prepared_id_for_query(
+            std::string_view query_string,
+            std::string_view raw_keyspace,
+            dialect d);
+
     static std::unique_ptr<statements::raw::parsed_statement> parse_statement(const std::string_view& query, dialect d);
     static std::vector<std::unique_ptr<statements::raw::parsed_statement>> parse_statements(std::string_view queries, dialect d);
 

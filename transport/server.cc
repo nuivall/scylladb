@@ -461,7 +461,14 @@ void cql_server::init_messaging_service() {
                 [&] (cql3::query_processor& qp) {
                     return qp.prepare(req.query_string, qs.get_client_state(), req.dialect).discard_result();
                 });
-            auto prepare_id = _query_processor.local().compute_id(req.query_string, qs.get_client_state().get_raw_keyspace(), req.dialect).key();
+            // Re-derive the prepared id locally from the just-cached entry.
+            // We can't compute it from (query, raw_keyspace) alone any more,
+            // because for fully qualified queries the id is independent of
+            // the connection's USE keyspace (SCYLLADB-1224). The per-shard
+            // prepare() above populated the cache; consult it on the local
+            // shard to discover which key was used.
+            auto prepare_id = _query_processor.local().get_prepared_id_for_query(
+                    req.query_string, qs.get_client_state().get_raw_keyspace(), req.dialect);
             clogger.trace("Successfully prepared statement {} from forward request", prepare_id);
             co_return prepare_id;
         });
@@ -614,6 +621,8 @@ cql_server::forward_cql(
 
             if (prepared_id != cache_key.key()) {
                 on_internal_error(clogger, format("Prepared ID returned from target node does not match local prepared ID for the same query. Local ID: {}, Target ID: {}", cache_key.key(), prepared_id));
+                // If the target node returns a different ID, we can't execute the query on it using the ID we have.
+                co_return coroutine::exception(std::make_exception_ptr(exceptions::prepared_query_not_found_exception(cache_key.key())));
             }
             continue;
         }

@@ -143,6 +143,12 @@ public:
         return value_type();
     }
 
+    // Like find() but returns a pinned pointer (or nullptr) suitable for
+    // immediate use in result_message::prepared::cql. No loader is invoked.
+    pinned_value_type try_find_pinned(const key_type& key) {
+        return _cache.find(key.key());
+    }
+
     template <typename Pred>
     requires std::is_invocable_r_v<bool, Pred, ::shared_ptr<cql_statement>>
     void remove_if(Pred&& pred) {
