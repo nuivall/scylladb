@@ -785,6 +785,12 @@ query_processor::get_statement(const std::string_view& query, const service::cli
     auto bytes_before = seastar::memory::stats().total_bytes_allocated();
     std::unique_ptr<raw::parsed_statement> statement = parse_statement(query, d);
 
+    // Capture the parse-time qualification BEFORE prepare_keyspace() runs and
+    // overwrites the missing keyspace with the connection's current one. This
+    // bit drives keyspace-independent prepared id derivation for fully
+    // qualified queries (SCYLLADB-1224).
+    const bool fully_qualified = statement->is_fully_qualified();
+
     // Set keyspace for statement that require login
     auto cf_stmt = dynamic_cast<raw::cf_statement*>(statement.get());
     if (cf_stmt) {
@@ -792,6 +798,7 @@ query_processor::get_statement(const std::string_view& query, const service::cli
     }
     ++_stats.prepare_invocations;
     auto p = statement->prepare(_db, _cql_stats, _cql_config);
+    p->is_fully_qualified = fully_qualified;
     p->statement->raw_cql_statement = sstring(query);
     auto audit_info = p->statement->get_audit_info();
     if (audit_info) {

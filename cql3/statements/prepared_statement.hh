@@ -50,6 +50,15 @@ public:
     const std::vector<seastar::lw_shared_ptr<column_specification>> bound_names;
     const std::vector<uint16_t> partition_key_bind_indices;
     std::vector<sstring> warnings;
+    // True iff the parsed statement does not depend on the connection's current
+    // keyspace for resolving table names. This is the case for fully qualified
+    // statements (e.g. SELECT ... FROM ks.table), batches whose every
+    // sub-statement is fully qualified, and statements that don't reference a
+    // table at all. The flag is filled in by query_processor at prepare time
+    // (it requires inspecting the parsed AST before prepare_keyspace() runs)
+    // and is used to derive a connection-keyspace-independent prepared id, see
+    // SCYLLADB-1224 / CASSANDRA-15252.
+    bool is_fully_qualified = true;
 private:
     cql_metadata_id_type _metadata_id;
 

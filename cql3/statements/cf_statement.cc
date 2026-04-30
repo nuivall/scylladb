@@ -45,6 +45,14 @@ bool cf_statement::has_keyspace() const {
     return _cf_name->has_keyspace();
 }
 
+bool cf_statement::is_fully_qualified() const {
+    // For statements that carry a cf_name, "fully qualified" means the parser
+    // populated the keyspace component (i.e. the user wrote "ks.table" rather
+    // than "table"). cf_statements with no cf_name (e.g. the empty wrapper used
+    // by batch_statement) override this method.
+    return _cf_name.has_value() && _cf_name->has_keyspace();
+}
+
 const sstring& cf_statement::keyspace() const
 {
     throwing_assert(_cf_name->has_keyspace()); // "The statement hasn't be prepared correctly";

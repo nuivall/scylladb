@@ -45,6 +45,23 @@ public:
 
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) = 0;
 
+    // Returns true iff this statement does not depend on the connection's
+    // current USE keyspace to resolve table names. The default returns true
+    // for statements that don't reference a table at all (e.g. role/permission
+    // statements). Statements that may operate on a table override this and
+    // report whether the user wrote a fully qualified name.
+    //
+    // IMPORTANT: must be called BEFORE cf_statement::prepare_keyspace() runs,
+    // because that method fills in the keyspace from the connection state and
+    // would otherwise hide the original parse-time qualification.
+    //
+    // Used by query_processor to make the prepared statement id independent
+    // of the connection keyspace for fully qualified queries
+    // (SCYLLADB-1224 / CASSANDRA-15252).
+    virtual bool is_fully_qualified() const {
+        return true;
+    }
+
 protected:
     virtual audit::statement_category category() const = 0;
     virtual audit::audit_info_ptr audit_info() const = 0;

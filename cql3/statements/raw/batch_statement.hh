@@ -46,6 +46,17 @@ public:
         }
     }
 
+    // A batch is keyspace-independent only if every sub-statement is fully
+    // qualified.
+    virtual bool is_fully_qualified() const override {
+        for (auto&& s : _parsed_statements) {
+            if (!s->is_fully_qualified()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
 protected:
     virtual audit::statement_category category() const override;

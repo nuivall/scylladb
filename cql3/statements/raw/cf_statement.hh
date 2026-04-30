@@ -40,6 +40,12 @@ public:
 
     virtual bool has_keyspace() const;
 
+    // Reports whether the user wrote a fully qualified table name (e.g.
+    // "ks.table"). Returns false for unqualified names like "table" that need
+    // the connection's current keyspace to resolve. Must be called BEFORE
+    // prepare_keyspace() (which fills in the keyspace from the connection).
+    virtual bool is_fully_qualified() const override;
+
     virtual const sstring& keyspace() const;
 
     virtual const sstring& column_family() const;
