@@ -804,6 +804,19 @@ query_processor::prepare(sstring query_string, const service::client_state& clie
         throwing_assert(bound_terms == prepared->bound_names.size());
 
         const bool fully_qualified = prepared->is_fully_qualified;
+        if (!fully_qualified) {
+            // Warn the user about the USE-keyspace footgun. An unqualified
+            // statement's prepared id is tied to the connection's current
+            // keyspace; if the application changes keyspace and the server
+            // later evicts the entry, the driver's reprepare will produce a
+            // different id and bound statements will fail. Suggest fully
+            // qualified names to avoid this. See SCYLLADB-1224.
+            prepared->warnings.emplace_back(
+                    "This prepared statement references a table without an explicit keyspace; "
+                    "its prepared id depends on the connection's current keyspace. "
+                    "Consider using a fully qualified table name (keyspace.table) so the id "
+                    "remains stable across USE statements.");
+        }
 
         const auto& chosen_key = (new_behaviour && fully_qualified) ? id_no_ks : id_with_ks;
         // The cache loader is invoked through a const lambda inside
