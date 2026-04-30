@@ -183,6 +183,12 @@ public:
     gms::feature arbitrary_tablet_boundaries { *this, "ARBITRARY_TABLET_BOUNDARIES"sv };
     gms::feature large_data_virtual_tables { *this, "LARGE_DATA_VIRTUAL_TABLES"sv };
     gms::feature keyspace_multi_rf_change { *this, "KEYSPACE_MULTI_RF_CHANGE"sv };
+    // Compute the prepared statement id from the query text alone (not the
+    // connection's USE keyspace) when the query is fully qualified. Matches
+    // Cassandra's CASSANDRA-15252 behavior. Required cluster-wide so that
+    // forwarded prepare RPCs hashed on different nodes agree on the id.
+    // SCYLLADB-1224.
+    gms::feature qualified_prepared_statement_id { *this, "QUALIFIED_PREPARED_STATEMENT_ID"sv };
 public:
 
     const std::unordered_map<sstring, std::reference_wrapper<feature>>& registered_features() const;
