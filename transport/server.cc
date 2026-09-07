@@ -2089,8 +2089,7 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
         ai->set_batch_infos(std::move(batch_audit_infos));
     }
     const auto batch_type = cql3::statements::batch_statement::type(type.assume_value());
-    const auto batch_size = modifications.size();
-    ::shared_ptr<cql3::cql_statement> statement;
+    ::shared_ptr<cql3::statements::batch_statement> statement;
     if (strongly_consistent) {
         statement = ::make_shared<cql3::statements::strong_consistency::batch_statement>(batch_type, std::move(modifications), cql3::attributes::none(), qp.local().get_cql_stats());
     } else {
@@ -2100,10 +2099,10 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
 
     auto execute_fut = reclassifying_control_connection_needs_user_service_level(*statement, query_state)
             ? query_state.get_service_level_controller().with_user_service_level(query_state.get_client_state().user(),
-                    [&qp, &query_state, &options, statement = std::move(statement), pending_authorization_entries = std::move(pending_authorization_entries), batch_size] () mutable {
-                return qp.local().execute_batch_without_checking_exception_message(std::move(statement), query_state, options, batch_size, std::move(pending_authorization_entries));
+                    [&qp, &query_state, &options, statement = std::move(statement), pending_authorization_entries = std::move(pending_authorization_entries)] () mutable {
+                return qp.local().execute_batch_without_checking_exception_message(std::move(statement), query_state, options, std::move(pending_authorization_entries));
             })
-            : qp.local().execute_batch_without_checking_exception_message(std::move(statement), query_state, options, batch_size, std::move(pending_authorization_entries));
+            : qp.local().execute_batch_without_checking_exception_message(std::move(statement), query_state, options, std::move(pending_authorization_entries));
     return std::move(execute_fut).then([stream, q_state = std::move(q_state), trace_state = query_state.get_trace_state(), version] (auto msg) {
         if (msg->as_bounce()) {
             return cql_server::process_fn_return_type(make_foreign(static_pointer_cast<messages::result_message::bounce>(msg)));
