@@ -261,12 +261,10 @@ modification_statement::execute_without_checking_exception_message(query_process
     return modify_stage(this, seastar::ref(qp), seastar::ref(qs), seastar::cref(options));
 }
 
-future<::shared_ptr<cql_transport::messages::result_message>>
-modification_statement::do_execute(query_processor& qp, service::query_state& qs, const query_options& options) const {
+std::optional<sstring>
+modification_statement::begin_execution(query_processor& qp, service::query_state& qs, const query_options& options) const {
     if (!qp.db().try_find_table(s->id())) {
-        co_return coroutine::exception(
-                std::make_exception_ptr(exceptions::invalid_request_exception(
-                        format("unconfigured table {}", column_family()))));
+        throw exceptions::invalid_request_exception(format("unconfigured table {}", column_family()));
     }
 
     tracing::add_table_name(qs.get_trace_state(), keyspace(), column_family());
@@ -276,21 +274,30 @@ modification_statement::do_execute(query_processor& qp, service::query_state& qs
     const auto cl = options.get_consistency();
     const query_processor::write_consistency_guardrail_state guardrail_state = qp.check_write_consistency_levels_guardrail(cl);
     if (guardrail_state == query_processor::write_consistency_guardrail_state::FAIL) {
-        co_return coroutine::exception(
-                std::make_exception_ptr(exceptions::invalid_request_exception(
-                        format("Write consistency level {} is forbidden by the current configuration "
-                               "setting of write_consistency_levels_disallowed. Please use a different "
-                               "consistency level, or remove {} from write_consistency_levels_disallowed "
-                               "set in the configuration.", cl, cl))));
+        throw exceptions::invalid_request_exception(
+                format("Write consistency level {} is forbidden by the current configuration "
+                       "setting of write_consistency_levels_disallowed. Please use a different "
+                       "consistency level, or remove {} from write_consistency_levels_disallowed "
+                       "set in the configuration.", cl, cl));
     }
 
     validate_primary_key(options);
 
+    if (guardrail_state == query_processor::write_consistency_guardrail_state::WARN) {
+        return format("Using write consistency level {} listed on the "
+                      "write_consistency_levels_warned is not recommended.", cl);
+    }
+    return std::nullopt;
+}
+
+future<::shared_ptr<cql_transport::messages::result_message>>
+modification_statement::do_execute(query_processor& qp, service::query_state& qs, const query_options& options) const {
+    auto warning = begin_execution(qp, qs, options);
+
     if (has_conditions()) {
         auto result = co_await execute_with_condition(qp, qs, options);
-        if (guardrail_state == query_processor::write_consistency_guardrail_state::WARN) {
-            result->add_warning(format("Using write consistency level {} listed on the "
-                                       "write_consistency_levels_warned is not recommended.", cl));
+        if (warning) {
+            result->add_warning(std::move(*warning));
         }
         co_return result;
     }
@@ -312,14 +319,13 @@ modification_statement::do_execute(query_processor& qp, service::query_state& qs
     }
 
     auto result = seastar::make_shared<cql_transport::messages::result_message::void_message>();
-    if (guardrail_state == query_processor::write_consistency_guardrail_state::WARN) {
-        result->add_warning(format("Using write consistency level {} listed on the "
-                                   "write_consistency_levels_warned is not recommended.", cl));
+    if (warning) {
+        result->add_warning(std::move(*warning));
     }
     // Surface any coordinator-side large data guardrail soft limit violations
     // detected during the write to the client as a CQL warning.
-    if (auto warning = db::large_data_soft_violation_warning(violations); !warning.empty()) [[unlikely]] {
-        result->add_warning(std::move(warning));
+    if (auto large_data_warning = db::large_data_soft_violation_warning(violations); !large_data_warning.empty()) [[unlikely]] {
+        result->add_warning(std::move(large_data_warning));
     }
 
     auto&& table = s->table();
