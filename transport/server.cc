@@ -1963,12 +1963,10 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
     }
 
     std::vector<cql3::statements::batch_statement::single_statement> modifications;
-    std::vector<std::reference_wrapper<const audit::audit_info>> batch_audit_infos;
     std::vector<cql3::raw_value_view_vector_with_unset> values;
     std::unordered_map<cql3::prepared_cache_key_type, cql3::authorized_prepared_statements_cache::value_type> pending_authorization_entries;
 
     modifications.reserve(n.assume_value());
-    batch_audit_infos.reserve(n.assume_value());
     values.reserve(n.assume_value());
     bool strongly_consistent = false;
 
@@ -2040,10 +2038,6 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
             tracing::add_table_name(trace_state, modif_statement_ptr->keyspace(), modif_statement_ptr->column_family());
             tracing::add_prepared_statement(trace_state, ps);
         }
-        if (auto* inner_ai = ps->statement->get_audit_info()) {
-            batch_audit_infos.emplace_back(*inner_ai);
-        }
-
         modifications.emplace_back(std::move(modif_statement_ptr), needs_authorization);
 
         std::vector<cql3::raw_value_view> tmp;
@@ -2084,10 +2078,7 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
         tracing::trace(trace_state, "Creating a batch statement");
     }
 
-    auto ai = audit::audit::create_audit_info(audit::statement_category::DML, sstring(), sstring(), true);
-    if (ai) {
-        ai->set_batch_infos(std::move(batch_audit_infos));
-    }
+    auto ai = audit::audit::create_audit_info(audit::statement_category::DML, sstring(), sstring());
     const auto batch_type = cql3::statements::batch_statement::type(type.assume_value());
     ::shared_ptr<cql3::statements::batch_statement> statement;
     if (strongly_consistent) {

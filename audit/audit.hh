@@ -21,7 +21,6 @@
 
 #include "enum_set.hh"
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <set>
@@ -78,15 +77,12 @@ protected:
     sstring _keyspace;
     sstring _table;
     sstring _query;
-    bool _batch; // used only for unpacking batches in CQL, not relevant for Alternator
-    std::optional<std::vector<std::reference_wrapper<const audit_info>>> _batch_infos;
     std::optional<audit_table_set> _alternator_batch_tables;
 public:
-    audit_info(statement_category cat, sstring keyspace, sstring table, bool batch)
+    audit_info(statement_category cat, sstring keyspace, sstring table)
         : _category(cat)
         , _keyspace(std::move(keyspace))
         , _table(std::move(table))
-        , _batch(batch)
     { }
     // 'operation' is for the cases where the query string does not contain it, like with Alternator
     audit_info& set_query_string(std::string_view query_string, std::string_view operation = {}) {
@@ -109,11 +105,6 @@ public:
     const std::optional<audit_table_set>& alternator_batch_tables() const { return _alternator_batch_tables; }
     sstring category_string() const;
     statement_category category() const { return _category; }
-    bool batch() const { return _batch; }
-    void set_batch_infos(std::vector<std::reference_wrapper<const audit_info>> batch_infos) {
-        _batch_infos = std::move(batch_infos);
-    }
-    const std::optional<std::vector<std::reference_wrapper<const audit_info>>>& batch_infos() const { return _batch_infos; }
 };
 
 using audit_info_ptr = std::unique_ptr<audit_info>;
@@ -129,7 +120,7 @@ class audit_info_alternator final : public audit_info {
     std::optional<db::consistency_level> _cl;
 public:
     audit_info_alternator(statement_category cat, sstring keyspace, sstring table, std::optional<db::consistency_level> cl = std::nullopt)
-        : audit_info(cat, std::move(keyspace), std::move(table), false), _cl(cl)
+        : audit_info(cat, std::move(keyspace), std::move(table)), _cl(cl)
     {}
 
     std::optional<db::consistency_level> get_cl() const { return _cl; }
@@ -210,7 +201,7 @@ public:
     static future<> start_storage(const db::config& cfg);
     static future<> stop_storage();
     static future<> stop_audit();
-    static audit_info_ptr create_audit_info(statement_category cat, const sstring& keyspace, const sstring& table, bool batch = false);
+    static audit_info_ptr create_audit_info(statement_category cat, const sstring& keyspace, const sstring& table);
     audit(locator::shared_token_metadata& stm,
           cql3::query_processor& qp,
           service::migration_manager& mm,

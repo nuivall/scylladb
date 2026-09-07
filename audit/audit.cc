@@ -16,6 +16,8 @@
 #include "db/config.hh"
 #include "cql3/cql_statement.hh"
 #include "cql3/query_processor.hh"
+#include "cql3/statements/batch_statement.hh"
+#include "cql3/statements/modification_statement.hh"
 #include "storage_helper.hh"
 #include "audit_cf_storage_helper.hh"
 #include "audit_syslog_storage_helper.hh"
@@ -296,11 +298,11 @@ future<> audit::stop_audit() {
     });
 }
 
-audit_info_ptr audit::create_audit_info(statement_category cat, const sstring& keyspace, const sstring& table, bool batch) {
+audit_info_ptr audit::create_audit_info(statement_category cat, const sstring& keyspace, const sstring& table) {
     if (!audit_instance().local_is_initialized()) {
         return nullptr;
     }
-    return std::make_unique<audit_info>(cat, keyspace, table, batch);
+    return std::make_unique<audit_info>(cat, keyspace, table);
 }
 
 future<> audit::shutdown() {
@@ -449,7 +451,7 @@ future<> audit::log_alternator_batch(const audit_info& ai, std::string_view role
 
     return do_with(std::move(sink_tables), [this, &ai, node_ip, client_ip, cl, &username, error] (auto& sink_tables) {
         return do_for_each(sink_tables, [this, &ai, node_ip, client_ip, cl, &username, error] (const auto& entry) {
-            return do_with(::audit::audit_info(ai.category(), sstring(ai.keyspace()), print_alternator_table_names(entry.second), false),
+            return do_with(::audit::audit_info(ai.category(), sstring(ai.keyspace()), print_alternator_table_names(entry.second)),
                     [this, &ai, node_ip, client_ip, cl, &username, error, &entry] (::audit::audit_info& filtered_info) {
                 filtered_info.set_query_string(print_filtered_alternator_batch_query(ai, entry.second));
                 audit_sink_set sinks;
@@ -476,17 +478,14 @@ future<> inspect(shared_ptr<cql3::cql_statement> statement, const service::query
     if (audit_info == nullptr) {
         return make_ready_future<>();
     }
-    if (audit_info->batch()) {
-        const auto& batch_infos = audit_info->batch_infos();
-        if (!batch_infos) {
-            on_internal_error(logger, "batch statements need to return valid inner statements");
-        }
-        return do_for_each(*batch_infos, [&query_state, &options, error] (const auto& inner) {
-            return inspect(inner.get(), query_state, options, error);
+    // A batch is audited as its statements, each carrying its own audit_info.
+    // The cast runs once per audited statement, so its cost is irrelevant.
+    if (const auto* batch = dynamic_cast<const cql3::statements::batch_statement*>(statement.get())) {
+        return do_for_each(batch->get_statements(), [&query_state, &options, error] (auto&& s) {
+            return inspect(s.statement, query_state, options, error);
         });
-    } else {
-        return inspect(*audit_info, query_state, options, error);
     }
+    return inspect(*audit_info, query_state, options, error);
 }
 
 future<> inspect(const audit_info_alternator& ai, const service::client_state& client_state, bool error) {

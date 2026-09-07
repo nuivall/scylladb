@@ -50,8 +50,7 @@ public:
 protected:
     virtual audit::statement_category category() const override;
     virtual audit::audit_info_ptr audit_info() const override {
-        constexpr bool batch = true;
-        return audit::audit::create_audit_info(category(), sstring(), sstring(), batch);
+        return audit::audit::create_audit_info(category(), sstring(), sstring());
     }
 };
 
