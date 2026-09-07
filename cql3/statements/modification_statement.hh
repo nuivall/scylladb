@@ -226,9 +226,13 @@ public:
      */
     bool applies_to(const selection::selection* selection, const update_parameters::prefetch_data::row* row, const query_options& options) const;
 
-private:
-    future<::shared_ptr<cql_transport::messages::result_message>>
+protected:
+    // Performs the write itself. Overridable so that a subclass can commit the
+    // mutation through a different backend while inheriting the rest of the
+    // statement.
+    virtual future<::shared_ptr<cql_transport::messages::result_message>>
     do_execute(query_processor& qp, service::query_state& qs, const query_options& options) const;
+private:
     friend class modification_statement_executor;
 public:
     // True if the statement has IF conditions. Pre-computed during prepare.
