@@ -21,7 +21,6 @@
 #include "db/large_data_handler.hh"
 #include "tracing/trace_state.hh"
 #include "utils/unique_view.hh"
-#include "cql3/statements/strong_consistency/statement_helpers.hh"
 #include "cql3/statements/strong_consistency/batch_statement.hh"
 
 template<typename T = void>
@@ -126,6 +125,12 @@ void batch_statement::validate()
     }
     if (has_counters && has_non_counters) {
         throw exceptions::invalid_request_exception("Counter and non-counter mutations cannot exist in the same batch");
+    }
+
+    bool has_strongly_consistent = std::ranges::any_of(_statements, [] (auto&& s) { return s.statement->is_strongly_consistent(); });
+    bool has_eventually_consistent = !std::ranges::all_of(_statements, [] (auto&& s) { return s.statement->is_strongly_consistent(); });
+    if (has_strongly_consistent && has_eventually_consistent) {
+        throw exceptions::invalid_request_exception("Cannot mix strongly consistent and eventually consistent statements in a batch");
     }
 
     if (_has_conditions
@@ -482,8 +487,6 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
     std::vector<std::reference_wrapper<const audit::audit_info>> batch_audit_infos;
     batch_audit_infos.reserve(_parsed_statements.size());
 
-    bool has_sc_statements = false;
-    bool has_non_sc_statements = false;
     for (auto&& parsed : _parsed_statements) {
         if (!first_ks) {
             first_ks = parsed->keyspace();
@@ -493,19 +496,11 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
             have_multiple_cfs |= first_cf.value() != parsed->column_family();
         }
         auto statement = parsed->prepare(db, meta, stats);
-        if (strong_consistency::is_strongly_consistent(db, parsed->keyspace())) {
-            has_sc_statements = true;
-        } else {
-            has_non_sc_statements = true;
-        }
         if (auto* audit_info = statement->get_audit_info()) {
             audit_info->set_query_string(parsed->get_raw_cql());
             batch_audit_infos.emplace_back(*audit_info);
         }
         statements.emplace_back(std::move(statement));
-    }
-    if (has_sc_statements && has_non_sc_statements) {
-        throw exceptions::invalid_request_exception("Cannot mix strongly consistent and eventually consistent statements in a batch");
     }
 
     auto&& prep_attrs = _attrs->prepare(db, "[batch]", "[batch]");
@@ -516,9 +511,12 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
         partition_key_bind_indices = meta.get_partition_key_bind_indexes(*statements[0].statement->s);
     }
 
+    // validate() in the batch constructor rejects a batch mixing strongly and
+    // eventually consistent statements, so any one statement decides.
+    const bool strongly_consistent = std::ranges::any_of(statements, [] (auto&& s) { return s.statement->is_strongly_consistent(); });
     shared_ptr<cql_statement> statement;
-    if (has_sc_statements) {
-        statement = ::make_shared<strong_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs));
+    if (strongly_consistent) {
+        statement = ::make_shared<strong_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
     } else {
         statement = ::make_shared<cql3::statements::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
     }
