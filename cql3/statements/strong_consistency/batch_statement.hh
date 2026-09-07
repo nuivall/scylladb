@@ -11,7 +11,7 @@
 #include "cql3/cql_statement.hh"
 #include "cql3/attributes.hh"
 #include "cql3/statements/batch_statement.hh"
-#include "cql3/statements/strong_consistency/modification_statement.hh"
+#include "cql3/statements/modification_statement.hh"
 
 namespace cql3::statements::strong_consistency {
 
@@ -20,18 +20,7 @@ class batch_statement : public cql_statement {
 public:
     using type = cql3::statements::batch_statement::type;
 
-    struct single_statement {
-        shared_ptr<modification_statement> statement;
-        bool needs_authorization = true;
-
-        single_statement(shared_ptr<modification_statement> s)
-            : statement(std::move(s))
-        {}
-        single_statement(shared_ptr<modification_statement> s, bool na)
-            : statement(std::move(s))
-            , needs_authorization(na)
-        {}
-    };
+    using single_statement = cql3::statements::batch_statement::single_statement;
 private:
     int _bound_terms;
     type _type;
