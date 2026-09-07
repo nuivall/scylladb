@@ -10,56 +10,50 @@
 
 #include "db/consistency_level_type.hh"
 #include "db/timeout_clock.hh"
-#include "service/strong_consistency/groups_manager.hh"
 #include "transport/messages/result_message.hh"
 #include "cql3/query_processor.hh"
 #include "service/strong_consistency/coordinator.hh"
+#include "service/strong_consistency/groups_manager.hh"
 #include "cql3/statements/strong_consistency/statement_helpers.hh"
 #include "exceptions/exceptions.hh"
 #include "utils/error_injection.hh"
 
 namespace cql3::statements::strong_consistency {
-static logging::logger logger("sc_modification_statement");
 
-modification_statement::modification_statement(shared_ptr<base_statement> statement)
-    : cql_statement(&timeout_config::write_timeout)
-    , _statement(std::move(statement))
-{
-}
+static logging::logger logger("sc_modification_statement");
 
 using result_message = cql_transport::messages::result_message;
 
-future<shared_ptr<result_message>> modification_statement::execute(query_processor& qp, service::query_state& qs, 
-    const query_options& options, std::optional<service::group0_guard> guard) const
-{
-    return execute_without_checking_exception_message(qp, qs, options, std::move(guard))
-            .then(cql_transport::messages::propagate_exception_as_future<shared_ptr<result_message>>);
-}
-
-mutation modification_statement::get_mutation(const query_options& options, api::timestamp_type ts,
-        base_statement::json_cache_opt& json_cache, const std::vector<dht::partition_range>& keys) const {
-    const auto prefetch_data = update_parameters::prefetch_data(_statement->s);
-    const auto ttl = _statement->get_time_to_live(options);
-    const auto params = update_parameters(_statement->s, options, ts, ttl, prefetch_data);
-    const auto ranges = _statement->create_clustering_ranges(options, json_cache);
-    auto muts = _statement->apply_updates(keys, ranges, params, json_cache);
+mutation build_mutation(const cql3::statements::modification_statement& stmt, const query_options& options,
+        api::timestamp_type ts, const cql3::statements::modification_statement::json_cache_opt& json_cache,
+        const std::vector<dht::partition_range>& keys) {
+    const auto prefetch_data = update_parameters::prefetch_data(stmt.s);
+    const auto ttl = stmt.get_time_to_live(options);
+    const auto params = update_parameters(stmt.s, options, ts, ttl, prefetch_data);
+    const auto ranges = stmt.create_clustering_ranges(options, json_cache);
+    auto muts = stmt.apply_updates(keys, ranges, params, json_cache);
     if (muts.size() != 1) {
-        on_internal_error(logger, ::format("statement '{}' has unexpected number of mutations {}",
-            raw_cql_statement.linearize(), muts.size()));
+        on_internal_error(logger, ::format("statement on {}.{} has unexpected number of mutations {}",
+            stmt.keyspace(), stmt.column_family(), muts.size()));
     }
     return std::move(*muts.begin());
 }
 
-future<shared_ptr<result_message>> modification_statement::execute_without_checking_exception_message(
-        query_processor& qp, service::query_state& qs, const query_options& options,
-        std::optional<service::group0_guard> guard) const
-{
-    validate_write_consistency_level(options.get_consistency());
-    _statement->validate_primary_key(options);
+template <typename Base>
+future<::shared_ptr<result_message>> strongly_consistent<Base>::do_execute(
+        query_processor& qp, service::query_state& qs, const query_options& options) const {
+    // Referred to through the base class, because some of the statement kinds
+    // narrow the access of the overrides used below.
+    const cql3::statements::modification_statement& stmt = *this;
 
-    auto timeout = db::timeout_clock::now() + _statement->get_timeout(qs.get_client_state(), options);
-    auto json_cache = _statement->maybe_prepare_json_cache(options);
-    const auto keys = _statement->build_partition_keys(options, json_cache);
+    // Checked first so that a consistency level the strongly consistent path
+    // cannot serve is reported as such, not as a guardrail violation.
+    validate_write_consistency_level(options.get_consistency());
+    auto warning = this->begin_execution(qp, qs, options);
+
+    auto timeout = db::timeout_clock::now() + stmt.get_timeout(qs.get_client_state(), options);
+    auto json_cache = stmt.maybe_prepare_json_cache(options);
+    const auto keys = stmt.build_partition_keys(options, json_cache);
     if (keys.size() != 1 || !query::is_single_partition(keys[0])) {
         throw exceptions::invalid_request_exception("Strongly consistent queries can only target a single partition");
     }
@@ -67,10 +61,12 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
     auto [coordinator, holder] = qp.acquire_strongly_consistent_coordinator();
     const auto token = keys[0].start()->value().token();
 
-    auto mutate_result = co_await coordinator.get().mutate(_statement->s,
+    // The mutation is built inside the callback because the coordinator assigns
+    // the timestamp, and calls back again whenever it retries.
+    auto mutate_result = co_await coordinator.get().mutate(stmt.s,
         token,
         [&](api::timestamp_type ts) {
-            return get_mutation(options, ts, json_cache, keys);
+            return build_mutation(stmt, options, ts, json_cache, keys);
         }, timeout, qs.get_client_state().get_abort_source());
 
     using namespace service::strong_consistency;
@@ -83,6 +79,9 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
     });
 
     auto result = seastar::make_shared<result_message::void_message>();
+    if (warning) {
+        result->add_warning(std::move(*warning));
+    }
 
     if (qs.get_client_state().is_protocol_extension_set(cql_transport::cql_protocol_extension::TABLETS_ROUTING_V2_EXPERIMENTAL)) {
         // Only EXECUTE requests carry a tablet version block. However,
@@ -91,7 +90,7 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
         // them, though.
         if (options.get_tablet_version_block().has_value()) {
             auto& groups_manager = coordinator.get().get_groups_manager();
-            const auto& table = _statement->s->table();
+            const auto& table = stmt.s->table();
 
             auto maybe_routing_info_v2 = groups_manager.check_tablet_version(table, token, *options.get_tablet_version_block());
             if (maybe_routing_info_v2) {
@@ -103,19 +102,9 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
     co_return std::move(result);
 }
 
-future<> modification_statement::check_access(query_processor& qp, const service::client_state& state) const {
-    return _statement->check_access(qp, state);
-}
+template class strongly_consistent<cql3::statements::update_statement>;
+template class strongly_consistent<cql3::statements::delete_statement>;
+template class strongly_consistent<cql3::statements::insert_statement>;
+template class strongly_consistent<cql3::statements::insert_prepared_json_statement>;
 
-void modification_statement::validate(query_processor& qp, const service::client_state& state) const {
-    _statement->validate(qp, state);
-}
-
-uint32_t modification_statement::get_bound_terms() const {
-    return _statement->get_bound_terms();
-}
-
-bool modification_statement::depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const {
-    return _statement->depends_on(ks_name, cf_name);
-}
 }

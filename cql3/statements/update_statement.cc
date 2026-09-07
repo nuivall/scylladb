@@ -14,6 +14,7 @@
 #include "cql3/expr/evaluate.hh"
 #include "cql3/expr/expr-utils.hh"
 #include "raw/update_statement.hh"
+#include "cql3/statements/strong_consistency/modification_statement.hh"
 
 #include "unimplemented.hh"
 
@@ -187,7 +188,7 @@ update_statement::update_statement(cf_name name,
 update_statement::prepare_internal(data_dictionary::database db, schema_ptr schema,
     prepare_context& ctx, std::unique_ptr<attributes> attrs, cql_stats& stats) const
 {
-    auto stmt = ::make_shared<cql3::statements::update_statement>(audit_info(), statement_type::UPDATE, ctx.bound_variables_size(), schema, std::move(attrs), stats);
+    auto stmt = strong_consistency::make_modification<cql3::statements::update_statement>(db, schema, audit_info(), statement_type::UPDATE, ctx.bound_variables_size(), schema, std::move(attrs), stats);
 
     // FIXME: quadratic
     for (size_t i = 0; i < _updates.size(); ++i) {
