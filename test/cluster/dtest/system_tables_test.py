@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import json
 import logging
 import os
@@ -15,11 +21,10 @@ from ccmlib.node import Node
 from dtest_class import Tester, create_cf, create_ks
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import create_c1c2_table, insert_c1c2
-from tools.marks import unmark, with_feature
+from tools.marks import with_feature
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
 class SystemTableBase(Tester):
@@ -75,7 +80,6 @@ class SystemTableBase(Tester):
             return False
 
 
-@pytest.mark.dtest_full
 class TestClusterStatusTable(SystemTableBase):
     TABLE_NAME = "cluster_status"
     SELECT_QUERY = f"select * from {SystemTableBase.KEYSPACE_NAME}.{TABLE_NAME};"
@@ -281,7 +285,6 @@ class TestClusterStatusTable(SystemTableBase):
         self.check_running_node_status(node_status=parsed_query_result[node3_ip_address], node_to_check=node3)
 
 
-@pytest.mark.dtest_full
 class TestTokenRingTable(SystemTableBase):
     """
     Example of the table content
@@ -494,7 +497,6 @@ class TestTokenRingTable(SystemTableBase):
         assert node3_token_set == node4_token_set, "The token ranges before and after node replacement do not match!"
 
 
-@pytest.mark.dtest_full
 class TestVersionsTable(SystemTableBase):
     TABLE_NAME = "versions"
 
@@ -530,7 +532,6 @@ class TestVersionsTable(SystemTableBase):
         assert output.version == scylla_version, f"The Scylla versions do not match! Expected: {scylla_version} Got: {output.version}"
 
 
-@pytest.mark.dtest_full
 class TestProtocolServersTable(SystemTableBase):
     """
     Table content example:
@@ -598,7 +599,6 @@ class TestProtocolServersTable(SystemTableBase):
                 assert expected_row["protocol_version"] == row.protocol_version, f"Unexpected value in column 'protocol': {row.protocol_version}"
 
 
-@pytest.mark.dtest_full
 class TestSnapshotsTable(SystemTableBase):
     """
     Table content example:
@@ -688,7 +688,6 @@ class TestSnapshotsTable(SystemTableBase):
             assert table == f"{table_content[0].keyspace_name}.{table_content[0].table_name}", f"Expected to get the snapshot information for the table {table}, but didn't get it!"
 
 
-@pytest.mark.dtest_full
 class TestRuntimeInfoTable(SystemTableBase):
     TABLE_NAME = "runtime_info"
     TEST_KEYSPACE = "test_keyspace"
@@ -852,7 +851,6 @@ class TestRuntimeInfoTable(SystemTableBase):
         assert metrics_after_request["misses"] == metrics_after_flush["misses"]
         assert metrics_after_request["requests_total"] == metrics_after_request["hits"] + metrics_after_request["misses"]
 
-    @unmark.next_gating
     @pytest.mark.xfail(reason="https://github.com/scylladb/scylla/issues/10340")
     @pytest.mark.single_node
     def test_memtable_metrics(self):
@@ -886,7 +884,6 @@ class TestRuntimeInfoTable(SystemTableBase):
         assert metrics_after["memory_used"] > metrics_before["memory_used"]
 
 
-@pytest.mark.dtest_full
 class TestConfigTable(SystemTableBase):
     """
     Table content example:
@@ -1046,7 +1043,7 @@ class TestConfigTable(SystemTableBase):
             ("set type = 'bool', value = '15000' where name = 'api_port'", "option type is immutable"),
             ("set value = '15000' where name = 'api_port'", "option is not live-updateable"),
             ("set value = '15000' where name = 'some_generic_name'", "no such option"),
-            pytest.param("set value = 'true' where name='failure_detector_timeout_in_ms'", "Operation failed for system.config", marks=[pytest.mark.xfail(reason="https://github.com/scylladb/scylla/issues/10394"), unmark.next_gating]),
+            pytest.param("set value = 'true' where name='failure_detector_timeout_in_ms'", "Operation failed for system.config", marks=[pytest.mark.xfail(reason="https://github.com/scylladb/scylla/issues/10394")]),
         ],
         ids=["no_value_provided", "source_not_updatable", "type_not_updatable", "parameter_not_live_updatable", "wrong_parameter_name", "wrong_value_type"],
     )
