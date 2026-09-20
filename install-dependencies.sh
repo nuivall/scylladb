@@ -108,6 +108,11 @@ fedora_packages=(
     python3-deepdiff
     python3-cryptography
     python3-pexpect
+    python3-docker
+    python3-filelock
+    python3-ldap3
+    python3-cloud-detect
+    python3-google-cloud-storage
     dnf-utils
     pigz
     net-tools
