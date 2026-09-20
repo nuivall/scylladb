@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import random
 import time
@@ -61,8 +67,6 @@ class LoadThread(Thread):
             pass
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 @pytest.mark.lwt
 class TestPaxos(Tester):
     def prepare(self, create_keyspace=True, use_cache=False, nodes=1, rf=1):
@@ -161,7 +165,6 @@ class TestPaxos(Tester):
             loaders[node].stop()
             del loaders[node]
 
-    @pytest.mark.require("jira:DTEST-21")
     def test_topology_change_in_presence_of_down_node(self):
         session = self.prepare(nodes=6, rf=4)
         lower_node_limit = 3
@@ -278,15 +281,13 @@ class TestPaxos(Tester):
             clear_schema_cache=clear_schema_cache, setup_test_env_action=create_test_table, insert_action=insert_action, ddl_action=add_dummy_column, second_insert_action=insert_action, verify_results_action=check_schema_mismatch_exc
         )
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_schema_mismatch_cache(self):
         self._schema_mismatch_tpl(clear_schema_cache=False)
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_schema_mismatch_no_cache(self):
         self._schema_mismatch_tpl(clear_schema_cache=True)
 
@@ -332,15 +333,13 @@ class TestPaxos(Tester):
             clear_schema_cache=clear_schema_cache, setup_test_env_action=create_test_table_and_mv, insert_action=insert_action, ddl_action=add_dummy_column, second_insert_action=insert_action, verify_results_action=check_schema_mismatch_exc
         )
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_schema_mismatch_mv_cache(self):
         self._schema_mismatch_mv_tpl(clear_schema_cache=False)
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_schema_mismatch_mv_no_cache(self):
         self._schema_mismatch_mv_tpl(clear_schema_cache=True)
 
@@ -390,15 +389,13 @@ class TestPaxos(Tester):
             clear_schema_cache=clear_schema_cache, setup_test_env_action=create_test_table, insert_action=insert_action, ddl_action=drop_column, second_insert_action=second_insert_action, verify_results_action=check_exc_and_table_data
         )
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_schema_mismatch_drop_regular_column_cache(self):
         self._schema_mismatch_drop_regular_column_tpl(clear_schema_cache=False)
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_schema_mismatch_drop_regular_column_no_cache(self):
         self._schema_mismatch_drop_regular_column_tpl(clear_schema_cache=True)
 
@@ -448,14 +445,12 @@ class TestPaxos(Tester):
             clear_schema_cache=clear_schema_cache, setup_test_env_action=create_test_table, insert_action=insert_action, ddl_action=drop_column, second_insert_action=second_insert_action, verify_results_action=check_exc_and_table_data
         )
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_schema_mismatch_drop_regular_column_in_the_middle_cache(self):
         self._schema_mismatch_drop_regular_column_in_the_middle_tpl(clear_schema_cache=False)
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_schema_mismatch_drop_regular_column_in_the_middle_no_cache(self):
         self._schema_mismatch_drop_regular_column_in_the_middle_tpl(clear_schema_cache=True)

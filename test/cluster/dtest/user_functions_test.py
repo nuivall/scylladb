@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import math
 import re
 import time
@@ -11,8 +17,6 @@ from tools.assertions import assert_invalid, assert_one
 from tools.misc import ImmutableMapping
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestUserFunctions(Tester):
     @pytest.fixture(scope="function", autouse=True)
     def fixture_dtest_setup_overrides(self, dtest_config):
@@ -161,7 +165,7 @@ class TestUserFunctions(Tester):
         # should now work - unambiguous
         session.execute("DROP FUNCTION overloaded")
 
-    @pytest.mark.skip(reason="Language 'javascript' is not supported")
+    @pytest.mark.skip_env(reason="Language 'javascript' is not supported")
     @pytest.mark.single_node
     def test_udf_scripting(self):
         session = self.prepare()
