@@ -20,11 +20,7 @@ from packaging.version import Version
 
 from dtest_class import Tester, create_ks, is_autocompaction_enabled, retry_till_success
 from dtest_setup_overrides import DTestSetupOverrides
-
-# repair_additional_test hasn't been ported out of unported/ yet (another file in this
-# same porting batch); reach into it via the namespace package for now. Update this to a
-# plain "from repair_additional_test..." import once it moves out of unported/.
-from unported.repair_additional_test import parallel_repair_on_nodes
+from repair_additional_test import parallel_repair_on_nodes
 from tools.assertions import assert_none, assert_one
 from tools.cluster import run_rest_api
 from tools.cluster_topology import generate_cluster_topology
