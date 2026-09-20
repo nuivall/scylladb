@@ -132,3 +132,7 @@ def dtest_config(request: FixtureRequest) -> Generator[DTestConfig]:
     dtest_config.setup(request)
 
     yield dtest_config
+
+# Verbatim copies from the scylla-dtest repository, not adapted yet.  A file leaves
+# this directory in the commit that ports it.
+collect_ignore = ["unported"]
