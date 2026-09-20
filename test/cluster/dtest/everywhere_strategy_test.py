@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 
 import pytest
@@ -7,10 +13,8 @@ from dtest_class import Tester
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
-@pytest.mark.dtest_full
 # EverywhereStrategy is not supported with tablets
 @pytest.mark.required_features("!tablets")
 class TestEverywhereConsistency(Tester):

@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import itertools
 import logging
 import math
@@ -14,7 +20,6 @@ from cassandra.policies import RoundRobinPolicy, TokenAwarePolicy
 
 from dtest_class import Tester, create_ks
 from tools.cluster_topology import generate_cluster_topology
-from tools.marks import unmark
 from tools.rate_limit import rate_limit_expected_errors
 
 logger = logging.getLogger(__file__)
@@ -75,8 +80,6 @@ def is_per_partition_limit_reached_error(err):
     return isinstance(err, rate_limit_expected_errors)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestPerPartitionRateLimiting(Tester):
     warmup_seconds = 5.0
     measure_seconds = 15.0
@@ -321,8 +324,6 @@ class TestPerPartitionRateLimiting(Tester):
         session.execute("USE ks")
         fn(session)
 
-    @unmark.next_gating(reason="This test is quite heavy test and consistently passing")
-    @pytest.mark.dtest_heavy
     def test_multinode_accuracy(self):
         nodes = generate_cluster_topology(rack_num=4)
         limit = 10
@@ -352,8 +353,6 @@ class TestPerPartitionRateLimiting(Tester):
 
         self.check_both_policies(check_rf1)
 
-    @unmark.next_gating(reason="This test is quite heavy test and consistently passing")
-    @pytest.mark.dtest_heavy
     def test_multidc_accuracy(self):
         limit = 10
         nodes = {
