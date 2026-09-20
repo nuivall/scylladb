@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from random import randint
@@ -15,7 +21,6 @@ from tools.marks import issue_open, with_feature
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 KEYSPACE = "lwt_load_ks"
 
@@ -447,7 +452,6 @@ class MaterializedView:
             end_event.set()
 
 
-@pytest.mark.dtest_full
 @pytest.mark.lwt
 class TestLWTSchemaModification(Tester):
     """
@@ -549,22 +553,22 @@ class TestLWTSchemaModification(Tester):
 
         cluster.stop()
 
-    @pytest.mark.skip("issue #6151    alter column type vs reads")
+    @pytest.mark.skip_env(reason="issue #6151 alter column type vs reads")
     def test_table_alter_col_type(self):
         self._test_combine([ReadRows(row_start=0, row_end=9), AlterColumnType()], run_s=10)
 
-    @pytest.mark.skip("issue #6174  add/remove column changing type vs LWT deletes")
+    @pytest.mark.skip_env(reason="issue #6174 add/remove column changing type vs LWT deletes")
     def test_table_alter_delete(self):
         """Table alter test"""
         self._test_combine([DropAddColumn(), DeleteRows(row_start=1, row_end=1000, lwt=True)], loops=3, run_s=10)
 
-    @pytest.mark.skip("issue #6185 alter columns in parallel bug")
+    @pytest.mark.skip_env(reason="issue #6185 alter columns in parallel bug")
     def test_schema_both(self):
         """Alter two columns of same table.
         change type on one and remove/add on the second one"""
         self._test_combine([DropAddColumn(), AlterColumnType()], run_s=10)
 
-    @pytest.mark.skip("issue #6151    alter column type vs reads")
+    @pytest.mark.skip_env(reason="issue #6151 alter column type vs reads")
     def test_all(self):
         self._test_combine(
             [
@@ -579,7 +583,7 @@ class TestLWTSchemaModification(Tester):
         )
 
     # Test had history of timing out in debug, see: https://github.com/scylladb/scylla-dtest/issues/3275
-    @pytest.mark.scylla_mode("!debug")
+    @pytest.mark.skip_mode(mode="debug", reason="test has a history of timing out in debug mode (scylladb/scylla-dtest#3275)")
     def test_lwt_load(self):
         smp = 8 if self.cluster.scylla_mode != "debug" else 4
         nodes = 8 if self.cluster.scylla_mode != "debug" else 4
@@ -587,13 +591,12 @@ class TestLWTSchemaModification(Tester):
         self._test_combine([ReadRows(row_start=0, row_end=1000), LWTLoad(row_start=1001, row_end=9999)], smp=smp, nodes=nodes, nrows=10000, loops=loops, run_s=30)
 
     # Test had history of timing out in debug, see: https://github.com/scylladb/scylla-dtest/issues/3275
-    @pytest.mark.scylla_mode("!debug")
+    @pytest.mark.skip_mode(mode="debug", reason="test has a history of timing out in debug mode (scylladb/scylla-dtest#3275)")
     def test_lwt_batch_insert(self):
         smp = 8 if self.cluster.scylla_mode != "debug" else 4
         nodes = 8 if self.cluster.scylla_mode != "debug" else 4
         self._test_combine([LWTLoad(end=1), BatchInserts(node_idx=1)], smp=smp, nodes=nodes, loops=1, run_s=10)
 
-    @pytest.mark.next_gating
     def test_index_drop_add(self):
         loops = 4 if self.cluster.scylla_mode != "debug" else 2
         self._test_combine([LWTLoad(row_start=1001, row_end=9999), ReadRows(row_end=1000), IndexDropAdd(inter_delay=0.5)], nrows=10000, loops=loops, run_s=10)
@@ -602,7 +605,7 @@ class TestLWTSchemaModification(Tester):
         self._test_combine([LWTLoad(row_start=1001, row_end=9999), MaterializedView(row_max=1000)], nrows=10000, loops=1, run_s=10)
 
     # Test had history of timing out in debug, see: https://github.com/scylladb/scylla-dtest/issues/3275
-    @pytest.mark.scylla_mode("!debug")
+    @pytest.mark.skip_mode(mode="debug", reason="test has a history of timing out in debug mode (scylladb/scylla-dtest#3275)")
     def test_lwt_load_check(self):
         smp = 8 if self.cluster.scylla_mode != "debug" else 4
         nodes = 8 if self.cluster.scylla_mode != "debug" else 4
