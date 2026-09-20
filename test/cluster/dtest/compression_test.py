@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import pytest
 
 from dtest_class import Tester, create_ks
@@ -170,8 +176,6 @@ class TestHelper(Tester):
 
 
 @pytest.mark.single_node
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestCompressionChunkSize(TestHelper):
     @pytest.mark.parametrize("compressor", ["DeflateCompressor", "LZ4Compressor", "SnappyCompressor"])
     def test_sstable_compression_chunk_size_positive(self, compressor):
