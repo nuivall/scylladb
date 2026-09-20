@@ -1,15 +1,10 @@
-# This program is free software; you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as published by
-# the Free Software Foundation; either version 3 of the License, or
-# (at your option) any later version.
 #
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+# Copyright (C) 2013-present The Apache Software Foundation
 #
-# See LICENSE for more details.
+# Copyright (C) 2025-present ScyllaDB
 #
-# Copyright (c) 2020 ScyllaDB
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
 
 # From cassandra/test/unit/org/apache/cassandra/cql3/validation/operations/BatchTest.java
 import logging
@@ -21,15 +16,12 @@ import requests
 from cassandra.query import BatchStatement
 
 from dtest_class import Tester, get_ip_from_node
-from tools.marks import issue_open, with_feature
 
 KEYSPACE = "batch_ks"
 logger = logging.getLogger(__file__)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
-@pytest.mark.next_gating
 class TestBatch(Tester):
     """
     Tests for pushed native protocol notification from Cassandra.

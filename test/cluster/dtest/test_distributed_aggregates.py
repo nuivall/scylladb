@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import os
 import signal
 
@@ -12,7 +18,6 @@ from tools.cluster_topology import generate_cluster_topology
 from tools.data import drop_table
 
 
-@pytest.mark.dtest_full
 class TestDistributedAggregates(Tester):
     def prepare(self, rf, jvm_args=None, options=None):
         assert rf > 0
