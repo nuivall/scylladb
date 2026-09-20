@@ -1,21 +1,39 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import uuid
 from random import randint
 
 import pytest
 from cassandra import ConsistencyLevel
-from cassandra.query import SimpleStatement
+from cassandra.query import SimpleStatement, dict_factory
 
-from dtest_class import create_ks, get_ip_from_node
-from paging_test import BasePagingTester, PageAssertionMixin, PageFetcher
+from dtest_class import Tester, create_ks, get_ip_from_node
+from tools.cluster_topology import generate_cluster_topology
 from tools.datahelp import create_rows
 from tools.metrics import get_node_metrics
+from tools.paging import PageAssertionMixin, PageFetcher
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
+class BasePagingTester(Tester):
+    # Inlined from unported/paging_test.py::BasePagingTester, so this module does not
+    # depend on the not-yet-ported paging_test module (a separate, much larger porting
+    # batch). Revisit once paging_test.py itself is ported.
+    def prepare(self, row_factory=dict_factory, consistency_level=ConsistencyLevel.QUORUM):
+        cluster_topology = generate_cluster_topology(dc_num=1, rack_num=3, nodes_per_rack=1)
+        cluster = self.cluster
+        cluster.populate(cluster_topology).start(wait_for_binary_proto=True, wait_other_notice=True)
+        node1 = cluster.nodelist()[0]
+        session = self.patient_cql_connection(node1, row_factory=row_factory, consistency_level=consistency_level)
+        return session
+
+
 class TestAggregatePaging(BasePagingTester, PageAssertionMixin):
     """
     Basic aggregation tests using paging
@@ -48,11 +66,11 @@ class TestAggregatePaging(BasePagingTester, PageAssertionMixin):
             assert rows_count == [1], f"Expected 1 row, but got {rows_count}"
             assert all_data == [{"count": 5001}], f'Expected "{"count": 5001}", but got {all_data}'
 
-    @pytest.mark.scylla_mode("!debug")
+    @pytest.mark.skip_mode(mode="debug", reason="debug mode is too slow for this many rows; see test_paged_count_with_limit_debug")
     def test_paged_count_with_limit(self):
         self._test_paged_count_with_limit([10, 100, 1000, 3000, 5000])
 
-    @pytest.mark.scylla_mode("debug")
+    @pytest.mark.skip_mode(mode=["release", "dev", "sanitize", "coverage"], reason="smaller row counts are only needed to keep this test fast in debug mode")
     def test_paged_count_with_limit_debug(self):
         self._test_paged_count_with_limit([10, 100, 250])
 
@@ -79,7 +97,6 @@ class TestAggregatePaging(BasePagingTester, PageAssertionMixin):
         assert rows_count == [1], f"Expected 1 row, but got {rows_count}"
         assert all_data == [{"count": 1234}], f'Expected "{"count": 1234}", but got {all_data}'
 
-    @pytest.mark.dtest_debug
     def test_paged_count_with_clustering_key(self):
         self._test_paged_count_with_clustering_key("asc")
 
@@ -87,8 +104,6 @@ class TestAggregatePaging(BasePagingTester, PageAssertionMixin):
         self._test_paged_count_with_clustering_key("desc")
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestPagingSavedQueryStateBase(BasePagingTester):
     LOOKUPS = "querier_cache_lookups"
     MISSES = "querier_cache_misses"
@@ -142,8 +157,6 @@ class TestPagingSavedQueryStateBase(BasePagingTester):
         assert len(matched) == len(expected_metrics), f"Expected {len(expected_metrics)}, but got {len(matched)}"
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestLargePaging(TestPagingSavedQueryStateBase, PageAssertionMixin):
     """
     Tests for queries attempting to fetch large pages
@@ -187,7 +200,6 @@ class TestLargePaging(TestPagingSavedQueryStateBase, PageAssertionMixin):
         if validate_metrics:
             self.assert_nodes_metrics([{"lookups": pf.requested_pages - 1, "misses": -1, "resource_based_evictions": -1}] * len(self.cluster.nodelist()), verifier=verify_misses)
 
-    @pytest.mark.dtest_debug
     def test_large_page_range_queries(self):
         self.prepare_schema()
         self.session.execute("CREATE TABLE %s (pk text, ck text, v text, PRIMARY KEY(pk, ck))" % self.CF_NAME)
@@ -201,7 +213,6 @@ class TestLargePaging(TestPagingSavedQueryStateBase, PageAssertionMixin):
         self.fill_data(data=data, data_size=64 * 1024, keys=["pk", "ck"], vals=["v"])
         self.validate_data(query="select * from %s" % self.CF_NAME, fetch_size=1000, row_cnt=1000)
 
-    @pytest.mark.dtest_debug
     def test_large_page_range_queries_static_columns(self):
         self.prepare_schema()
         self.session.execute("CREATE TABLE %s (pk text, ck text, s text static, v text, PRIMARY KEY(pk, ck))" % self.CF_NAME)
@@ -242,8 +253,6 @@ class TestLargePaging(TestPagingSavedQueryStateBase, PageAssertionMixin):
         self.validate_data(query="select * from %s where pk = 0" % self.CF_NAME, fetch_size=15, row_cnt=1000, validate_metrics=True)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestPagingSavedQueryStateSingularRanges(TestPagingSavedQueryStateBase):
     """
     Tests concerned with querier-reuse during paging.
@@ -324,7 +333,6 @@ class TestPagingSavedQueryStateSingularRanges(TestPagingSavedQueryStateBase):
         assert requested_pages == 2, f"Expected 2 pages, got {requested_pages}"
         self.assert_nodes_metrics([{"lookups": requested_pages - 1}] * len(self.cluster.nodelist()))
 
-    @pytest.mark.dtest_debug
     def test_two_partitions(self):
         """
         Test that when the coordinator throws away parts of the results
@@ -401,8 +409,6 @@ class TestPagingSavedQueryStateSingularRanges(TestPagingSavedQueryStateBase):
         self.assert_nodes_metrics(({"lookups": pf.requested_pages - 1}, {}))
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestPagingQueryAlternativeConsistencyLevel(BasePagingTester):
     def test_consistency_level_quorum(self):
         test_ks_name = "keyspace_complex"
