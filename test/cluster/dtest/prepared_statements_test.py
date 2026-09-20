@@ -1,13 +1,17 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import pytest
 from cassandra import InvalidRequest
 
 from dtest_class import Tester
 
 KEYSPACE = "foo"
-pytestmark = pytest.mark.next_gating
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestPreparedStatements(Tester):
     """
