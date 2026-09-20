@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import struct
 import time
@@ -14,12 +20,10 @@ from dtest_setup import DTestSetup
 from tools.assertions import assert_none, assert_one, assert_row_count
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import prepare_statement
-from tools.marks import unmark
 from tools.metrics import get_node_metrics
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
 def shutdown_all_sessions(sessions: list):
@@ -43,7 +47,6 @@ def encode_int_pk_to_row_key_blob(key: int) -> bytes:
     return struct.pack(">i", key)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.lwt
 class TestLwt(Tester):
     @pytest.fixture(autouse=True)
@@ -164,7 +167,6 @@ class TestLwt(Tester):
         # scylla_storage_proxy_coordinator_cas_read_unfinished_commit
         # scylla_storage_proxy_coordinator_cas_write_unfinished_commit
 
-    @unmark.next_gating
     def test_read_round_optimization(self):
         """
         3.5 Ensure read-round-optimization works: update the record using
@@ -414,7 +416,6 @@ class TestLwt(Tester):
         assert_row_count(session=session, table_name=table_name, expected=rows)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.lwt
 class TestLWTPaxos(Tester):
     @pytest.fixture(autouse=True)
@@ -774,7 +775,6 @@ class TestLWTPaxos(Tester):
             create_cf(session=session1, name=table_name, key_type="int", columns={"v1": "int"}, paxos_grace_seconds=-1)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.lwt
 class TestPaxosBug(Tester):
     def test_synced_most_recent_commit_in_cas_should_not_cause_timeouts(self):
@@ -847,11 +847,9 @@ error_injections = [
 ]
 
 
-@pytest.mark.dtest_full
 @pytest.mark.lwt
 class TestLwtReadLinearizability(Tester):
-    @pytest.mark.dtest_debug
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_read_linearizability(self):
         """Consider 3 nodes A, B and C and a LWT failed write operation that managed to get V
         accepted on A. The value is read twice without writes in the middle. First read access
