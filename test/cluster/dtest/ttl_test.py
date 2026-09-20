@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import math
 import time
@@ -25,8 +31,6 @@ from tools.schema import change_schema_safely, describe_rf, get_replication_opti
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestTTL(Tester):
     """Test Time To Live Feature"""
 
@@ -186,7 +190,6 @@ class TestTTL(Tester):
         self.smart_sleep(start, 1.5)
         assert_row_count(self.session1, "ttl_table", 1)
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_removing_default_ttl_does_not_affect_existing_rows(self):
         """Test that removing a default_time_to_live doesn't affect the existings rows"""
@@ -227,7 +230,6 @@ class TestTTL(Tester):
         logger.debug("Expecting 1 row")
         assert_row_count(self.session1, "ttl_table", 1)
 
-    @pytest.mark.dtest_debug
     def test_row_marker_for_ttl(self):
         """Test that rows are removed correctly with a default_time_to_live and TTL
         Test the table with PK and CK
@@ -636,8 +638,6 @@ def print_sstable(node, keyspace, table):
     logger.debug(f"[{node_name}] SStable dump of {keyspace}.{table}: {sstable_dump}")
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestDistributedTTL(Tester):
     """Test Time To Live Feature in a distributed environment"""
 
@@ -735,7 +735,6 @@ class TestDistributedTTL(Tester):
         logger.debug(f"ttl_session1={ttl_session1} ttl_session2={ttl_session2}")
         assert abs(ttl_session1[0][0] - ttl_session2[0][0]) <= 1
 
-    @pytest.mark.dtest_debug
     @pytest.mark.parametrize("enable_parallized_aggregation", ["true", "false"], ids=["parallel_aggregates_enabled", "parallel_aggregates_disabled"])
     def test_ttl_is_respected_on_repair(self, enable_parallized_aggregation):
         """Test that ttl is respected on repair"""
