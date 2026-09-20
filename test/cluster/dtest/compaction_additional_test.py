@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import datetime
 import glob
 import itertools
@@ -48,7 +54,7 @@ from tools.files import (
     get_node_cf_dir,
     get_sstables_files,
 )
-from tools.marks import issue_open, unmark, with_feature
+from tools.marks import with_feature
 from tools.misc import ImmutableMapping, dump_sstables
 from tools.rest_clients import StorageServiceClient
 from tools.scylla_defines import CompactionStrategy
@@ -56,7 +62,6 @@ from tools.stress import fill_data_by_cs
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -125,7 +130,6 @@ def get_strategies_upgrade_options() -> list[Any]:
     return list(itertools.product(_strategies, _strategies))
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCompactionAdditional(CompactionAdditionalTester):
     SSTABLE_PREFIX_REG_EXPR = "m[c-est]|n[a-b]|o[a]|d[a]"
@@ -159,7 +163,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
 
         assert tombstones_found, "Tombstones were not found"
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_compaction_delete_with_smp_change(self):  # noqa: PLR0915
         """
@@ -585,9 +588,8 @@ class TestCompactionAdditional(CompactionAdditionalTester):
 
     @pytest.mark.single_node
     @pytest.mark.use_cassandra_stress
-    @unmark.next_gating
     @pytest.mark.parametrize("strategy1,strategy2", get_strategies_upgrade_options(), ids=generate_ids)
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#16739"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_refresh_and_restart_after_compaction_strategy_change(self, strategy1, strategy2):  # noqa: PLR0915
         """
         This test tries to load backup sstable by refresh and restart after changing the compaction strategy.
@@ -731,7 +733,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
 
     @pytest.mark.single_node
     @pytest.mark.use_cassandra_stress
-    @unmark.next_gating  # https://github.com/scylladb/scylla-enterprise/issues/3385
     @pytest.mark.parametrize("strategy1,strategy2", get_strategies_upgrade_options(), ids=generate_ids)
     @pytest.mark.skip_if(with_feature("tablets"))
     def test_reshard_after_compaction_strategy_and_smp_change(self, strategy1, strategy2):  # noqa: PLR0915
@@ -867,7 +868,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
         ids=["100-10_000-100_000", "10_000-100-100_000", "10_000-100_000-100", "100-100_000-10_000", "100_000-10_000-100", "100_000-100-10_00"],
     )
     @pytest.mark.single_node
-    @pytest.mark.dtest_full
     def test_major_compaction_processes_tables_in_order_by_size(self, cf_sizes: tuple):
         """
         Major compaction should process tables in a sorted order,
@@ -1015,7 +1015,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
             assert not double_compacted_sstables, f"Found sstables that were compacted by both regular compactions and cleanup (table '{tables[i]}'): {double_compacted_sstables}"
 
     @pytest.mark.single_node
-    @unmark.next_gating
     def test_double_compaction_by_cleanup_and_major_compactions(self):
         """
         Cover the issue https://github.com/scylladb/scylla/issues/8155
@@ -1182,7 +1181,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
         assert len(get_list_of_sstables(node1, "ks", "tb")) == 1, "after deletion, major compaction should have compacted sstables regardless of time window"
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCompactionAdditionalStrategy(CompactionAdditionalTester):
     strategy = None
@@ -1288,7 +1286,6 @@ class TestCompactionAdditionalStrategy(CompactionAdditionalTester):
 
         assert before_start_sstables != after_start_sstables, f"No compaction detected after restarting {node1.name}. SSTables in ks/cf: {after_start_sstables}"
 
-    @pytest.mark.dtest_debug
     def test_compaction_removes_ttld_data_after_gc_period(self):
         """
         Test that compaction removes TTLd data after gc_period
@@ -1363,7 +1360,6 @@ class TestCompactionAdditionalStrategy(CompactionAdditionalTester):
             w.close()
 
 
-@pytest.mark.dtest_full
 class TestTimeWindowDataSegregation(CompactionAdditionalTester):
     keyspace_name = "ks"
     table_name = "test"
@@ -2424,7 +2420,6 @@ class TestTimeWindowDataSegregation(CompactionAdditionalTester):
         return sorted_sstables
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestValidationCompaction(CompactionAdditionalTester):
     KS = "ks"
@@ -2553,7 +2548,6 @@ class TestLCSSSTablePromotion(CompactionAdditionalTester):
             node.wait_for_compactions(self.KS, self.CF)
         return levels
 
-    @pytest.mark.dtest_full
     def test_lcs_sstable_promotion(self):
         """
         This test validates that LCS adheres to the restrictions
