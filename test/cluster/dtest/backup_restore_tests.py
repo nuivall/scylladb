@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import os
 import random
@@ -21,8 +27,6 @@ from tools.marks import with_feature
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_full
 class TestBackupRestore(Tester):
     SNAPSHOT_NAME = "test-snapshot"
 
@@ -247,7 +251,6 @@ class TestBackupRestore(Tester):
         self.check_rows_on_node(node1, len(keys), found=keys, c1_values=c1_values, c2_values=c2_values)
 
     @pytest.mark.skip_if(with_feature("tablets"))
-    @pytest.mark.dtest_debug
     def test_restore_snapshot_using_old_token_ownership(self):
         """
         Check that we can restore snapshot files that use a non updated token ownership
@@ -302,7 +305,6 @@ class TestBackupRestore(Tester):
         logger.debug("Check that we may query ks.cf on node1...")
         session.execute(SimpleStatement("SELECT COUNT(*) FROM ks.cf"))
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_incremental_backup(self):
         """
@@ -350,7 +352,6 @@ class TestBackupRestore(Tester):
         # should not change after a compaction
         assert backups1_files == backups2_files, "backup contents changed after a compaction"
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_restore_snapshot_from_cassandra(self):
         """
@@ -506,7 +507,7 @@ class TestBackupRestore(Tester):
             test_dir = self.get_snapshot_dir(f"snapshot{i}")
             assert test_dir is None, f"'snapshot{i}' has not been deleted!"
 
-    @pytest.mark.skip("#7022")
+    @pytest.mark.skip_env(reason="issue #7022")
     @pytest.mark.use_cassandra_stress
     @pytest.mark.single_node
     # nodetool refresh does not examine the main directory since
