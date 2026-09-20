@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import pprint
 import re
@@ -18,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.scylla_cdc
-@pytest.mark.dtest_full
 class TestCDCTTLFunctionality(Tester, CDCInitializeHelper):
     keyspace = "ks"
     table = "cf"
