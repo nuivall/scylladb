@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import functools
 import logging
 import os
@@ -34,7 +40,7 @@ from tools.data import (
     rows_to_list,
 )
 from tools.files import copy_files_to, get_node_cf_dir
-from tools.marks import unmark, with_feature
+from tools.marks import with_feature
 from tools.misc import ImmutableMapping, retry_till_success
 from tools.session import get_supported_features
 from tools.status import nodetool_gossipinfo, nodetool_status
@@ -48,8 +54,6 @@ def randbytes(n):
         yield random.getrandbits(8)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestNodetool(Tester):
     @pytest.fixture(scope="function", autouse=True)
     def fixture_dtest_setup_overrides(self, dtest_config):
@@ -986,7 +990,7 @@ class TestNodetool(Tester):
     def test_general_ring(self):
         self.check_ring()
 
-    @pytest.mark.skip("#1057")
+    @pytest.mark.skip_env(reason="issue #1057")
     @pytest.mark.use_cassandra_stress
     def test_keyspace_ring(self):
         self.check_ring("keyspace1")
@@ -1287,7 +1291,6 @@ class TestNodetool(Tester):
         assert response.status_code == 200, response.text
 
     @pytest.mark.parametrize("strategy", ["TimeWindowCompactionStrategy", "SizeTieredCompactionStrategy"])
-    @unmark.next_gating  # https://github.com/scylladb/scylladb/issues/14710
     def test_resetlocalschema_api_issue_7811(self, strategy):
         cluster = self.cluster
         cluster.populate(nodes=generate_cluster_topology(rack_num=2)).start(wait_for_binary_proto=True)
@@ -1503,7 +1506,7 @@ class TestNodetool(Tester):
             res["streams"].append(stream)
         return res
 
-    @pytest.mark.skip("bootstrap using streaming")
+    @pytest.mark.skip_env(reason="bootstrap using streaming")
     @pytest.mark.use_cassandra_stress
     def test_netstats(self):
         """Testwing the `nodetool netstats` command
@@ -1646,7 +1649,7 @@ class TestNodetool(Tester):
         node.nodetool("refresh -- ks cf")
         node.watch_log_for(f"Loading new SSTables for keyspace=ks, table=cf, load_and_stream={load_and_stream}, primary_replica_only=false", timeout=10)
 
-    @pytest.mark.skip("scylla-tools-java:#282")
+    @pytest.mark.skip_env(reason="scylla-tools-java issue #282")
     @pytest.mark.single_node
     def test_nodetool_refresh_with_load_and_stream_with_primary_replica_only(self):
         """
@@ -1943,12 +1946,12 @@ class TestNodetool(Tester):
     # corruption, but that is not implemented yet.
     # TODO: re-enable and refactor this test once the above is implemented.
     # See https://github.com/scylladb/scylladb/issues/15693
-    @pytest.mark.skip
+    @pytest.mark.skip_env(reason="scrub can't recover arbitrary corruptions yet (scylladb/scylladb#15693)")
     def test_scrub_with_one_node_expect_data_loss(self):
         self._scrub_with_one_node_expect_data_loss(mode="SEGREGATE")
 
     # See test_scrub_with_one_node_expect_data_loss.
-    @pytest.mark.skip
+    @pytest.mark.skip_env(reason="scrub can't recover arbitrary corruptions yet (scylladb/scylladb#15693)")
     def test_scrub_with_multi_nodes_expect_data_rebuild(self):
         cluster = self.run_cluster(nodes=3)
         node = cluster[0]
@@ -2076,7 +2079,6 @@ class TestNodetool(Tester):
         self._scrub_sstable_with_invalid_fragment(mode="SEGREGATE", scrub_keyspace=True)
 
     @pytest.mark.single_node
-    @unmark.next_gating
     @pytest.mark.cluster_options(abort_on_malformed_sstable_error=False)
     def test_validate_with_one_node_expect_data_loss(self):
         self._scrub_with_one_node_expect_data_loss(mode="VALIDATE")
@@ -2225,7 +2227,6 @@ class TestNodetool(Tester):
         assert tbl in out
 
     # remove test from next_gating due to https://github.com/scylladb/scylladb/issues/16219
-    @unmark.next_gating
     @pytest.mark.use_cassandra_stress
     def test_disablebinary_and_disablegossip(self, tmp_path):
         def run_stress(node, num_keys, mode, consistency, limited_rows_per_second=None):
@@ -2296,8 +2297,6 @@ def set_node_probability(node, value: float):
     return set_result
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestGetTraceProbability(Tester):
     """
     Check gettraceprobablility command returned value after settraceprobablility operations:
