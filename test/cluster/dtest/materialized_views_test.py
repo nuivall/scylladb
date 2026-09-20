@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import collections
 import logging
 import os
@@ -44,7 +50,7 @@ from tools.data import (
 )
 from tools.files import get_node_cf_dir, remove_files_in_folder
 from tools.group0_and_token_ring import wait_for_token_ring_and_group0_consistency
-from tools.marks import issue_closed, issue_open, unmark, with_feature
+from tools.marks import with_feature
 from tools.misc import flush_by_node, remove_node
 from tools.retrying import retrying
 from tools.session import get_supported_features
@@ -182,7 +188,6 @@ class CommonUtils(Tester):
                 node.nodetool("replaybatchlog")
 
 
-@pytest.mark.dtest_full
 @pytest.mark.use_cassandra_stress
 class TestMaterializedViews(CommonUtils):
     """
@@ -238,7 +243,6 @@ class TestMaterializedViews(CommonUtils):
         """
         self._run_node_failure_during_mv_stress_insert(rf=3, nodes=3, node_action="remove", exclude_errors=["mutation_write_timeout_exception"])
 
-    @unmark.next_gating  # stress failing with hints overload: https://github.com/scylladb/scylla-dtest/issues/3372
     def test_double_node_failure_during_mv_insert_4_nodes(self):
         """Test stopping 2 nodes during MV inserts
         Test starts with a starting size 4 and stops 2 nodes during inserts into base table that cause to update materialized view as well
@@ -371,7 +375,6 @@ class TestMaterializedViews(CommonUtils):
     def test_truncate_base_during_mv_insert_test_with_auto_snapshot(self):
         self._truncate_base_during_mv_insert(auto_snapshot=True)
 
-    @pytest.mark.dtest_debug
     def test_truncate_base_during_mv_insert_test_without_auto_snapshot(self):
         self._truncate_base_during_mv_insert(auto_snapshot=False)
 
@@ -743,36 +746,30 @@ class TestMaterializedViews(CommonUtils):
         """Create 10 materialized views in parallel with base table deletes"""
         self._mv_populating_from_existing_data_during_changes_test("delete")
 
-    @pytest.mark.skip_if(
-        issue_open("scylladb/scylladb#17543")  # scylla asserts when truncating
-        | issue_open("scylladb/scylladb#17635")  # view table is not truncated when base table is
-    )
     def test_mv_populating_from_existing_data_during_truncate(self):
         """Create 10 materialized views in parallel with base table truncation"""
         self._mv_populating_from_existing_data_during_changes_test("truncate")
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18826"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_mv_populating_from_existing_data_during_extend(self):
         """Create 10 materialized views in parallel with adding a node"""
         self._mv_populating_from_existing_data_during_changes_test("add node")
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18826"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_mv_populating_from_existing_data_during_node_remove(self):
         """Create 10 materialized views in parallel with removing a node"""
         self._mv_populating_from_existing_data_during_changes_test("remove node")
 
-    @pytest.mark.dtest_heavy
     @pytest.mark.skip_if(with_feature("tablets"))
     def test_mv_populating_from_existing_data_during_node_stop(self):
         """Create 10 materialized views in parallel with stopping a node"""
         self._mv_populating_from_existing_data_during_changes_test("stop node")
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18826"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_mv_populating_from_existing_data_during_node_decommission(self):
         """Create 10 materialized views in parallel with a node decommission"""
         self._mv_populating_from_existing_data_during_changes_test("decommission")
 
-    @pytest.mark.dtest_heavy
     @pytest.mark.skip_if(with_feature("tablets"))
     def test_mv_populating_from_existing_data_during_node_restart(self):
         """Create 10 materialized views in parallel with a node restart"""
@@ -1071,8 +1068,7 @@ class TestMaterializedViews(CommonUtils):
             )
         )
 
-    # Test had history of timing out in debug, see: https://github.com/scylladb/scylla-dtest/issues/3275
-    @pytest.mark.scylla_mode("!debug")
+    @pytest.mark.skip_mode(mode="debug", reason="test has a history of timing out in debug mode (scylladb/scylla-dtest#3275)")
     def test_multi_mvs_on_different_base_tables(self):
         """Few keyspaces and every keyspace has a few tables and every table has a few MVs.
         MVs are created on the empty base tables
@@ -1257,7 +1253,6 @@ class TestMaterializedViews(CommonUtils):
 
         self.rows_validation(session=session, rows=20)
 
-    @pytest.mark.dtest_heavy
     def test_drop_mv_during_base_table_writes(self):
         """Test drop a view during base table writes: the view is created on empty base table and dropped during table prefill
         Test scenario:
@@ -1322,7 +1317,6 @@ class TestMaterializedViews(CommonUtils):
 
         assert_two_queries_equal_ignore_order(session, query.format(tm.table_name), session, query.format(mv.mv_name), consistency_level=ConsistencyLevel.ALL, session_timeout=self.session_timeout)
 
-    @pytest.mark.dtest_debug
     def test_create(self):
         """Test the materialized view creation"""
 
@@ -1371,7 +1365,6 @@ class TestMaterializedViews(CommonUtils):
             " to expire before being replayed.",
         )
 
-    @pytest.mark.require("2431")
     def test_crc_check_chance(self):
         """Test that crc_check_chance parameter is properly populated after mv creation and update"""
 
@@ -1496,7 +1489,7 @@ class TestMaterializedViews(CommonUtils):
 
         self.check_errors(node=self.cluster.nodelist()[0], exclude_errors="migration_task - Cant send migration request")
 
-    @pytest.mark.parametrize("rf", [pytest.param(1, marks=pytest.mark.skip_if(issue_open("scylladb/scylladb#26981") | issue_open("scylladb/scylladb#26984"))), pytest.param(3)])
+    @pytest.mark.parametrize("rf", [pytest.param(1), pytest.param(3)])
     def test_add_node_during_base_table_update(self, rf):
         """Test expand cluster - add one node during MV updates
         Test starts with a starting size: one DCs with 4 nodes, and add new node to the same DC during update existent records of base
@@ -2217,7 +2210,7 @@ class TestMaterializedViews(CommonUtils):
     @pytest.mark.parametrize(
         "colocated_view_replicas",
         [
-            pytest.param(True, marks=pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#24816")), id="colocated_view_replicas"),
+            pytest.param(True, marks=pytest.mark.skip_if(with_feature("tablets")), id="colocated_view_replicas"),
             pytest.param(False, id="non_colocated_view_replicas"),
         ],
     )
@@ -2476,7 +2469,7 @@ class TestMaterializedViews(CommonUtils):
     # they may be paired by two dead nodes and no view update will succeed.
     # https://github.com/scylladb/scylladb/issues/17043 can be done to
     # make this test work again.
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#17043"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_complex_repair(self):
         """
         Test that a materialized view are consistent after a more complex repair.
@@ -2564,7 +2557,7 @@ class TestMaterializedViews(CommonUtils):
     # they may be paired by two dead nodes and no view update will succeed.
     # https://github.com/scylladb/scylladb/issues/17043 can be done to
     # make this test work again.
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#17043"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_really_complex_repair(self):
         """
         Test that a materialized view are consistent after a more complex repair.
@@ -2881,8 +2874,7 @@ class TestMaterializedViews(CommonUtils):
         assert len(result2) == 1, "expecting one virtual column"
         assert result1 == result2, "expecting same results on both nodes"
 
-    @pytest.mark.dtest_debug
-    @pytest.mark.scylla_mode("!release")
+    @pytest.mark.skip_mode(mode="release", reason="error injection is disabled in release mode")
     def test_injected_noncritical_errors(self):
         self.fixture_dtest_setup.ignore_log_patterns += [r".*std::runtime_error.*view.*"]
         cluster = self.cluster
@@ -3083,7 +3075,6 @@ class TestMaterializedViews(CommonUtils):
             assert_none(query=f"select * from {mv_name} where {where_clause} ALLOW FILTERING", session=session)
             node1.start(wait_other_notice=True, wait_for_binary_proto=True)
 
-    @pytest.mark.next_gating
     def test_mv_consistency_after_truncate_and_insert(self, cache):
         """
         1. Create base table and create multiple materialized views.
@@ -3232,7 +3223,6 @@ def thread_session(ip, queue, start, end, rows, num_partitions):  # noqa: PLR091
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Bug in python on Windows: https://bugs.python.org/issue10128")
-@pytest.mark.dtest_full
 class TestMaterializedViewsConsistency(Tester):
     def prepare(self, user_table=False, options=None):
         if options is None:
@@ -3300,7 +3290,6 @@ class TestMaterializedViewsConsistency(Tester):
         for row in data:
             self.rows[(row.a, row.b)] = row.c
 
-    @pytest.mark.require("2210")
     def test_single_partition_consistent_reads_after_write(self):
         """
         Tests consistency of multiple writes to a single partition
@@ -3309,7 +3298,6 @@ class TestMaterializedViewsConsistency(Tester):
         self._consistent_reads_after_write_test(1)
 
     # nodetool: Found unexpected parameters: [replaybatchlog]
-    @pytest.mark.require("2210")
     def test_multi_partition_consistent_reads_after_write(self):
         """
         Taken from Cassandra
