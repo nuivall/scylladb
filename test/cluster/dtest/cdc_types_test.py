@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import time
 from datetime import date, datetime
 from decimal import Decimal
@@ -341,7 +347,6 @@ class CdcTools(Tester, CDCInitializeHelper):
                 assert key in row.cdc_deleted_elements_value
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 @pytest.mark.scylla_cdc
 class TestCDCNativeType(CdcTools):
@@ -636,7 +641,6 @@ class TestCDCNativeType(CdcTools):
         )
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCDCCollectionsType(CdcTools):
     columns_data = None
@@ -881,7 +885,6 @@ class TestCDCCollectionsType(CdcTools):
             self.check_cdc_log_row_collection(cdc_log_rows[postimage_index], operation=CdcLogOperations.POSTIMAGE, batch_seq=postimage_index, expected_data=postimage_expected_data)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 @pytest.mark.scylla_cdc
 class TestCdcUDT(CdcTools):
@@ -956,7 +959,6 @@ class TestCdcUDT(CdcTools):
     def test_update_udt_postimage(self):
         self.update_udt_tpl(postimage_enable=True)
 
-    @pytest.mark.next_gating
     def test_update_udt_preimage_postimage(self):
         self.update_udt_tpl(preimage_enable=True, postimage_enable=True)
 
