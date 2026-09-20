@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import os
 import shutil
@@ -12,7 +18,6 @@ from ccmlib import common
 from dtest_class import Tester, create_cf, create_ks, get_ip_from_node, wait_for
 from tools.data import putget
 from tools.files import safe_mkdtemp
-from tools.marks import issue_open, unmark
 from tools.misc import generate_ssl_stores, is_port_used, revoke_certificate
 from tools.sslkeygen import wait_for_cert_reload
 
@@ -92,15 +97,12 @@ class BaseSslTester(Tester):
         putget(cluster, session, cl=ConsistencyLevel.ONE)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
-@pytest.mark.next_gating
 class TestNativeTransportSSL(BaseSslTester):
     """
     Native transport integration tests, specifically for ssl and port configurations.
     """
 
-    @pytest.mark.dtest_debug
     def test_connect_to_ssl(self):
         """
         Connecting to SSL enabled native transport port should only be possible using SSL enabled client
@@ -196,7 +198,6 @@ class TestNativeTransportSSL(BaseSslTester):
         with self._create_cluster_session(node1, use_ssl=True, port=9666) as session:
             self._putget(cluster, session, ks="ks2")
 
-    @pytest.mark.dtest_debug
     def test_reload_certificates(self, tmp_path):
         """
         Verify certificate reloading on modified file(s)
@@ -306,8 +307,6 @@ class TestNativeTransportSSL(BaseSslTester):
             cluster.set_configuration_options(ports_conf)
             restart_and_verify_listen_ports(expected_ports=[v for k, v in ports_conf.items() if v not in [0, None]])
 
-    @pytest.mark.skip_if(issue_open("scylladb/scylladb#7500") | issue_open("scylladb/scylladb#7783"))
-    @unmark.next_gating
     def test_listen_ports_conf_by_zero(self):
         """
         Test native transport ports configuration, and verify the listening native transport ports after start.
@@ -315,14 +314,10 @@ class TestNativeTransportSSL(BaseSslTester):
         """
         self._listen_ports_conf_template(disable_value=0)
 
-    @pytest.mark.skip_if(issue_open("scylladb/scylladb#7500") | issue_open("scylladb/scylladb#7783"))
-    @unmark.next_gating
     def test_listen_ports_conf(self):
         self._listen_ports_conf_template(disable_value=None)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestServerEncryption(BaseSslTester):
     def test_server_encryption_and_restart_node(self):
         """
