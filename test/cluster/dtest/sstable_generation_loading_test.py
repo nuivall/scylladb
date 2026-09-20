@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import glob
 import logging
 import os
@@ -11,14 +17,11 @@ import pytest
 
 from dtest_class import Tester, create_cf, create_ks
 from dtest_setup_overrides import DTestSetupOverrides
-from tools.marks import issue_open, requireif, unmark, with_feature
 from tools.misc import ImmutableMapping
 
 logger = logging.getLogger(__name__)
-pytestmark = pytest.mark.next_gating
 
 
-@pytest.mark.dtest_full
 class TestSSTableGenerationAndLoading(Tester):
     @pytest.fixture(scope="class", autouse=True)
     def fixture_dtest_setup_overrides(self, dtest_config):  # pylist:disable=unused-argument

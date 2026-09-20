@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import pytest
 from cassandra.cluster import ConsistencyLevel, Session
 from cassandra.query import SimpleStatement
@@ -7,8 +13,6 @@ from ccmlib.scylla_node import ScyllaNode
 from dtest_class import Tester
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestSchemaReplicationEverywhereStrategy(Tester):
     DISTRIBUTED_EVERYWHERE_KS = "distributed_everywhere"
 
