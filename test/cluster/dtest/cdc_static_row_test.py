@@ -13,7 +13,8 @@ import pytest
 from cassandra import ConsistencyLevel
 from cassandra.cluster import Session, SimpleStatement
 
-from cdc_batch_test import CDCInitializeHelper, CdcLogOperations, Column, DataGenerator, Row
+from cdc_batch_test import Column, DataGenerator, Row
+from cdc_test import CDCInitializeHelper, CdcLogOperations
 from dtest_class import Tester, create_ks
 from tools.cdc_utils import get_next_timestamp, mkident
 
