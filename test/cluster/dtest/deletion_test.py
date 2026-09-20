@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import time
 from datetime import datetime, timedelta
@@ -10,14 +16,11 @@ from dtest_class import Tester, create_ks
 from tools.assertions import assert_all, assert_invalid, assert_one
 from tools.cluster import new_node
 from tools.cluster_topology import generate_cluster_topology, generate_rack_topology_based_rf
-from tools.marks import issue_open, with_feature
 
 logger = logging.getLogger(__file__)
 
-pytestmark = pytest.mark.next_gating
 
 
-@pytest.mark.dtest_full
 class TestRangeDeletion(Tester):
     compaction_strategy = None
 
