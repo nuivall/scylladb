@@ -7,8 +7,6 @@ cdc_test.py
 cdc_tracing_info_test.py
 cdc_ttl_test.py
 cdc_types_test.py
-cleanup_test.py
-cluster_replacement_test.py
 compaction_additional_test.py
 compaction_test.py
 concurrent_schema_changes_test.py
