@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -18,7 +19,6 @@ from tools.stress import create_stress_compatible_table
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
 class TestHeatWeightedLB(Tester):
     METRICS = ["scylla_storage_proxy_coordinator_reads_local_node", "scylla_column_family_cache_hit_rate.*cf=.*standard1"]
 
