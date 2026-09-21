@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import concurrent.futures
 import logging
 import random
@@ -20,8 +21,6 @@ from tools.cluster_topology import generate_cluster_topology
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestDeleteInsert(Tester):
     """
     Examines scenarios around deleting data and adding data back with the same key
