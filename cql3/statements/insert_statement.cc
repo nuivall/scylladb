@@ -87,10 +87,8 @@ insert_statement::insert_statement(
         schema_ptr s,
         std::unique_ptr<attributes> attrs,
         cql_stats& stats)
-    : modification_statement{statement_type::INSERT, bound_terms, std::move(s), std::move(attrs), stats}
-{
-    set_audit_info(std::move(audit_info));
-}
+    : modification_statement{std::move(audit_info), statement_type::INSERT, bound_terms, std::move(s), std::move(attrs), stats}
+{ }
 
 void insert_statement::add_key_value(const column_definition& def, expr::expression value) {
     _key_values.emplace_back(&def, std::move(value));

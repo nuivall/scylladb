@@ -42,7 +42,7 @@ db::timeout_clock::duration modification_spec::get_timeout(const service::client
     return attrs->is_timeout_set() ? attrs->get_timeout(options) : state.get_timeout_config().*get_timeout_config_selector();
 }
 
-modification_spec::modification_spec(statement_type type_, uint32_t bound_terms,
+modification_spec::modification_spec(audit::audit_info_ptr&& audit_info, statement_type type_, uint32_t bound_terms,
         schema_ptr schema_, std::unique_ptr<attributes> attrs_, cql_stats& stats_)
     : type{type_}
     , _bound_terms{bound_terms}
@@ -54,6 +54,7 @@ modification_spec::modification_spec(statement_type type_, uint32_t bound_terms,
     , _column_operations{}
     , _ks_sel(::is_internal_keyspace(schema_->ks_name()) ? ks_selector::SYSTEM : ks_selector::NONSYSTEM)
     , _timeout_config_selector(modification_timeout(*schema_))
+    , _audit_info(std::move(audit_info))
 { }
 
 modification_spec::~modification_spec() = default;

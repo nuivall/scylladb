@@ -44,10 +44,8 @@ update_statement::update_statement(
         schema_ptr s,
         std::unique_ptr<attributes> attrs,
         cql_stats& stats)
-    : modification_statement{type, bound_terms, std::move(s), std::move(attrs), stats}
-{
-    set_audit_info(std::move(audit_info));
-}
+    : modification_statement{std::move(audit_info), type, bound_terms, std::move(s), std::move(attrs), stats}
+{ }
 
 clustering_key_prefix row_key(const query::clustering_range& range) {
     return range.start() ? std::move(range.start()->value()) : clustering_key_prefix::make_empty();

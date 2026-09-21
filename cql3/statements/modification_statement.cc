@@ -44,11 +44,17 @@ namespace cql3 {
 
 namespace statements {
 
-modification_statement::modification_statement(statement_type type_, uint32_t bound_terms,
-        schema_ptr schema_, std::unique_ptr<attributes> attrs_, cql_stats& stats_)
+modification_statement::modification_statement(audit::audit_info_ptr&& audit_info, statement_type type_,
+        uint32_t bound_terms, schema_ptr schema_, std::unique_ptr<attributes> attrs_, cql_stats& stats_)
     : cql_statement(modification_timeout(*schema_))
-    , modification_spec(type_, bound_terms, schema_, std::move(attrs_), stats_)
-{ }
+    , modification_spec(std::move(audit_info), type_, bound_terms, schema_, std::move(attrs_), stats_)
+{
+    // The modification carries the audit info it was prepared with, and a batch
+    // reads it from there. A statement is audited as itself, so take a copy.
+    if (const auto* ai = modification_spec::audit_info()) {
+        set_audit_info(std::make_unique<audit::audit_info>(*ai));
+    }
+}
 
 uint32_t modification_statement::get_bound_terms() const {
     return spec().get_bound_terms();

@@ -43,6 +43,7 @@ namespace raw { class modification_statement; }
 class modification_statement : public cql_statement, public modification_spec {
 public:
     modification_statement(
+            audit::audit_info_ptr&& audit_info,
             statement_type type_,
             uint32_t bound_terms,
             schema_ptr schema_,

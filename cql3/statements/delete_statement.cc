@@ -23,10 +23,8 @@ namespace cql3 {
 namespace statements {
 
 delete_statement::delete_statement(audit::audit_info_ptr&& audit_info, statement_type type, uint32_t bound_terms, schema_ptr s, std::unique_ptr<attributes> attrs, cql_stats& stats)
-        : modification_statement{type, bound_terms, std::move(s), std::move(attrs), stats}
-{
-    set_audit_info(std::move(audit_info));
-}
+        : modification_statement{std::move(audit_info), type, bound_terms, std::move(s), std::move(attrs), stats}
+{ }
 
 dht::partition_range_vector
 delete_statement::build_partition_keys(const query_options& options, const json_cache_opt& json_cache) const {

@@ -13,6 +13,7 @@
 #include "cql3/stats.hh"
 #include "cql3/update_parameters.hh"
 #include "cql3/statements/statement_type.hh"
+#include "audit/audit.hh"
 #include "db/timeout_clock.hh"
 #include "timeout_config.hh"
 
@@ -87,6 +88,9 @@ private:
     // Which of the client's write timeouts applies to this modification. The
     // statement wrapping the spec passes it on to cql_statement.
     const timeout_config_selector _timeout_config_selector;
+    // Set while the statement is prepared, and read by a batch, which audits
+    // the modifications it holds rather than itself.
+    audit::audit_info_ptr _audit_info;
     // The result set a conditional modification returns. Built while preparing
     // the conditions, and handed to the wrapping statement, which is what a
     // client asks for the result metadata.
@@ -117,6 +121,7 @@ public:
     typedef std::optional<std::unordered_map<sstring, bytes_opt>> json_cache_opt;
 
     modification_spec(
+            audit::audit_info_ptr&& audit_info,
             statement_type type_,
             uint32_t bound_terms,
             schema_ptr schema_,
@@ -153,6 +158,8 @@ public:
     bool should_reclassify_control_connection() const;
 
     timeout_config_selector get_timeout_config_selector() const { return _timeout_config_selector; }
+
+    audit::audit_info* audit_info() const { return _audit_info.get(); }
 
     void inc_cql_stats(bool is_internal) const;
 
