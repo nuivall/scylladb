@@ -2033,29 +2033,24 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
                             + std::to_string(int(kind.assume_value()))));
         }
 
-        auto sc_statement = dynamic_pointer_cast<cql3::statements::strong_consistency::modification_statement>(ps->statement);
-        is_sc |= bool(sc_statement);
-
         auto modif_statement_ptr = dynamic_pointer_cast<cql3::statements::modification_statement>(ps->statement);
-        const cql3::statements::modification_spec* spec = sc_statement ? &sc_statement->spec()
-                : (modif_statement_ptr ? &modif_statement_ptr->spec() : nullptr);
-        if (!spec) {
+        if (!modif_statement_ptr) {
             return make_exception_future<cql_server::process_fn_return_type>(exceptions::invalid_request_exception("Invalid statement in batch: only UPDATE, INSERT and DELETE statements are allowed."));
         }
+        if (dynamic_cast<const cql3::statements::strong_consistency::modification_statement*>(modif_statement_ptr.get())) {
+            is_sc = true;
+            ++sc_batch_size;
+        }
+        const auto& spec = modif_statement_ptr->spec();
         if (init_trace && trace_state) {
-            tracing::add_table_name(trace_state, spec->keyspace(), spec->column_family());
+            tracing::add_table_name(trace_state, spec.keyspace(), spec.column_family());
             tracing::add_prepared_statement(trace_state, ps);
         }
         if (auto* inner_ai = ps->statement->get_audit_info()) {
             batch_audit_infos.emplace_back(*inner_ai);
         }
 
-        if (sc_statement) {
-            modifications.emplace_back(sc_statement->shared_spec(), needs_authorization);
-            ++sc_batch_size;
-        } else {
-            modifications.emplace_back(modif_statement_ptr->shared_spec(), needs_authorization);
-        }
+        modifications.emplace_back(modif_statement_ptr->shared_spec(), needs_authorization);
         ++batch_size;
 
         std::vector<cql3::raw_value_view> tmp;

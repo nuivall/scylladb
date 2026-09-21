@@ -24,12 +24,6 @@ static logging::logger logger("sc_modification_statement");
 
 using result_message = cql_transport::messages::result_message;
 
-modification_statement::modification_statement(::shared_ptr<modification_spec> spec)
-    : cql_statement(&timeout_config::write_timeout)
-    , _spec(std::move(spec))
-{
-}
-
 mutation build_mutation(const modification_spec& spec, const query_options& options, api::timestamp_type ts,
         const modification_spec::json_cache_opt& json_cache, const std::vector<dht::partition_range>& keys) {
     const auto ranges = spec.create_clustering_ranges(options, json_cache);
@@ -54,7 +48,7 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
         query_processor& qp, service::query_state& qs, const query_options& options,
         std::optional<service::group0_guard> guard) const
 {
-    const modification_spec& spec = *_spec;
+    const modification_spec& spec = this->spec();
 
     validate_write_consistency_level(options.get_consistency());
     spec.validate_primary_key(options);
@@ -105,22 +99,6 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
     }
 
     co_return std::move(result);
-}
-
-future<> modification_statement::check_access(query_processor& qp, const service::client_state& state) const {
-    return _spec->check_access(qp, state);
-}
-
-void modification_statement::validate(query_processor& qp, const service::client_state& state) const {
-    _spec->validate(qp, state);
-}
-
-uint32_t modification_statement::get_bound_terms() const {
-    return _spec->get_bound_terms();
-}
-
-bool modification_statement::depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const {
-    return _spec->depends_on(ks_name, cf_name);
 }
 
 }
