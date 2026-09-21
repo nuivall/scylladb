@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import json
 import logging
 import os
@@ -20,11 +21,10 @@ from ccmlib.node import Node
 from dtest_class import Tester, create_cf, create_ks
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import create_c1c2_table, insert_c1c2
-from tools.marks import unmark, with_feature
+from tools.marks import with_feature
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
 class SystemTableBase(Tester):
@@ -80,7 +80,6 @@ class SystemTableBase(Tester):
             return False
 
 
-@pytest.mark.dtest_full
 class TestClusterStatusTable(SystemTableBase):
     TABLE_NAME = "cluster_status"
     SELECT_QUERY = f"select * from {SystemTableBase.KEYSPACE_NAME}.{TABLE_NAME};"
@@ -286,7 +285,6 @@ class TestClusterStatusTable(SystemTableBase):
         self.check_running_node_status(node_status=parsed_query_result[node3_ip_address], node_to_check=node3)
 
 
-@pytest.mark.dtest_full
 class TestTokenRingTable(SystemTableBase):
     """
     Example of the table content
@@ -499,7 +497,6 @@ class TestTokenRingTable(SystemTableBase):
         assert node3_token_set == node4_token_set, "The token ranges before and after node replacement do not match!"
 
 
-@pytest.mark.dtest_full
 class TestVersionsTable(SystemTableBase):
     TABLE_NAME = "versions"
 
@@ -535,7 +532,6 @@ class TestVersionsTable(SystemTableBase):
         assert output.version == scylla_version, f"The Scylla versions do not match! Expected: {scylla_version} Got: {output.version}"
 
 
-@pytest.mark.dtest_full
 class TestProtocolServersTable(SystemTableBase):
     """
     Table content example:
@@ -603,7 +599,6 @@ class TestProtocolServersTable(SystemTableBase):
                 assert expected_row["protocol_version"] == row.protocol_version, f"Unexpected value in column 'protocol': {row.protocol_version}"
 
 
-@pytest.mark.dtest_full
 class TestSnapshotsTable(SystemTableBase):
     """
     Table content example:
@@ -693,7 +688,6 @@ class TestSnapshotsTable(SystemTableBase):
             assert table == f"{table_content[0].keyspace_name}.{table_content[0].table_name}", f"Expected to get the snapshot information for the table {table}, but didn't get it!"
 
 
-@pytest.mark.dtest_full
 class TestRuntimeInfoTable(SystemTableBase):
     TABLE_NAME = "runtime_info"
     TEST_KEYSPACE = "test_keyspace"
@@ -857,8 +851,6 @@ class TestRuntimeInfoTable(SystemTableBase):
         assert metrics_after_request["misses"] == metrics_after_flush["misses"]
         assert metrics_after_request["requests_total"] == metrics_after_request["hits"] + metrics_after_request["misses"]
 
-    @unmark.next_gating
-    @pytest.mark.xfail(reason="https://github.com/scylladb/scylla/issues/10340")
     @pytest.mark.single_node
     def test_memtable_metrics(self):
         """
@@ -891,7 +883,6 @@ class TestRuntimeInfoTable(SystemTableBase):
         assert metrics_after["memory_used"] > metrics_before["memory_used"]
 
 
-@pytest.mark.dtest_full
 class TestConfigTable(SystemTableBase):
     """
     Table content example:
@@ -962,6 +953,7 @@ class TestConfigTable(SystemTableBase):
         config_file_path = os.path.join(node.get_path(), "conf/scylla.yaml")
         with open(file=config_file_path, encoding="utf-8") as file:
             scylla_yaml_content = yaml.safe_load(file)
+        scylla_yaml_raw = dict(scylla_yaml_content)
 
         for key, value in scylla_yaml_content.items():
             scylla_yaml_content[key] = str(value).lower() if isinstance(value, bool) else str(value)
@@ -975,13 +967,23 @@ class TestConfigTable(SystemTableBase):
 
         logger.info("Verifying values of config parameters...")
         for row in config_properties:
-            assert scylla_yaml_content.get(row.name), f"Could not find the parameter '{row.name}' in scylla.yaml!"
+            # system.config names an option with a short alias by both, e.g. 'workdir,W'.
+            # ccm wrote that full name into scylla.yaml; test.py's ScyllaServer writes
+            # 'workdir' (test/pylib/scylla_server.py), which Scylla takes as the same option.
+            yaml_name = row.name if row.name in scylla_yaml_content else row.name.split(",")[0]
+            assert scylla_yaml_content.get(yaml_name), f"Could not find the parameter '{row.name}' in scylla.yaml!"
 
-            scylla_yaml_value = scylla_yaml_content[row.name]
+            scylla_yaml_value = scylla_yaml_content[yaml_name]
             row_value = row.value
 
             if row.name == "seed_provider" and str(row_value) == '"seed_provider_type"':
                 # allow older scylla which does not provide this info
+                continue
+
+            if row.type == "string map":
+                # e.g. server_encryption_options, which test.py sets: system.config renders a map
+                # as a JSON object, in no particular key order.
+                assert scylla_yaml_raw[yaml_name] == json.loads(row_value), f"Wrong value for name='{row.name}' in the table {self.KEYSPACE_NAME}.{self.TABLE_NAME}. Expected: {scylla_yaml_raw[yaml_name]}. Got: {row_value}. Row={row}"
                 continue
 
             if row.name in json_rows:
@@ -1011,14 +1013,17 @@ class TestConfigTable(SystemTableBase):
         """
         logger.debug("Preparing the cluster...")
         cluster = self.cluster
-        started_node_data = cluster.populate(1).start()[0]
+        cluster.populate(1).start()
         logger.debug("Cluster has been prepared...")
 
         node = cluster.nodelist()[0]
         node_ip_address = node.address()
 
         logger.info("Getting startup CLI args on node %s...", node_ip_address)
-        startup_args = started_node_data[1].args
+        # ccm's start() returned each node's Popen; the in-tree cluster returns the nodes, so read the
+        # command line of the running scylla process instead.
+        with open(f"/proc/{node.pid}/cmdline", "rb") as cmdline:
+            startup_args = cmdline.read().decode().split("\0")
 
         with self.patient_cql_connection(node) as session:
             logger.info("Getting content of %s.%s table on node %s...", self.KEYSPACE_NAME, self.TABLE_NAME, node_ip_address)
@@ -1034,6 +1039,13 @@ class TestConfigTable(SystemTableBase):
             arg_name = f"--{row.name}".replace("_", "-")
             row_value = row.value.strip('"').replace('"', "'")
             assert arg_name in startup_args, f"Could not find the parameter '{arg_name}' in Scylla startup arguments!"
+
+            if row.type == "string map":
+                # A map option is given as one key=value per occurrence, e.g. test.py passes
+                # --logger-log-level several times.
+                expected = dict(startup_args[i + 1].split("=", 1) for i, arg in enumerate(startup_args) if arg == arg_name)
+                assert json.loads(row.value) == expected, f"Wrong value for name='{row.name}' in the table {self.KEYSPACE_NAME}.{self.TABLE_NAME}. Expected: {expected}. Got: {row.value}."
+                continue
 
             startup_arg_value = startup_args[startup_args.index(arg_name) + 1]
             if row_value == "true":
@@ -1051,7 +1063,7 @@ class TestConfigTable(SystemTableBase):
             ("set type = 'bool', value = '15000' where name = 'api_port'", "option type is immutable"),
             ("set value = '15000' where name = 'api_port'", "option is not live-updateable"),
             ("set value = '15000' where name = 'some_generic_name'", "no such option"),
-            pytest.param("set value = 'true' where name='failure_detector_timeout_in_ms'", "Operation failed for system.config", marks=[pytest.mark.xfail(reason="https://github.com/scylladb/scylla/issues/10394"), unmark.next_gating]),
+            pytest.param("set value = 'true' where name='failure_detector_timeout_in_ms'", "Operation failed for system.config", marks=[pytest.mark.xfail(reason="https://github.com/scylladb/scylla/issues/10394")]),
         ],
         ids=["no_value_provided", "source_not_updatable", "type_not_updatable", "parameter_not_live_updatable", "wrong_parameter_name", "wrong_value_type"],
     )
