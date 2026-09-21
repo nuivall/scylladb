@@ -53,6 +53,7 @@ timeout_config_selector modification_timeout(const schema& s);
 class modification_spec {
 public:
     const statement_type type;
+    bool _may_use_token_aware_routing;
 private:
     const uint32_t _bound_terms;
     // If we have operation on list entries, such as adding or
@@ -113,6 +114,8 @@ private:
     std::optional<bool> _is_raw_counter_shard_write;
 
 public:
+    typedef std::optional<std::unordered_map<sstring, bytes_opt>> json_cache_opt;
+
     modification_spec(
             statement_type type_,
             uint32_t bound_terms,
@@ -152,6 +155,33 @@ public:
     timeout_config_selector get_timeout_config_selector() const { return _timeout_config_selector; }
 
     void inc_cql_stats(bool is_internal) const;
+
+    /// Checks that the primary key the statement names has no null values, throwing
+    /// invalid_request_exception otherwise.
+    virtual void validate_primary_key(const query_options& options) const = 0;
+
+    virtual dht::partition_range_vector build_partition_keys(const query_options& options, const json_cache_opt& json_cache) const = 0;
+    virtual query::clustering_row_ranges create_clustering_ranges(const query_options& options, const json_cache_opt& json_cache) const = 0;
+
+    // Writes the rows this modification addresses. One mutation per partition key,
+    // so several for a statement like DELETE FROM t WHERE pk IN (1, 2, 3).
+    virtual utils::chunked_vector<mutation> apply_updates(
+            const std::vector<dht::partition_range>& keys,
+            const std::vector<query::clustering_range>& ranges,
+            const update_parameters& params,
+            const json_cache_opt& json_cache) const = 0;
+
+    virtual json_cache_opt maybe_prepare_json_cache(const query_options& options) const;
+
+    // Turns the parsed modification into the mutations it writes, at the given
+    // timestamp and over whatever old data had to be read first.
+    //
+    // Takes the prefetched rows rather than fetching them: reading is the
+    // business of whoever commits the mutations, and the two backends read
+    // differently, so this is the part they share.
+    utils::chunked_vector<mutation> build_mutations(const query_options& options, api::timestamp_type ts,
+            const std::vector<dht::partition_range>& keys, const std::vector<query::clustering_range>& ranges,
+            const json_cache_opt& json_cache, update_parameters::prefetch_data rows) const;
 
     void add_operation(std::unique_ptr<operation> op);
 
@@ -217,6 +247,10 @@ public:
     const column_set& columns_of_cas_result_set() const { return _columns_of_cas_result_set; }
 
 protected:
+    // One empty mutation per partition the statement addresses, for apply_updates()
+    // to write rows into.
+    utils::chunked_vector<mutation> make_mutations(const std::vector<dht::partition_range>& keys) const;
+
     // Return true if this statement doesn't update or read any regular rows, only static rows.
     // Note, it isn't enough to just check !_sets_regular_columns && _regular_conditions.empty(),
     // because a DELETE statement that deletes whole rows (DELETE FROM ...) technically doesn't

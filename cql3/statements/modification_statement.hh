@@ -42,10 +42,6 @@ namespace raw { class modification_statement; }
  */
 class modification_statement : public cql_statement, public modification_spec {
 public:
-    bool _may_use_token_aware_routing;
-
-    typedef std::optional<std::unordered_map<sstring, bytes_opt>> json_cache_opt;
-
     modification_statement(
             statement_type type_,
             uint32_t bound_terms,
@@ -75,52 +71,11 @@ public:
 
     bool is_conditional() const override;
 
-    // Build a read_command instance to fetch the previous mutation from storage. The mutation is
-    // fetched if we need to check LWT conditions or apply updates to non-frozen list elements.
-    lw_shared_ptr<query::read_command> read_command(query_processor& qp, query::clustering_row_ranges ranges, db::consistency_level cl) const;
-
-    /// Checks that the primary key the statement names has no null values, throwing
-    /// invalid_request_exception otherwise.
-    virtual void validate_primary_key(const query_options& options) const = 0;
-
-    virtual dht::partition_range_vector build_partition_keys(const query_options& options, const json_cache_opt& json_cache) const = 0;
-    virtual query::clustering_row_ranges create_clustering_ranges(const query_options& options, const json_cache_opt& json_cache) const = 0;
-
-    // Create a mutation object for the update operation represented by this modification statement.
-    // A single mutation object for lightweight transactions, which can only span one partition, or a vector
-    // of mutations, one per partition key, for statements which affect multiple partition keys,
-    // e.g. DELETE FROM table WHERE pk  IN (1, 2, 3).
-    virtual utils::chunked_vector<mutation> apply_updates(
-            const std::vector<dht::partition_range>& keys,
-            const std::vector<query::clustering_range>& ranges,
-            const update_parameters& params,
-            const json_cache_opt& json_cache) const = 0;
-
-protected:
-    // One empty mutation per partition the statement addresses, for apply_updates()
-    // to write rows into.
-    utils::chunked_vector<mutation> make_mutations(const std::vector<dht::partition_range>& keys) const;
-
-public:
     virtual future<::shared_ptr<cql_transport::messages::result_message>>
     execute(query_processor& qp, service::query_state& qs, const query_options& options, std::optional<service::group0_guard> guard) const override;
 
     virtual future<::shared_ptr<cql_transport::messages::result_message>>
     execute_without_checking_exception_message(query_processor& qp, service::query_state& qs, const query_options& options, std::optional<service::group0_guard> guard) const override;
-
-    /**
-     * Convert statement into a list of mutations to apply on the server
-     *
-     * @param options value for prepared statement markers
-     * @param local if true, any requests (for collections) performed by getMutation should be done locally only.
-     * @param now the current timestamp in microseconds to use if no timestamp is user provided.
-     *
-     * @return vector of the mutations
-     * @throws invalid_request_exception on invalid requests
-     */
-    future<utils::chunked_vector<mutation>> get_mutations(query_processor& qp, const query_options& options, db::timeout_clock::time_point timeout, bool local, int64_t now, service::query_state& qs, json_cache_opt& json_cache, std::vector<dht::partition_range> keys) const;
-
-    virtual json_cache_opt maybe_prepare_json_cache(const query_options& options) const;
 
 private:
     future<::shared_ptr<cql_transport::messages::result_message>>
@@ -135,6 +90,22 @@ private:
 
     friend class raw::modification_statement;
 };
+
+/**
+ * Converts a modification into the mutations to apply on the server, reading the
+ * old row through storage_proxy first when the modification needs one.
+ *
+ * Free, because a batch commits the modifications it holds without ever
+ * executing their statements.
+ *
+ * @param options value for prepared statement markers
+ * @param local if true, any requests (for collections) performed should be done locally only.
+ * @param now the current timestamp in microseconds to use if no timestamp is user provided.
+ */
+future<utils::chunked_vector<mutation>> get_mutations(const modification_spec& spec, query_processor& qp,
+        const query_options& options, db::timeout_clock::time_point timeout, bool local, int64_t now,
+        service::query_state& qs, modification_spec::json_cache_opt& json_cache,
+        std::vector<dht::partition_range> keys);
 
 }
 

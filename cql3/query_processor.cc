@@ -1082,7 +1082,7 @@ future<utils::chunked_vector<mutation>> query_processor::get_mutations_internal(
     if (mod_stmt->requires_read()) {
         on_internal_error(log, "Read-modified-write queries forbidden in get_mutations_internal");
     }
-    co_return co_await mod_stmt->get_mutations(*this, opts, timeout, true, timestamp, query_state, json_cache, std::move(keys));
+    co_return co_await cql3::statements::get_mutations(*mod_stmt, *this, opts, timeout, true, timestamp, query_state, json_cache, std::move(keys));
 }
 
 future<::shared_ptr<untyped_result_set>>

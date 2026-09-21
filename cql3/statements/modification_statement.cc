@@ -79,64 +79,48 @@ seastar::shared_ptr<const metadata> modification_statement::get_result_metadata(
 
 modification_statement::~modification_statement() = default;
 
-future<utils::chunked_vector<mutation>>
-modification_statement::get_mutations(query_processor& qp, const query_options& options, db::timeout_clock::time_point timeout, bool local, int64_t now, service::query_state& qs, json_cache_opt& json_cache, std::vector<dht::partition_range> keys) const {
-    auto cl = options.get_consistency();
-    auto ranges = create_clustering_ranges(options, json_cache);
-    auto f = make_ready_future<update_parameters::prefetch_data>(s);
-
-    if (is_counter()) {
-        db::validate_counter_for_write(*s, cl);
-    } else {
-        db::validate_for_write(cl);
-    }
-
-    if (requires_read()) {
-        lw_shared_ptr<query::read_command> cmd = read_command(qp, ranges, cl);
-        // FIXME: ignoring "local"
-        f = qp.proxy().query(s, cmd, dht::partition_range_vector(keys), cl,
-                {timeout, qs.get_permit(), qs.get_client_state(), qs.get_trace_state()}).then(
-
-                [this, cmd] (auto cqr) {
-
-            return update_parameters::build_prefetch_data(s, *cqr.query_result, cmd->slice);
-        });
-    }
-
-    return f.then([this, keys = std::move(keys), ranges = std::move(ranges), json_cache = std::move(json_cache), &options, now]
-            (auto rows) {
-
-        update_parameters params(s, options, this->get_timestamp(now, options),
-                this->get_time_to_live(options), std::move(rows));
-
-        utils::chunked_vector<mutation> mutations = apply_updates(keys, ranges, params, json_cache);
-
-        return make_ready_future<utils::chunked_vector<mutation>>(std::move(mutations));
-    });
-}
-
-utils::chunked_vector<mutation> modification_statement::make_mutations(
-        const std::vector<dht::partition_range>& keys) const {
-
-    utils::chunked_vector<mutation> mutations;
-    mutations.reserve(keys.size());
-    for (auto key : keys) {
-        // We know key.start() must be defined since we only allow EQ relations on the partition key.
-        mutations.emplace_back(s, std::move(*key.start()->value().key()));
-    }
-    return mutations;
-}
-
-lw_shared_ptr<query::read_command>
-modification_statement::read_command(query_processor& qp, query::clustering_row_ranges ranges, db::consistency_level cl) const {
+static lw_shared_ptr<query::read_command>
+read_command(const modification_spec& spec, query_processor& qp, query::clustering_row_ranges ranges, db::consistency_level cl) {
     try {
         validate_for_read(cl);
     } catch (exceptions::invalid_request_exception& e) {
         throw exceptions::invalid_request_exception(format("Write operation require a read but consistency {} is not supported on reads", cl));
     }
-    query::partition_slice ps(std::move(ranges), *s, columns_to_read(), update_parameters::options);
+    query::partition_slice ps(std::move(ranges), *spec.s, spec.columns_to_read(), update_parameters::options);
     const auto max_result_size = qp.proxy().get_max_result_size(ps);
-    return make_lw_shared<query::read_command>(s->id(), s->version(), std::move(ps), query::max_result_size(max_result_size), query::tombstone_limit::max);
+    return make_lw_shared<query::read_command>(spec.s->id(), spec.s->version(), std::move(ps), query::max_result_size(max_result_size), query::tombstone_limit::max);
+}
+
+future<utils::chunked_vector<mutation>>
+get_mutations(const modification_spec& spec, query_processor& qp, const query_options& options,
+        db::timeout_clock::time_point timeout, bool local, int64_t now, service::query_state& qs,
+        modification_spec::json_cache_opt& json_cache, std::vector<dht::partition_range> keys) {
+    auto cl = options.get_consistency();
+    auto ranges = spec.create_clustering_ranges(options, json_cache);
+    auto f = make_ready_future<update_parameters::prefetch_data>(spec.s);
+
+    if (spec.is_counter()) {
+        db::validate_counter_for_write(*spec.s, cl);
+    } else {
+        db::validate_for_write(cl);
+    }
+
+    if (spec.requires_read()) {
+        lw_shared_ptr<query::read_command> cmd = read_command(spec, qp, ranges, cl);
+        // FIXME: ignoring "local"
+        f = qp.proxy().query(spec.s, cmd, dht::partition_range_vector(keys), cl,
+                {timeout, qs.get_permit(), qs.get_client_state(), qs.get_trace_state()}).then(
+
+                [&spec, cmd] (auto cqr) {
+
+            return update_parameters::build_prefetch_data(spec.s, *cqr.query_result, cmd->slice);
+        });
+    }
+
+    return f.then([&spec, keys = std::move(keys), ranges = std::move(ranges), json_cache = std::move(json_cache), &options, now]
+            (auto rows) {
+        return spec.build_mutations(options, spec.get_timestamp(now, options), keys, ranges, json_cache, std::move(rows));
+    });
 }
 
 struct modification_statement_executor {
@@ -251,7 +235,7 @@ future<coordinator_result<>>
 modification_statement::execute_without_condition(query_processor& qp, service::query_state& qs, const query_options& options, json_cache_opt& json_cache, std::vector<dht::partition_range> keys, db::large_data_violation_type* violations) const {
     auto cl = options.get_consistency();
     auto timeout = db::timeout_clock::now() + get_timeout(qs.get_client_state(), options);
-    return get_mutations(qp, options, timeout, false, options.get_timestamp(qs), qs, json_cache, std::move(keys)).then([this, cl, timeout, &qp, &qs, &options, violations] (auto mutations) {
+    return get_mutations(*this, qp, options, timeout, false, options.get_timestamp(qs), qs, json_cache, std::move(keys)).then([this, cl, timeout, &qp, &qs, &options, violations] (auto mutations) {
         if (mutations.empty()) {
             return make_ready_future<coordinator_result<>>(bo::success());
         }
@@ -557,10 +541,6 @@ audit::statement_category modification_statement::category() const {
 void
 bool modification_statement::is_conditional() const {
     return has_conditions();
-}
-
-modification_statement::json_cache_opt modification_statement::maybe_prepare_json_cache(const query_options& options) const {
-    return {};
 }
 
 const statement_type statement_type::INSERT = statement_type(statement_type::type::insert);

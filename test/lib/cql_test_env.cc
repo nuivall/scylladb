@@ -331,7 +331,7 @@ public:
         cql3::statements::modification_statement::json_cache_opt json_cache = modif_stmt->maybe_prepare_json_cache(qo);
         std::vector<dht::partition_range> keys = modif_stmt->build_partition_keys(qo, json_cache);
 
-        return modif_stmt->get_mutations(local_qp(), qo, timeout, false, qo.get_timestamp(*qs), *qs, json_cache, keys)
+        return cql3::statements::get_mutations(*modif_stmt, local_qp(), qo, timeout, false, qo.get_timestamp(*qs), *qs, json_cache, keys)
             .finally([qs, modif_stmt = std::move(modif_stmt)] {});
     }
 

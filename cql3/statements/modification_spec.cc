@@ -18,6 +18,7 @@
 #include "cql3/expr/expr-utils.hh"
 #include "cql3/expr/evaluate.hh"
 #include "data_dictionary/data_dictionary.hh"
+#include "mutation/mutation.hh"
 #include "types/collection.hh"
 
 #include <optional>
@@ -296,6 +297,30 @@ void modification_spec::add_operation(std::unique_ptr<operation> op) {
     }
 
     _column_operations.push_back(std::move(op));
+}
+
+utils::chunked_vector<mutation> modification_spec::build_mutations(const query_options& options,
+        api::timestamp_type ts, const std::vector<dht::partition_range>& keys,
+        const std::vector<query::clustering_range>& ranges, const json_cache_opt& json_cache,
+        update_parameters::prefetch_data rows) const {
+    const update_parameters params(s, options, ts, get_time_to_live(options), std::move(rows));
+    return apply_updates(keys, ranges, params, json_cache);
+}
+
+utils::chunked_vector<mutation> modification_spec::make_mutations(
+        const std::vector<dht::partition_range>& keys) const {
+
+    utils::chunked_vector<mutation> mutations;
+    mutations.reserve(keys.size());
+    for (auto key : keys) {
+        // We know key.start() must be defined since we only allow EQ relations on the partition key.
+        mutations.emplace_back(s, std::move(*key.start()->value().key()));
+    }
+    return mutations;
+}
+
+modification_spec::json_cache_opt modification_spec::maybe_prepare_json_cache(const query_options& options) const {
+    return {};
 }
 
 void modification_spec::reject_in_relations_with_conditions(bool key_is_in_relation, bool clustering_key_has_IN) const {
