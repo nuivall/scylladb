@@ -795,9 +795,16 @@ class TestTTLWithMigrate(Tester):
     # timeuuid based identifier was introduced in Cassandra 4.1. so we cannot test it with
     # Cassandra 3.x. see @jira_ticket CASSANDRA-17048
     @pytest.mark.skip_if(with_feature("tablets"))
-    # Cassandra has to be able to read what Scylla wrote: UUID sstable
-    # identifiers and dictionary-compressed blocks are both Scylla-only.
-    @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False, sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"})
+    # Cassandra has to be able to read what Scylla wrote, and three of Scylla's
+    # defaults are its own: the mt sstable format is the trie index Cassandra
+    # has never heard of (me is the Cassandra-compatible one), UUID sstable
+    # identifiers are not in its filename grammar, and it has no
+    # LZ4WithDictsCompressor.
+    @pytest.mark.cluster_options(
+        sstable_format="me",
+        uuid_sstable_identifiers_enabled=False,
+        sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"},
+    )
     def test_big_table_with_ttls(self, request):  # noqa: PLR0915
         """
         Test validates migration from Scylla to Cassandra of large partition table with TTLs.
