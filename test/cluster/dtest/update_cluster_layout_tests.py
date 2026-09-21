@@ -69,14 +69,6 @@ from tools.status import (
 
 logger = logging.getLogger(__name__)
 
-_IP_CHANGE_UNSUPPORTED_REASON = ("changing a running node's IP in place (mutating ScyllaNode.network_interfaces "
-                                  "and restarting) is not supported by the Manager-backed in-tree ccmlib shim, "
-                                  "which owns each server's address via test.pylib.scylla_cluster_manager; real ccm "
-                                  "nodes own their own loopback-alias IP so this works there. "
-                                  "ManagerClient.server_change_ip()/server_change_rpc_address() exist upstream and "
-                                  "could be wired into ScyllaNode as a real fix; ScyllaCluster also has no "
-                                  "get_ipprefix()")
-
 
 def generate_test_name(val):
     if isinstance(val, bool):
@@ -2587,7 +2579,6 @@ class TestUpdateClusterLayout(Tester):
                     time.sleep(1)
                     continue
 
-    @pytest.mark.skip_env(reason=_IP_CHANGE_UNSUPPORTED_REASON)
     @pytest.mark.parametrize("rf", [2, 3], ids=["rack=rf=2", "rack=rf=3"])
     def test_change_node_ip(self, rf):
         """
@@ -2618,10 +2609,7 @@ class TestUpdateClusterLayout(Tester):
         target_node.stop()
 
         logger.debug(f"Change IP address for {target_node.name}")
-        ip_prefix = cluster.get_ipprefix()
-        new_ip = f"{ip_prefix}33"
-        target_node.set_configuration_options(values={"listen_address": new_ip, "rpc_address": new_ip, "api_address": new_ip})
-        target_node.network_interfaces = {k: (new_ip, v[1]) for k, v in target_node.network_interfaces.items()}
+        new_ip = target_node.change_ip()
         logger.debug(f"Start target node {target_node.name} again with ip address {new_ip}")
 
         target_node.start(wait_for_binary_proto=True, wait_other_notice=False)
@@ -2643,7 +2631,6 @@ class TestUpdateClusterLayout(Tester):
             query_c1c2(session, k, ConsistencyLevel.ONE, ks="ks1")
             query_c1c2(session, k, consistency_level, ks=f"ks{rf}")
 
-    @pytest.mark.skip_env(reason=_IP_CHANGE_UNSUPPORTED_REASON)
     def test_decommission_after_changing_node_ip(self):
         """Changes to cluster topology after node ip changed"""
 
@@ -2658,9 +2645,7 @@ class TestUpdateClusterLayout(Tester):
 
         logger.info("replace node3 address")
         old_ip3 = node3.address()
-        ip3 = f"{old_ip3}3"
-        node3.set_configuration_options(values={"listen_address": ip3, "rpc_address": ip3, "api_address": ip3})
-        node3.network_interfaces = {k: (ip3, v[1]) for k, v in node3.network_interfaces.items()}
+        ip3 = node3.change_ip()
 
         logger.info("decommission node3")
         node3.start(wait_for_binary_proto=False, wait_other_notice=True)
@@ -2764,7 +2749,6 @@ class TestUpdateClusterLayout(Tester):
                 verify_data(session, consistency_level=ConsistencyLevel.ONE)
             cluster.start_nodes(other_nodes, wait_other_notice=True)
 
-    @pytest.mark.skip_env(reason=_IP_CHANGE_UNSUPPORTED_REASON)
     def test_replace_after_changing_node_ip(self):
         """Changes to cluster topology after node ip changed"""
 
@@ -2780,9 +2764,7 @@ class TestUpdateClusterLayout(Tester):
 
         logger.info("replace node3 address")
         old_ip3 = node3.address()
-        ip3 = f"{old_ip3}3"
-        node3.set_configuration_options(values={"listen_address": ip3, "rpc_address": ip3, "api_address": ip3})
-        node3.network_interfaces = {k: (ip3, v[1]) for k, v in node3.network_interfaces.items()}
+        ip3 = node3.change_ip()
         node3.start(wait_for_binary_proto=True, wait_other_notice=True)
 
         logger.info("stop node3")
@@ -2806,7 +2788,6 @@ class TestUpdateClusterLayout(Tester):
         node4 = new_node(cluster, bootstrap=True, token=None, remote_debug_port="0", data_center=node3.data_center, rack=node3.rack)
         node4.start(wait_for_binary_proto=True, replace_node_host_id=node3_host_id)
 
-    @pytest.mark.skip_env(reason=_IP_CHANGE_UNSUPPORTED_REASON)
     def test_change_node_ip_full_cluster_down(self):
         """
         Start 3 nodes
@@ -2833,16 +2814,10 @@ class TestUpdateClusterLayout(Tester):
 
         cluster.stop()
 
-        ip_prefix = cluster.get_ipprefix()
         for node in cluster.nodelist():
             old_ip = node.address()
-            lower_ip = int(old_ip.split(".")[-1]) + 10
-            assert lower_ip < 255
-            last = str(lower_ip)
-            ip = f"{ip_prefix}{last}"
-            logger.debug(f"Change IP address for {node.name} from {old_ip} to {ip}")
-            node.set_configuration_options(values={"listen_address": ip, "rpc_address": ip, "api_address": ip})
-            node.network_interfaces = {k: (ip, v[1]) for k, v in node.network_interfaces.items()}
+            ip = node.change_ip()
+            logger.debug(f"Changed IP address for {node.name} from {old_ip} to {ip}")
 
         for node in cluster.nodelist():
             logger.debug(f"Start {node.name} again with ip address {node.address()}")
