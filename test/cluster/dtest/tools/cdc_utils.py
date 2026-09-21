@@ -9,7 +9,7 @@ from typing import Union
 from cassandra import ConsistencyLevel
 from cassandra.cluster import SimpleStatement
 
-from dtest_class import Tester, wait_for
+from test.cluster.dtest.dtest_class import Tester, wait_for
 
 logger = logging.getLogger(__name__)
 
