@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 """
 Test cases for ScyllaDB backup and restore operations using the API.
 
@@ -27,8 +33,6 @@ from tools.files import get_node_cf_dir, get_sstables_files
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestBackupRestoreObjectStorage(Tester, ManagerBackupMixin, ScyllaManagerMixin):
     @pytest.fixture(params=["s3", "gcs"], scope="function", autouse=True)
     def setup_backend(self, request):
