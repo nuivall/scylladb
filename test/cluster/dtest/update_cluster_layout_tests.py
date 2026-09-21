@@ -2353,7 +2353,7 @@ class TestUpdateClusterLayout(Tester):
 
         # Replacing node3 with node4
         logger.debug("Starting node 4 to replace node 3")
-        node4 = new_node(cluster, bootstrap=True, token=None, remote_debug_port="0", data_center=node3.data_center, rack=node3.rack)
+        node4 = new_node(cluster, bootstrap=True, data_center=node3.data_center, rack=node3.rack)
         node4.start(wait_for_binary_proto=True, replace_node_host_id=node3_host_id)
         session = self.patient_cql_connection(node4)
         session.execute("use ks;")
@@ -2591,7 +2591,7 @@ class TestUpdateClusterLayout(Tester):
         cluster = self.cluster
         cluster_topology = generate_cluster_topology(dc_num=1, rack_num=rf, nodes_per_rack=1)
         cluster.set_configuration_options(values=self.default_config_options(), batch_commitlog=True)
-        cluster.populate(cluster_topology).start()
+        cluster.populate(cluster_topology).start(wait_for_binary_proto=True, wait_other_notice=True)
         node1 = cluster.nodelist()[0]
         target_node = cluster.nodelist()[-1]
         consistency_level = {2: ConsistencyLevel.TWO, 3: ConsistencyLevel.THREE}[rf]
@@ -2654,7 +2654,11 @@ class TestUpdateClusterLayout(Tester):
 
         def is_shutdown(endpoint=old_ip3):
             found = False
+            # The decommissioned node shuts itself down, so only the nodes still
+            # in the cluster can be asked what gossip says about the old address.
             for node in cluster.nodelist():
+                if not node.is_running():
+                    continue
                 gs = nodetool_gossipinfo(node)
                 if endpoint in gs:
                     logger.debug(gs[endpoint])
@@ -2666,7 +2670,7 @@ class TestUpdateClusterLayout(Tester):
         wait_for(is_shutdown, step=10, timeout=timeout)
 
         logger.info("add new node4")
-        node4 = cluster.new_node(4, data_center=node3.data_center, rack=node3.rack)
+        node4 = new_node(cluster, data_center=node3.data_center, rack=node3.rack)
         node4.start(wait_for_binary_proto=True)
         logger.info("done")
 
@@ -2785,7 +2789,7 @@ class TestUpdateClusterLayout(Tester):
         wait_for(is_shutdown, step=10, timeout=timeout)
 
         logger.info("Replace node3 with node4")
-        node4 = new_node(cluster, bootstrap=True, token=None, remote_debug_port="0", data_center=node3.data_center, rack=node3.rack)
+        node4 = new_node(cluster, bootstrap=True, data_center=node3.data_center, rack=node3.rack)
         node4.start(wait_for_binary_proto=True, replace_node_host_id=node3_host_id)
 
     def test_change_node_ip_full_cluster_down(self):
@@ -2800,7 +2804,7 @@ class TestUpdateClusterLayout(Tester):
 
         cluster.set_configuration_options(values=self.default_config_options(), batch_commitlog=True)
         cluster_topology = generate_cluster_topology(dc_num=1, rack_num=3, nodes_per_rack=1)
-        cluster.populate(cluster_topology).start()
+        cluster.populate(cluster_topology).start(wait_for_binary_proto=True, wait_other_notice=True)
         node1, node2, node3 = cluster.nodelist()
 
         session = self.patient_cql_connection(node1)

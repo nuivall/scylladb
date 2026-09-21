@@ -81,7 +81,10 @@ class TestCQL(Tester):
         if not cluster.nodelist():
             rack_layout = generate_rack_topology_based_rf(nodes, rf)
             topology_layout = {"dc1": rack_layout}
-            cluster.populate(topology_layout).start(jvm_args=jvm_args)
+            # ccm's Cluster.start() waits by default; the in-tree shim only waits
+            # when asked, and the multi-node tests here query at QUORUM as soon as
+            # prepare() returns.
+            cluster.populate(topology_layout).start(jvm_args=jvm_args, wait_for_binary_proto=True, wait_other_notice=True)
         node1 = cluster.nodelist()[0]
         time.sleep(0.2)
 
