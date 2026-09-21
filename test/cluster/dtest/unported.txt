@@ -33,7 +33,6 @@ mixed_version_test.py
 nodetool_additional_test.py
 paging_test.py
 repair_additional_test.py
-repair_based_node_operations_test.py
 replace_address_test.py
 reversed_queries_test.py
 rolling_upgrade_test.py

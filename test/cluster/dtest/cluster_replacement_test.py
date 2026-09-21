@@ -14,9 +14,6 @@ from ccmlib.node import Status
 from dtest_class import Tester, create_cf, create_ks
 from dtest_setup import DTestSetup
 
-# repair_based_node_operations_test hasn't been ported out of unported/ yet (another
-# batch's file); reach into it via the namespace package for now. Update this to a
-# plain "from repair_based_node_operations_test..." import once it moves out of unported/.
 from repair_based_node_operations_test import RepairBasedNodeOperationsScenarios
 from tools.cluster import run_rest_api
 from tools.cluster_topology import generate_cluster_topology
@@ -121,7 +118,6 @@ class TestClusterReplacement(Tester):
             self.replace_node_by_add_and_decommission(old_node=node)
         self._verify_data_integrity(n_of_keys)
 
-    @pytest.mark.skip_env(reason="depends on repair_based_node_operations_test.RepairBasedNodeOperationsScenarios, not yet ported out of unported/")
     def test_rolling_cluster_replacement_sequentially_dead_nodes(self):
         cluster = self.cluster
         cluster_topology = generate_cluster_topology(rack_num=2, dc_name_prefix="dc", rack_name_prefix="r")
@@ -137,7 +133,6 @@ class TestClusterReplacement(Tester):
 
         self._verify_data_integrity(n_of_keys)
 
-    @pytest.mark.skip_env(reason="depends on repair_based_node_operations_test.RepairBasedNodeOperationsScenarios, not yet ported out of unported/")
     def test_rolling_cluster_replacement_sequentially_dead_nodes_multi_dc(self, fixture_dtest_setup: DTestSetup):
         fixture_dtest_setup.ignore_log_patterns += ["Could not retrieve CDC streams with timestamp"]
         cluster = self.cluster
@@ -152,7 +147,6 @@ class TestClusterReplacement(Tester):
             cluster.add_seed(new_node)
         self._verify_data_integrity(n_of_keys)
 
-    @pytest.mark.skip_env(reason="depends on repair_based_node_operations_test.RepairBasedNodeOperationsScenarios, not yet ported out of unported/")
     def test_rolling_cluster_replacement_sequentially_dead_nodes_multi_dc_rf_1(self):
         """
         This test uses the network topology strategy to replace a node in a multi dc cluster.
