@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import os
 import pprint
 import shutil
@@ -19,7 +20,6 @@ from tools.snapshots import make_snapshot, restore_snapshot_with_refresh
 PP = pprint.PrettyPrinter(indent=2)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.scylla_cdc
 @pytest.mark.single_node
 class TestCDCSnapshotOperation(Tester, CDCInitializeHelper):
@@ -111,7 +111,6 @@ class TestCDCSnapshotOperation(Tester, CDCInitializeHelper):
     def test_create_snapshot_with_native_type_without_base_rows_delete_preimage_postimage(self):
         self.workflow_with_restore_snapshot_with_refresh(value_type="ascii", preimage_enable=True, postimage_enable=True)
 
-    @pytest.mark.next_gating
     def test_create_snapshot_with_native_type_with_base_rows_delete_preimage_postimage(self):
         self.workflow_with_restore_snapshot_with_refresh(value_type="ascii", preimage_enable=True, postimage_enable=True, with_delete_rows=True)
 
