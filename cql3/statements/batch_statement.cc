@@ -51,7 +51,7 @@ batch_statement::batch_statement(int bound_terms, type type_,
     : cql_statement(timeout_for_type(type_))
     , _bound_terms(bound_terms), _type(type_), _statements(std::move(statements))
     , _attrs(std::move(attrs))
-    , _has_conditions(std::ranges::any_of(_statements, [] (auto&& s) { return s.statement->has_conditions(); }))
+    , _has_conditions(std::ranges::any_of(_statements, [] (auto&& s) { return s.spec->has_conditions(); }))
     , _stats(stats)
 {
     validate();
@@ -75,7 +75,7 @@ batch_statement::batch_statement(type type_,
 
 bool batch_statement::depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const
 {
-    return std::ranges::any_of(_statements, [&ks_name, &cf_name] (auto&& s) { return s.statement->depends_on(ks_name, cf_name); });
+    return std::ranges::any_of(_statements, [&ks_name, &cf_name] (auto&& s) { return s.spec->depends_on(ks_name, cf_name); });
 }
 
 uint32_t batch_statement::get_bound_terms() const
@@ -87,7 +87,7 @@ future<> batch_statement::check_access(query_processor& qp, const service::clien
 {
     return parallel_for_each(_statements.begin(), _statements.end(), [&qp, &state](auto&& s) {
         if (s.needs_authorization) {
-            return s.statement->check_access(qp, state);
+            return s.spec->check_access(state);
         } else {
             return make_ready_future<>();
         }
@@ -110,12 +110,12 @@ void batch_statement::validate()
         }
     }
 
-    bool has_counters = std::ranges::any_of(_statements, [] (auto&& s) { return s.statement->is_counter(); });
-    bool has_non_counters = !std::ranges::all_of(_statements, [] (auto&& s) { return s.statement->is_counter(); });
+    bool has_counters = std::ranges::any_of(_statements, [] (auto&& s) { return s.spec->is_counter(); });
+    bool has_non_counters = !std::ranges::all_of(_statements, [] (auto&& s) { return s.spec->is_counter(); });
     if (timestamp_set && has_counters) {
         throw exceptions::invalid_request_exception("Cannot provide custom timestamp for a BATCH containing counters");
     }
-    if (timestamp_set && std::ranges::any_of(_statements, [] (auto&& s) { return s.statement->is_timestamp_set(); })) {
+    if (timestamp_set && std::ranges::any_of(_statements, [] (auto&& s) { return s.spec->is_timestamp_set(); })) {
         throw exceptions::invalid_request_exception("Timestamp must be set either on BATCH or individual statements");
     }
     if (_type == type::COUNTER && has_non_counters) {
@@ -131,30 +131,30 @@ void batch_statement::validate()
     if (_has_conditions
             && !_statements.empty()
             && (std::ranges::distance(_statements
-                            | std::views::transform([] (auto&& s) { return s.statement->keyspace(); })
+                            | std::views::transform([] (auto&& s) { return s.spec->keyspace(); })
                             | utils::views::unique) != 1
                 || (std::ranges::distance(_statements
-                        | std::views::transform([] (auto&& s) { return s.statement->column_family(); })
+                        | std::views::transform([] (auto&& s) { return s.spec->column_family(); })
                         | utils::views::unique) != 1))) {
         throw exceptions::invalid_request_exception("BATCH with conditions cannot span multiple tables");
     }
     std::optional<bool> raw_counter;
     for (auto& s : _statements) {
-        if (raw_counter && s.statement->is_raw_counter_shard_write() != *raw_counter) {
+        if (raw_counter && s.spec->is_raw_counter_shard_write() != *raw_counter) {
             throw exceptions::invalid_request_exception("Cannot mix raw and regular counter statements in batch");
         }
-        raw_counter = s.statement->is_raw_counter_shard_write();
+        raw_counter = s.spec->is_raw_counter_shard_write();
     }
 }
 
 void batch_statement::validate(query_processor& qp, const service::client_state& state) const
 {
     for (auto&& s : _statements) {
-        s.statement->validate(qp, state);
+        s.spec->validate(state);
     }
 }
 
-const std::vector<batch_statement::single_statement>& batch_statement::get_statements()
+const std::vector<batch_statement::single_statement>& batch_statement::get_statements() const
 {
     return _statements;
 }
@@ -166,13 +166,13 @@ future<utils::chunked_vector<mutation>> batch_statement::get_mutations(query_pro
     mutation_set_type result;
     result.reserve(_statements.size());
     for (size_t i = 0; i != _statements.size(); ++i) {
-        auto&& statement = _statements[i].statement;
-        statement->inc_cql_stats(query_state.get_client_state().is_internal());
+        auto&& spec = _statements[i].spec;
+        spec->inc_cql_stats(query_state.get_client_state().is_internal());
         auto&& statement_options = options.for_statement(i);
         auto timestamp = _attrs->get_timestamp(now, statement_options);
-        modification_statement::json_cache_opt json_cache = statement->maybe_prepare_json_cache(statement_options);
-        std::vector<dht::partition_range> keys = statement->build_partition_keys(statement_options, json_cache);
-        auto more = co_await cql3::statements::get_mutations(*statement, qp, statement_options, timeout, local, timestamp, query_state, json_cache, std::move(keys));
+        modification_spec::json_cache_opt json_cache = spec->maybe_prepare_json_cache(statement_options);
+        std::vector<dht::partition_range> keys = spec->build_partition_keys(statement_options, json_cache);
+        auto more = co_await cql3::statements::get_mutations(*spec, qp, statement_options, timeout, local, timestamp, query_state, json_cache, std::move(keys));
 
         for (auto&& m : more) {
             // We want unordered_set::try_emplace(), but we don't have it
@@ -276,7 +276,7 @@ future<shared_ptr<cql_transport::messages::result_message>> batch_statement::do_
     }
 
     for (size_t i = 0; i < _statements.size(); ++i) {
-        _statements[i].statement->validate_primary_key(options.for_statement(i));
+        _statements[i].spec->validate_primary_key(options.for_statement(i));
     }
 
     if (_has_conditions) {
@@ -379,33 +379,33 @@ future<shared_ptr<cql_transport::messages::result_message>> batch_statement::exe
 
     for (size_t i = 0; i < _statements.size(); ++i) {
 
-        modification_statement& statement = *_statements[i].statement;
+        modification_spec& spec = *_statements[i].spec;
         const query_options& statement_options = options.for_statement(i);
 
-        statement.inc_cql_stats(qs.get_client_state().is_internal());
-        modification_statement::json_cache_opt json_cache = statement.maybe_prepare_json_cache(statement_options);
+        spec.inc_cql_stats(qs.get_client_state().is_internal());
+        modification_spec::json_cache_opt json_cache = spec.maybe_prepare_json_cache(statement_options);
         // At most one key
-        std::vector<dht::partition_range> keys = statement.build_partition_keys(statement_options, json_cache);
+        std::vector<dht::partition_range> keys = spec.build_partition_keys(statement_options, json_cache);
         if (keys.empty()) {
             continue;
         }
         if (!request) {
-            schema = statement.s;
+            schema = spec.s;
             request = std::make_unique<cas_request>(schema, std::move(keys));
         } else if (keys.size() != 1 || keys.front().equal(request->key().front(), dht::ring_position_comparator(*schema)) == false) {
             throw exceptions::invalid_request_exception("BATCH with conditions cannot span multiple partitions");
         }
         cached_fn_calls.merge(std::move(const_cast<cql3::query_options&>(statement_options).take_cached_pk_function_calls()));
 
-        std::vector<query::clustering_range> ranges = statement.create_clustering_ranges(statement_options, json_cache);
+        std::vector<query::clustering_range> ranges = spec.create_clustering_ranges(statement_options, json_cache);
 
-        request->add_row_update(statement.spec(), std::move(ranges), std::move(json_cache), statement_options);
+        request->add_row_update(spec, std::move(ranges), std::move(json_cache), statement_options);
     }
     if (!request) {
         throw exceptions::invalid_request_exception(format("Unrestricted partition key in a conditional BATCH"));
     }
 
-    auto cas_shard = service::cas_shard(*_statements[0].statement->s, request->key()[0].start()->value().as_decorated_key().token());
+    auto cas_shard = service::cas_shard(*_statements[0].spec->s, request->key()[0].start()->value().as_decorated_key().token());
     if (!cas_shard.this_shard()) {
         return make_ready_future<shared_ptr<cql_transport::messages::result_message>>(
                 qp.bounce_to_shard(cas_shard.shard(), std::move(cached_fn_calls))
@@ -430,7 +430,7 @@ void batch_statement::build_cas_result_set_metadata() {
     if (_statements.empty()) {
         return;
     }
-    const auto& schema = *_statements.front().statement->s;
+    const auto& schema = *_statements.front().spec->s;
 
     _columns_of_cas_result_set.resize(schema.all_columns_count());
 
@@ -445,7 +445,7 @@ void batch_statement::build_cas_result_set_metadata() {
         _columns_of_cas_result_set.set(def.ordinal_id);
     }
     for (const auto& s : _statements) {
-        _columns_of_cas_result_set.union_with(s.statement->columns_of_cas_result_set());
+        _columns_of_cas_result_set.union_with(s.spec->columns_of_cas_result_set());
     }
     columns.reserve(_columns_of_cas_result_set.count());
     for (const auto& def : schema.all_columns()) {
@@ -481,17 +481,17 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
             have_multiple_cfs |= first_ks.value() != parsed->keyspace();
             have_multiple_cfs |= first_cf.value() != parsed->column_family();
         }
-        auto statement = parsed->prepare(db, meta, stats);
+        auto spec = parsed->prepare(db, meta, stats);
         if (strong_consistency::is_strongly_consistent(db, parsed->keyspace())) {
             has_sc_statements = true;
         } else {
             has_non_sc_statements = true;
         }
-        if (auto* audit_info = statement->get_audit_info()) {
+        if (auto* audit_info = spec->audit_info()) {
             audit_info->set_query_string(parsed->get_raw_cql());
             batch_audit_infos.emplace_back(*audit_info);
         }
-        statements.emplace_back(std::move(statement));
+        statements.emplace_back(std::move(spec));
     }
     if (has_sc_statements && has_non_sc_statements) {
         throw exceptions::invalid_request_exception("Cannot mix strongly consistent and eventually consistent statements in a batch");
@@ -502,15 +502,12 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
 
     std::vector<uint16_t> partition_key_bind_indices;
     if (!have_multiple_cfs && !statements.empty()) {
-        partition_key_bind_indices = meta.get_partition_key_bind_indexes(*statements[0].statement->s);
+        partition_key_bind_indices = meta.get_partition_key_bind_indexes(*statements[0].spec->s);
     }
 
     shared_ptr<cql_statement> statement;
     if (has_sc_statements) {
-        auto sc_statements = statements | std::views::as_rvalue | std::views::transform([] (auto&& s) {
-            return strong_consistency::batch_statement::single_statement{::make_shared<strong_consistency::modification_statement>(std::move(s.statement))};
-        }) | std::ranges::to<std::vector>();
-        statement = ::make_shared<strong_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(sc_statements), std::move(prep_attrs));
+        statement = ::make_shared<strong_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs));
     } else {
         statement = ::make_shared<cql3::statements::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
     }

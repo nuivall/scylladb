@@ -30,7 +30,7 @@ class query_processor;
 
 namespace statements {
 
-class modification_statement;
+class modification_spec;
 
 /**
  * A <code>BATCH</code> statement parsed from a CQL query.
@@ -41,16 +41,19 @@ class batch_statement : public cql_statement {
 public:
     using type = raw::batch_statement::type;
 
+    // One modification of the batch, and whether the client still has to be
+    // authorized for it - a prepared statement it has already been authorized
+    // for does not need checking again.
     struct single_statement {
-        shared_ptr<modification_statement> statement;
+        shared_ptr<modification_spec> spec;
         bool needs_authorization = true;
 
     public:
-        single_statement(shared_ptr<modification_statement> s)
-            : statement(std::move(s))
+        single_statement(shared_ptr<modification_spec> s)
+            : spec(std::move(s))
         {}
-        single_statement(shared_ptr<modification_statement> s, bool na)
-            : statement(std::move(s))
+        single_statement(shared_ptr<modification_spec> s, bool na)
+            : spec(std::move(s))
             , needs_authorization(na)
         {}
     };
@@ -114,7 +117,7 @@ public:
     //   or in QueryProcessor.processBatch() - for native protocol batches.
     virtual void validate(query_processor& qp, const service::client_state& state) const override;
 
-    const std::vector<single_statement>& get_statements();
+    const std::vector<single_statement>& get_statements() const;
 private:
     future<utils::chunked_vector<mutation>> get_mutations(query_processor& qp, const query_options& options, db::timeout_clock::time_point timeout,
             bool local, api::timestamp_type now, service::query_state& query_state) const;

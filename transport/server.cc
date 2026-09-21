@@ -1965,14 +1965,13 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
     }
 
     size_t batch_size = 0;
-    std::vector<cql3::statements::batch_statement::single_statement> modifications; // used only for EC batches
-    std::vector<cql3::statements::strong_consistency::batch_statement::single_statement> sc_modifications; // used only for SC batches
+    size_t sc_batch_size = 0;
+    std::vector<cql3::statements::batch_statement::single_statement> modifications;
     std::vector<std::reference_wrapper<const audit::audit_info>> batch_audit_infos;
     std::vector<cql3::raw_value_view_vector_with_unset> values;
     std::unordered_map<cql3::prepared_cache_key_type, cql3::authorized_prepared_statements_cache::value_type> pending_authorization_entries;
 
     modifications.reserve(n.assume_value());
-    sc_modifications.reserve(n.assume_value());
     batch_audit_infos.reserve(n.assume_value());
     values.reserve(n.assume_value());
     bool is_sc = false;
@@ -2052,7 +2051,8 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
         }
 
         if (sc_statement) {
-            sc_modifications.emplace_back(std::move(sc_statement), needs_authorization);
+            modifications.emplace_back(sc_statement->shared_spec(), needs_authorization);
+            ++sc_batch_size;
         } else {
             modifications.emplace_back(std::move(modif_statement_ptr), needs_authorization);
         }
@@ -2102,11 +2102,11 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
     }
     ::shared_ptr<cql3::cql_statement> statement;
     if (is_sc) {
-        if (sc_modifications.size() != batch_size) {
+        if (sc_batch_size != batch_size) {
             return make_exception_future<cql_server::process_fn_return_type>(
                 exceptions::invalid_request_exception("Cannot mix strongly consistent and eventually consistent statements in a batch"));
         }
-        statement = ::make_shared<cql3::statements::strong_consistency::batch_statement>(cql3::statements::batch_statement::type(type.assume_value()), std::move(sc_modifications), cql3::attributes::none());
+        statement = ::make_shared<cql3::statements::strong_consistency::batch_statement>(cql3::statements::batch_statement::type(type.assume_value()), std::move(modifications), cql3::attributes::none());
     } else {
         statement = ::make_shared<cql3::statements::batch_statement>(cql3::statements::batch_statement::type(type.assume_value()), std::move(modifications), cql3::attributes::none(), qp.local().get_cql_stats());
     }

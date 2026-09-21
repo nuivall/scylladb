@@ -7,6 +7,7 @@
  */
 
 #include "batch_statement.hh"
+#include "cql3/statements/strong_consistency/modification_statement.hh"
 
 #include "db/timeout_clock.hh"
 #include "transport/messages/result_message.hh"
@@ -67,7 +68,7 @@ future<shared_ptr<result_message>> batch_statement::execute_without_checking_exc
     all_keys.reserve(_statements.size());
 
     for (size_t i = 0; i < _statements.size(); ++i) {
-        const modification_spec& stmt = _statements[i].statement->spec();
+        const modification_spec& stmt = *_statements[i].spec;
         const auto& statement_options = options.for_statement(i);
         stmt.validate_primary_key(statement_options);
         auto json_cache = stmt.maybe_prepare_json_cache(statement_options);
@@ -95,7 +96,7 @@ future<shared_ptr<result_message>> batch_statement::execute_without_checking_exc
         [&](api::timestamp_type ts) {
             std::optional<mutation> merged;
             for (size_t i = 0; i < _statements.size(); ++i) {
-                auto m = build_mutation(_statements[i].statement->spec(), options.for_statement(i), ts,
+                auto m = build_mutation(*_statements[i].spec, options.for_statement(i), ts,
                     all_keys[i].json_cache, all_keys[i].keys);
                 if (!merged) {
                     merged = std::move(m);
@@ -121,7 +122,7 @@ future<shared_ptr<result_message>> batch_statement::execute_without_checking_exc
 future<> batch_statement::check_access(query_processor& qp, const service::client_state& state) const {
     return parallel_for_each(_statements.begin(), _statements.end(), [&qp, &state] (auto&& s) {
         if (s.needs_authorization) {
-            return s.statement->check_access(qp, state);
+            return s.spec->check_access(state);
         } else {
             return make_ready_future<>();
         }
@@ -133,7 +134,7 @@ uint32_t batch_statement::get_bound_terms() const {
 }
 
 bool batch_statement::depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const {
-    return std::ranges::any_of(_statements, [&ks_name, &cf_name] (auto&& s) { return s.statement->depends_on(ks_name, cf_name); });
+    return std::ranges::any_of(_statements, [&ks_name, &cf_name] (auto&& s) { return s.spec->depends_on(ks_name, cf_name); });
 }
 
 void batch_statement::validate() const {
@@ -150,7 +151,7 @@ void batch_statement::validate() const {
 
     schema_ptr batch_schema;
     for (const auto& s: _statements) {
-        const modification_spec& stmt = s.statement->spec();
+        const modification_spec& stmt = *s.spec;
         if (!batch_schema) {
             batch_schema = stmt.s;
         } else if (batch_schema != stmt.s) {
@@ -161,7 +162,7 @@ void batch_statement::validate() const {
 
 void batch_statement::validate(query_processor& qp, const service::client_state& state) const {
     for (const auto& s: _statements) {
-        s.statement->validate(qp, state);
+        s.spec->validate(state);
     }
 }
 
