@@ -12,7 +12,7 @@
 #include "cql3/statements/modification_spec.hh"
 #include "cql3/attributes.hh"
 #include "cql3/operation.hh"
-#include "cql3/query_processor.hh"
+#include "service/client_state.hh"
 #include "cql3/result_set.hh"
 #include "cql3/selection/selection.hh"
 #include "cql3/expr/expr-utils.hh"
@@ -98,7 +98,7 @@ std::optional<gc_clock::duration> modification_spec::get_time_to_live(const quer
     return ttl ? std::make_optional<gc_clock::duration>(*ttl) : std::nullopt;
 }
 
-future<> modification_spec::check_access(query_processor& qp, const service::client_state& state) const {
+future<> modification_spec::check_access(const service::client_state& state) const {
     auto f = state.has_column_family_access(keyspace(), column_family(), auth::permission::MODIFY);
     if (has_conditions()) {
         f = f.then([this, &state] {
@@ -250,7 +250,7 @@ void modification_spec::build_cas_result_set_metadata() {
     _cas_result_metadata = seastar::make_shared<cql3::metadata>(std::move(columns));
 }
 
-modification_spec::validate(query_processor&, const service::client_state& state) const {
+modification_spec::validate(const service::client_state& state) const {
     if (has_conditions() && attrs->is_timestamp_set()) {
         throw exceptions::invalid_request_exception("Cannot provide custom timestamp for conditional updates");
     }

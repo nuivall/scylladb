@@ -29,7 +29,6 @@ class query_state;
 
 namespace cql3 {
 
-class query_processor;
 class query_options;
 class attributes;
 class operation;
@@ -148,10 +147,10 @@ public:
 
     db::timeout_clock::duration get_timeout(const service::client_state& state, const query_options& options) const;
 
-    future<> check_access(query_processor& qp, const service::client_state& state) const;
+    future<> check_access(const service::client_state& state) const;
 
     // Validate before execute, using client state and current schema
-    void validate(query_processor&, const service::client_state& state) const;
+    void validate(const service::client_state& state) const;
 
     bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const;
 

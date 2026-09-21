@@ -61,7 +61,7 @@ uint32_t modification_statement::get_bound_terms() const {
 }
 
 future<> modification_statement::check_access(query_processor& qp, const service::client_state& state) const {
-    return spec().check_access(qp, state);
+    return spec().check_access(state);
 }
 
 bool modification_statement::depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const {
@@ -73,7 +73,7 @@ bool modification_statement::should_reclassify_control_connection() const {
 }
 
 void modification_statement::validate(query_processor& qp, const service::client_state& state) const {
-    spec().validate(qp, state);
+    spec().validate(state);
 }
 
 seastar::shared_ptr<const metadata> modification_statement::get_result_metadata() const {
