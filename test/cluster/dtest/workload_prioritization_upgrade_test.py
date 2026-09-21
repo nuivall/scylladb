@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 
 import pytest
@@ -56,7 +62,6 @@ def query_runs_in_scheduling_group(client, sg):
     return semaphore_events > 0
 
 
-@pytest.mark.dtest_full
 class TestWorkloadPrioritizationUpgrade(UpgradeTester):
     __test__ = True
     _multiprocess_can_split_ = False
@@ -135,7 +140,8 @@ class TestWorkloadPrioritizationUpgrade(UpgradeTester):
                     text=f"Waiting for a query of {role} to run under {sg} scheduling group",
                 )
 
-    @pytest.mark.next_gating
+    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ScyllaNode.upgrade() is not implemented by the "
+                                  "in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     def test_workload_prioritization_after_upgrade(self, dtest_config):
         self.clone_upgrade_path(dtest_config)
         config = {
