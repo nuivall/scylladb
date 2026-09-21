@@ -16,6 +16,7 @@ from pathlib import Path
 from pprint import pformat
 from time import sleep
 from typing import Literal
+from urllib.parse import urlparse
 
 import boto3
 import pytest
@@ -66,10 +67,13 @@ class ManagerBackupMixin:
         """
 
         server: Storage = await object_storage_factory("s3" if self.backend == "s3" else "gs")
+        # Host and port are set for both backends: the config dicts below are
+        # literals, so every branch of them is evaluated whichever backend runs.
         self.storage_endpoint_url = server.address
+        endpoint = urlparse(server.address)
+        self.storage_endpoint_host = endpoint.hostname
+        self.storage_endpoint_port = endpoint.port
         if self.backend == "s3":
-            self.storage_endpoint_host = server.ip
-            self.storage_endpoint_port = server.port
             self.storage_access_key = server.acc_key
             self.storage_secret_key = server.secret_key
             self.storage_endpoint_client: S3Client = boto3.client(
@@ -79,6 +83,7 @@ class ManagerBackupMixin:
                 endpoint_url=server.address,
             )
         else:
+            self.storage_access_key = self.storage_secret_key = None
             self.storage_endpoint_client = storage.Client(
                 credentials=AnonymousCredentials(),
                 project="test",
