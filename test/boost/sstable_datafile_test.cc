@@ -34,7 +34,6 @@
 #include <seastar/testing/test_case.hh>
 #include "dht/i_partitioner.hh"
 #include "test/lib/mutation_reader_assertions.hh"
-#include "test/lib/s3_fixture.hh"
 #include "test/lib/mutation_assertions.hh"
 #include "mutation/counters.hh"
 #include "test/lib/index_reader_assertions.hh"
@@ -291,8 +290,7 @@ SEASTAR_TEST_CASE(datafile_generation_16) {
     return test_datafile_generation_16({});
 }
 
-SEASTAR_TEST_CASE(datafile_generation_16_s3, *boost::unit_test::precondition(tests::has_scylla_test_env)
-        *seastar::testing::async_fixture<s3_fixture>()) {
+SEASTAR_TEST_CASE(datafile_generation_16_s3, *boost::unit_test::precondition(tests::has_scylla_test_env)) {
     return test_datafile_generation_16(test_env_config{ .storage = make_test_object_storage_options("S3") });
 }
 
@@ -2575,16 +2573,19 @@ static dht::token token_from_long(int64_t value) {
 }
 
 SEASTAR_TEST_CASE(basic_interval_map_testing_for_sstable_set) {
-    // Mirrors the interval map used by partitioned_sstable_set, which is keyed
-    // by biased tokens.
     using value_set = std::unordered_set<int64_t>;
-    using interval_map_type = boost::icl::interval_map<uint64_t, value_set>;
+    using interval_map_type = boost::icl::interval_map<dht::compatible_ring_position_or_view, value_set>;
     using interval_type = interval_map_type::interval_type;
 
     interval_map_type map;
 
+        auto builder = schema_builder(this_smp_shard_count(), "tests", "test")
+                .with_column("id", utf8_type, column_kind::partition_key)
+                .with_column("value", int32_type);
+        auto s = builder.build();
+
     auto make_pos = [&] (int64_t token) {
-        return token_from_long(token).unbias();
+        return dht::compatible_ring_position_or_view(s, dht::ring_position::starting_at(token_from_long(token)));
     };
 
     auto add = [&] (int64_t start, int64_t end, int gen) {
@@ -3223,8 +3224,7 @@ SEASTAR_TEST_CASE(test_sstable_bytes_on_disk_correctness) {
     return test_sstable_bytes_correctness(get_name() + "_disk", {});
 }
 
-SEASTAR_TEST_CASE(test_sstable_bytes_on_s3_correctness,
-        *seastar::testing::async_fixture<s3_fixture>()) {
+SEASTAR_TEST_CASE(test_sstable_bytes_on_s3_correctness) {
     return test_sstable_bytes_correctness(get_name() + "_s3", test_env_config{ .storage = make_test_object_storage_options("S3") });
 }
 

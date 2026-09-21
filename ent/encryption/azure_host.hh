@@ -98,7 +98,6 @@ public:
      * Should precede any calls to the Key Management API.
      */
     future<> init();
-    future<> stop();
     const host_options& options() const;
 
     struct option_override {

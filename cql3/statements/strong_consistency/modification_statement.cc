@@ -36,6 +36,12 @@ future<shared_ptr<result_message>> modification_statement::execute(query_process
             .then(cql_transport::messages::propagate_exception_as_future<shared_ptr<result_message>>);
 }
 
+static void validate_consistency_level(const db::consistency_level& cl) {
+    if (cl != db::consistency_level::QUORUM && cl != db::consistency_level::LOCAL_QUORUM) {
+        throw exceptions::invalid_request_exception("Strongly consistent writes must use QUORUM/LOCAL_QUORUM consistency level");
+    }
+}
+
 mutation modification_statement::get_mutation(const query_options& options, api::timestamp_type ts,
         base_statement::json_cache_opt& json_cache, const std::vector<dht::partition_range>& keys) const {
     const auto prefetch_data = update_parameters::prefetch_data(_statement->s);
@@ -54,8 +60,7 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
         query_processor& qp, service::query_state& qs, const query_options& options,
         std::optional<service::group0_guard> guard) const
 {
-    validate_write_consistency_level(options.get_consistency());
-    _statement->validate_primary_key(options);
+    validate_consistency_level(options.get_consistency());
 
     auto timeout = db::timeout_clock::now() + _statement->get_timeout(qs.get_client_state(), options);
     auto json_cache = _statement->maybe_prepare_json_cache(options);
@@ -90,7 +95,7 @@ future<shared_ptr<result_message>> modification_statement::execute_without_check
         // not be rejected. We don't send any routing information for
         // them, though.
         if (options.get_tablet_version_block().has_value()) {
-            auto& groups_manager = coordinator.get().get_groups_manager();
+            const auto& groups_manager = coordinator.get().get_groups_manager();
             const auto& table = _statement->s->table();
 
             auto maybe_routing_info_v2 = groups_manager.check_tablet_version(table, token, *options.get_tablet_version_block());

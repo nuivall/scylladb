@@ -1299,16 +1299,14 @@ public:
         });
         auto result = co_await ser::join_node_rpc_verbs::send_join_node_request(
                 &_ss._messaging.local(), netw::msg_addr(g0_info.ip_addr), g0_info.id, _req);
-        if (utils::get_local_injector().is_enabled("pre_server_start_drop_expiring")) {
-            co_await utils::get_local_injector().inject("pre_server_start_drop_expiring",
-                    utils::wait_for_message(5min));
-            _ss._gossiper.get_mutable_address_map().force_drop_expiring_entries();
-        }
-
         std::visit(overloaded_functor {
             [this] (const join_node_request_result::ok&) {
                 rtlogger.info("join: request to join placed, waiting"
                              " for the response from the topology coordinator");
+
+                if (utils::get_local_injector().enter("pre_server_start_drop_expiring")) {
+                    _ss._gossiper.get_mutable_address_map().force_drop_expiring_entries();
+                }
 
                 _ss._join_node_request_done.set_value();
             },
@@ -4133,9 +4131,9 @@ future<> storage_service::update_tablet_metadata(const locator::tablet_metadata_
 }
 
 future<locator::tablet_map> storage_service::build_tablet_map_for_migration(
+        locator::token_metadata_ptr tm,
         const locator::static_effective_replication_map_ptr& erm,
         size_t target_pow2) {
-    const auto& tm = erm->get_token_metadata_ptr();
     const auto& sorted_tokens = tm->sorted_tokens();
 
     // Construct token boundaries: union of vnode tokens + optional pow2 boundaries.
@@ -4231,14 +4229,11 @@ future<locator::tablet_map> storage_service::build_tablet_map_for_migration(
 }
 
 future<std::unordered_map<table_id, uint64_t>> storage_service::collect_table_sizes_for_migration(
-    const sstring& ks_name,
-    const locator::static_effective_replication_map_ptr& erm,
+    const locator::token_metadata& tm,
     const locator::tablet_aware_replication_strategy* trs,
     const std::vector<std::pair<table_id, sstring>>& tables_to_estimate) {
 
     std::unordered_map<table_id, uint64_t> table_sizes;
-
-    const auto& tm = *erm->get_token_metadata_ptr();
 
     const auto& local_dc = tm.get_topology().get_location().dc;
     auto local_rf = trs->get_replication_factor(local_dc);
@@ -4249,25 +4244,12 @@ future<std::unordered_map<table_id, uint64_t>> storage_service::collect_table_si
 
     const auto local_host = tm.get_my_id();
 
-    // Compute the token ring fraction for which this node is a replica.
-    // (Same logic as in storage_service::effective_ownership(), but only for a single node.)
     double local_fraction = 0.0;
-    const auto token_ownership = dht::token::describe_ownership(tm.sorted_tokens());
-    const auto ranges = co_await erm->get_ranges(local_host);
-    for (const auto& r : ranges) {
-        // Corner case for wrap-around range:
-        // get_ranges() unwraps the wrapping range (t1, t0] as two ranges
-        // (t1, +inf) and (-inf, t0]. Skipping the former yields the same
-        // ownership as if the range were not split.
-        if (!r.end()) {
-            continue;
+    auto token_ownership = dht::token::describe_ownership(tm.sorted_tokens());
+    for (const auto& [tok, fraction] : token_ownership) {
+        if (tm.get_endpoint(tok) == local_host) {
+            local_fraction += fraction;
         }
-        auto end_token = r.end()->value();
-        auto it = token_ownership.find(end_token);
-        if (it == token_ownership.end()) {
-            on_internal_error(slogger, fmt::format("Cannot find token ownership for token {}", end_token));
-        }
-        local_fraction += it->second;
     }
 
     if (local_fraction <= 0) {
@@ -4275,20 +4257,11 @@ future<std::unordered_map<table_id, uint64_t>> storage_service::collect_table_si
             "Cannot estimate table sizes for migration: local token ownership fraction is {}", local_fraction));
     }
 
-    slogger.info("Estimating table sizes for migration of keyspace {} (dc={}, rf={}): "
-            "this node is a replica for {:.2f}% of the token ring",
-            ks_name, local_dc, local_rf, local_fraction * 100);
-
-    for (const auto& [tid, cf_name] : tables_to_estimate) {
-        // Table statistics are per-shard, so the size of the local dataset is
-        // the sum over all shards.
-        auto local_size = co_await _db.map_reduce0([tid] (replica::database& db) {
-            return uint64_t(db.find_column_family(tid).get_stats().live_disk_space_used.on_disk);
-        }, uint64_t(0), std::plus<uint64_t>());
-        auto estimated_total_size = static_cast<uint64_t>(local_size / local_fraction);
+    for (const auto& [tid, ignored_cf_name] : tables_to_estimate) {
+        auto& cf = _db.local().find_column_family(tid);
+        auto local_size = static_cast<uint64_t>(cf.get_stats().live_disk_space_used.on_disk);
+        auto estimated_total_size = static_cast<uint64_t>(local_size / local_fraction) / local_rf;
         table_sizes.emplace(tid, estimated_total_size);
-        slogger.info("Estimated size of table {}.{}: {} byte(s) (local data set is {} byte(s))",
-                ks_name, cf_name, estimated_total_size, local_size);
     }
 
     co_return table_sizes;
@@ -4385,6 +4358,9 @@ future<> storage_service::prepare_for_tablets_migration(const sstring& ks_name) 
         //  min           P1            P2            P3          max
         //   |------------|-------------|-------------|------------|
 
+        const auto tmptr = get_token_metadata_ptr();
+        const auto& tm = *tmptr;
+
         // Estimate table sizes when pow2 convergence is enabled.
         // The estimates are used by the tablet allocator to determine the
         // target pow2 tablet count per table.
@@ -4399,8 +4375,7 @@ future<> storage_service::prepare_for_tablets_migration(const sstring& ks_name) 
         target_pow2_per_table_map target_pow2s;
         bool use_pow2_presplit = bool(_feature_service.tablet_pow2_convergence);
         if (use_pow2_presplit) {
-            auto erm = ks.get_static_effective_replication_map();
-            auto estimated_sizes = co_await collect_table_sizes_for_migration(ks_name, erm, trs, tables_to_migrate);
+            auto estimated_sizes = co_await collect_table_sizes_for_migration(tm, trs, tables_to_migrate);
             target_pow2s = co_await _tablet_allocator.local().compute_migration_target_pow2s(trs, estimated_sizes);
         }
 
@@ -4439,11 +4414,11 @@ future<> storage_service::prepare_for_tablets_migration(const sstring& ks_name) 
                     if (auto it = target_pow2s.find(tid); it != target_pow2s.end()) {
                         target_pow2 = it->second;
                     }
-                    auto tmap = co_await build_tablet_map_for_migration(erm, target_pow2);
+                    auto tmap = co_await build_tablet_map_for_migration(tmptr, erm, target_pow2);
                     co_await append_tablet_map_mutations(tid, cf_name, tmap, target_pow2);
                 }
             } else {
-                auto shared_tmap = co_await build_tablet_map_for_migration(erm, 0);
+                auto shared_tmap = co_await build_tablet_map_for_migration(tmptr, erm, 0);
                 for (const auto& [tid, cf_name] : tables_to_migrate) {
                     co_await append_tablet_map_mutations(tid, cf_name, shared_tmap, 0);
                 }
@@ -4990,9 +4965,6 @@ future<> storage_service::local_topology_barrier() {
         }
         rtlogger.info("raft_topology_cmd::barrier_and_drain version {}: stale versions released, draining closing sessions", version);
         co_await get_topology_session_manager().drain_closing_sessions();
-
-        rtlogger.debug("raft_topology_cmd::barrier_and_drain version {}: waiting for strongly consistent tablet raft groups to be torn down", version);
-        co_await ss._groups_manager.local_topology_barrier(ss._shared_token_metadata.get(), ss._abort_source);
 
         rtlogger.info("raft_topology_cmd::barrier_and_drain version {}: done", version);
     });
@@ -5729,15 +5701,11 @@ future<> storage_service::cleanup_tablet(locator::global_tablet_id tablet) {
 
     co_await do_tablet_operation(tablet, "Cleanup", [this, tablet] (locator::tablet_metadata_guard& guard) -> future<tablet_operation_result> {
         shard_id shard;
-        std::optional<raft::group_id> group_id;
 
         {
             auto tm = guard.get_token_metadata();
             auto& tmap = guard.get_tablet_map();
             auto *trinfo = tmap.get_tablet_transition_info(tablet.tablet);
-            if (tmap.has_raft_info()) {
-                group_id = tmap.get_tablet_raft_info(tablet.tablet).group_id;
-            }
 
             // Check if the request is still valid.
             // If there is mismatch, it means this cleanup was canceled and the coordinator moved on.
@@ -5766,39 +5734,6 @@ future<> storage_service::cleanup_tablet(locator::global_tablet_id tablet) {
             } else {
                 throw std::runtime_error(fmt::format("Tablet {} stage is not at cleanup/cleanup_target", tablet));
             }
-        }
-        if (group_id) {
-            co_await _groups_manager.container().invoke_on(shard,
-                    [tablet, group_id = *group_id, shard] (strong_consistency::groups_manager& gm) -> future<> {
-                // The raft group of a strongly consistent tablet must be gone before its
-                // storage is cleaned up: nothing may apply raft entries to a tablet whose
-                // compaction groups have been stopped, and a late apply would kill the raft
-                // server's applier fiber, which is a fatal background error.
-                //
-                // groups_manager::update() tears the group down as soon as the stage that
-                // ended this node's membership is published, and the barrier that precedes
-                // this cleanup waits for the teardown to complete. Failing here means that
-                // ordering broke, so fail the cleanup rather than corrupt the tablet - the
-                // coordinator retries it.
-                if (gm.is_group_running(group_id)) {
-                    throw std::runtime_error(fmt::format("Tablet {} still has a running raft group {} on shard {}",
-                            tablet, group_id, shard));
-                }
-
-                // This replica has left the group for good - this is the cleanup of either
-                // the leaving replica or, on the rollback path, the pending one - so its
-                // persisted raft state has to go with the tablet's storage. Left behind, it
-                // would let the node rejoin the group later claiming a commit index whose
-                // entries it no longer holds, and the leader never resends those.
-                //
-                // Before the storage below rather than after, so that no ordering of a
-                // crash in between leaves raft state describing a tablet whose storage is
-                // already gone. It is not a guarantee: system.raft_groups goes through the
-                // ordinary commitlog with periodic sync, so a crash can lose this delete
-                // while the storage removal below survives. What covers that is commitlog
-                // replay refusing a group whose tablet has no replica on the shard.
-                co_await gm.erase_raft_group_state(group_id);
-            });
         }
         co_await _db.invoke_on(shard, [tablet, &sys_ks = _sys_ks, &vbw = _view_building_worker] (replica::database& db) -> future<> {
             auto& table = db.find_column_family(tablet.table);

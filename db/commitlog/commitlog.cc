@@ -57,7 +57,6 @@
 #include "utils/checked-file-impl.hh"
 #include "utils/disk-error-handler.hh"
 #include "utils/labels.hh"
-#include "utils/error_injection.hh"
 
 static logging::logger clogger("commitlog");
 
@@ -2530,22 +2529,8 @@ future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager:
     }
 
     auto s = co_await _reserve_segments.pop_eventually();
-    if (!_segments.empty() && _segments.back()->is_still_allocating()) {
-        // SCYLLADB-4443
-        // If this new_segment was abandoned (timeout), we could finish
-        // after someone else actually added/restored an allocating last
-        // segment. In that case, just return drop it, which will
-        // eventually push it to the reserve and silently return.
-        s = {};
-        co_await do_pending_deletes();
-    } else {
-        _segments.push_back(s);
-        _segments.back()->reset_sync_time();
-    }
-
-    // Signal to sync with test to verify SCYLLADB-4443
-    utils::get_local_injector().receive_message("commitlog_new_segment");
-
+    _segments.push_back(s);
+    _segments.back()->reset_sync_time();
     co_return s;
 }
 

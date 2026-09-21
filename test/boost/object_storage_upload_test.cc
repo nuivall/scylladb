@@ -22,7 +22,6 @@
 #include "utils/upload_progress.hh"
 
 #include "test/lib/test_utils.hh"
-#include "test/lib/s3_fixture.hh"
 #include "test/lib/random_utils.hh"
 #include "test/lib/sstable_test_env.hh"
 #include "test/lib/sstable_utils.hh"
@@ -125,13 +124,11 @@ future<> test_sstable_attributes(test_env_config cfg) {
 
 constexpr auto large_size = 256 * 1024 * 1024 + 351;
 
-SEASTAR_TEST_CASE(test_large_file_upload_s3, *boost::unit_test::precondition(tests::has_scylla_test_env)
-        *seastar::testing::async_fixture<s3_fixture>()) {
+SEASTAR_TEST_CASE(test_large_file_upload_s3, *boost::unit_test::precondition(tests::has_scylla_test_env)) {
     return test_file_upload(test_env_config{ .storage = make_test_object_storage_options("S3") }, large_size);
 }
 
-SEASTAR_TEST_CASE(test_sstable_object_attributes_s3, *boost::unit_test::precondition(tests::has_scylla_test_env)
-        *seastar::testing::async_fixture<s3_fixture>()) {
+SEASTAR_TEST_CASE(test_sstable_object_attributes_s3, *boost::unit_test::precondition(tests::has_scylla_test_env)) {
     return test_sstable_attributes(test_env_config{ .storage = make_test_object_storage_options("S3") });
 }
 

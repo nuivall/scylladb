@@ -55,7 +55,7 @@ std::vector<compaction_descriptor> compaction_strategy_impl::get_cleanup_compact
 
 std::unique_ptr<sstables::sstable_set_impl>
 compaction_strategy_impl::make_sstable_set(const compaction_group_view& ts) const {
-    return std::make_unique<sstables::partitioned_sstable_set>(ts.schema());
+    return std::make_unique<sstables::partitioned_sstable_set>(ts.schema(), ts.token_range());
 }
 
 bool compaction_strategy_impl::worth_dropping_tombstones(const sstables::shared_sstable& sst, gc_clock::time_point compaction_time, const compaction_group_view& t) {
@@ -633,7 +633,7 @@ void leveled_compaction_strategy::validate_options(const std::map<sstring, sstri
     size_tiered_compaction_strategy_options::validate(options, unchecked_options);
 
     auto tmp_value = compaction_strategy_impl::get_value(options, SSTABLE_SIZE_OPTION);
-    auto min_sstables_size = cql3::statements::property_definitions::to_int(SSTABLE_SIZE_OPTION, tmp_value, DEFAULT_MAX_SSTABLE_SIZE_IN_MB);
+    auto min_sstables_size = cql3::statements::property_definitions::to_long(SSTABLE_SIZE_OPTION, tmp_value, DEFAULT_MAX_SSTABLE_SIZE_IN_MB);
     if (min_sstables_size <= 0) {
         throw exceptions::configuration_exception(fmt::format("{} value ({}) must be positive", SSTABLE_SIZE_OPTION, min_sstables_size));
     }
@@ -813,7 +813,7 @@ future<reshape_config> make_reshape_config(const sstables::storage& storage, res
 }
 
 std::unique_ptr<sstables::sstable_set_impl> incremental_compaction_strategy::make_sstable_set(const compaction_group_view& ts) const {
-    return std::make_unique<sstables::partitioned_sstable_set>(ts.schema());
+    return std::make_unique<sstables::partitioned_sstable_set>(ts.schema(), ts.token_range());
 }
 
 }

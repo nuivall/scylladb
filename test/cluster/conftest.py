@@ -18,15 +18,14 @@ from cassandra.cluster import Session
 from cassandra.connection import DRIVER_NAME, DRIVER_VERSION
 
 from test import TOP_SRC_DIR, MODES_TIMEOUT_FACTOR, path_to
-from test.cluster.util import FeatureConfig
 from test.pylib.async_cql import run_async
 from test.pylib.connect_options import add_cql_connection_options, add_s3_options
 from test.pylib.encryption_provider import KeyProvider, make_key_provider_factory
-from test.pylib.object_storage import Storage, StorageFactory, StorageKind, create_gs_server, create_s3_server, format_tuples
+from test.pylib.object_storage import Storage, StorageFactory, StorageKind, create_gs_server, create_s3_server
 from test.pylib.random_tables import RandomTables
 from test.pylib.runner import PHASE_REPORT_KEY, make_failed_test_dir
 from test.pylib.scylla_cluster_manager import ScyllaClusterManager
-from test.pylib.scylla_server import ScyllaVersionDescription, get_scylla_2025_1_description, get_scylla_2026_1_description
+from test.pylib.scylla_server import ScyllaVersionDescription, get_scylla_2025_1_description
 from test.pylib.skip_types import skip_env
 from test.pylib.util import unique_name
 
@@ -291,10 +290,6 @@ def internet_dependency_enabled(request) -> None:
 async def scylla_2025_1(request, build_mode, internet_dependency_enabled) -> AsyncIterator[ScyllaVersionDescription]:
     yield await get_scylla_2025_1_description(build_mode)
 
-@pytest.fixture(scope="function")
-async def scylla_2026_1(request, build_mode, internet_dependency_enabled) -> AsyncIterator[ScyllaVersionDescription]:
-    yield await get_scylla_2026_1_description(build_mode)
-
 @pytest.fixture(scope="function", params=list(KeyProvider))
 async def key_provider(request, tmpdir, suite_log_dir, scylla_binary):
     """Encryption providers fixture"""
@@ -317,22 +312,3 @@ async def storage(request: pytest.FixtureRequest, object_storage_factory: Storag
     if request.param is None:
         return None
     return await object_storage_factory(request.param)
-
-
-@pytest.fixture
-def storage_config(storage: Storage | None) -> FeatureConfig:
-    """Express the storage fixture's backend as a FeatureConfig.
-
-    A test applies the object-storage cluster config and the keyspace STORAGE
-    clause the same way it applies any other configuration, and combines the
-    two by chaining: storage_config.get_cluster_cfg(feature_config.get_cluster_cfg(cfg)).
-    """
-    if storage is None:
-        return FeatureConfig()
-
-    storage_opts = format_tuples(type=storage.type,
-                                 endpoint=storage.address,
-                                 bucket=storage.bucket_name)
-    return FeatureConfig(ks_opts=f" WITH STORAGE = {storage_opts}",
-                         cluster_cfg={'object_storage_endpoints': storage.create_endpoint_conf()},
-                         on_object_storage=True)

@@ -44,13 +44,10 @@ class FeatureConfig:
     - ``table_opts``: appended to the ``CREATE TABLE ...`` statement.
     - ``cluster_cfg``: merged into the per-server config dict passed to
       ``manager.server_add``.
-    - ``on_object_storage``: the keyspace lives on S3 or GCS rather than on the
-      local filesystem.
     """
     ks_opts: str = ""
     table_opts: str = ""
     cluster_cfg: dict = field(default_factory=dict)
-    on_object_storage: bool = False
 
     @property
     def strongly_consistent(self) -> bool:
@@ -60,7 +57,7 @@ class FeatureConfig:
         return "consistency = 'global'" in ' '.join(self.ks_opts.split())
 
 
-    def get_cluster_cfg(self, base: dict | None = None) -> dict:
+    def get_cluster_cfg(self, base: dict) -> dict:
         """Merge a FeatureConfig's cluster_cfg into a test's base config dict.
 
         List-valued keys (e.g. 'experimental_features', 'error_injections_at_startup')
@@ -68,7 +65,7 @@ class FeatureConfig:
         the test already relies on. Other keys overwrite the base value. The base
         dict is not modified; a new merged dict is returned.
         """
-        merged = deepcopy(base or {})
+        merged = deepcopy(base)
         for key, value in self.cluster_cfg.items():
             if isinstance(value, list) and isinstance(merged.get(key), list):
                 merged[key] = merged[key] + [v for v in value if v not in merged[key]]
@@ -297,7 +294,7 @@ async def wait_for_no_pending_topology_transition(manager: ScyllaClusterManager,
             return None
         return True
 
-    await wait_for(no_transition, deadline)
+    await wait_for(no_transition, deadline, period=.5)
 
 
 async def wait_for_no_running_compactions(manager: ScyllaClusterManager,

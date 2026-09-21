@@ -203,7 +203,11 @@ std::pair<stop_iteration, uint64_t> view_update_generator::generate_updates_from
     // Exploit the fact that sstables in the staging directory
     // are usually non-overlapping and use a partitioned set for
     // the read.
-    auto ssts = make_lw_shared<sstables::sstable_set>(sstables::make_partitioned_sstable_set(s));
+    // With tablets, it doesn't matter full range is fed into partitioned set since
+    // there will be usually one sstable to be processed per tablet, and sstables of
+    // different tablets are disjoint.
+    auto token_range = dht::token_range::make(dht::first_token(), dht::last_token());
+    auto ssts = make_lw_shared<sstables::sstable_set>(sstables::make_partitioned_sstable_set(s, std::move(token_range)));
     for (auto& sst : sstables) {
         ssts->insert(sst);
         input_size += sst->data_size();
@@ -415,14 +419,6 @@ future<> view_update_generator::populate_views(const replica::table& table,
                 err = std::make_exception_ptr(std::runtime_error("Timeout a view building update"));
                 continue;
             }
-            // Lets tests interleave reads between the generation of backfill
-            // updates and their application.
-            co_await utils::get_local_injector().inject("populate_views_pause_before_apply",
-                    [] (auto& handler) -> future<> {
-                vug_logger.info("populate_views: paused before applying updates, waiting for message");
-                co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::minutes(2));
-                vug_logger.info("populate_views: released, applying updates");
-            });
             co_await mutate_MV(schema, base_token, std::move(*updates), table.view_stats(), *table.cf_stats(),
                     tracing::trace_state_ptr(), std::move(memory_units), service::allow_hints::no, wait_for_all_updates::yes);
         } catch (...) {
@@ -530,8 +526,6 @@ future<> view_update_generator::generate_and_propagate_view_updates(const replic
         }
 
         try {
-            utils::get_local_injector().inject("view_update_generation_failure",
-                [] { throw std::runtime_error("Error injection: failing view update generation"); });
             co_await mutate_MV(base, base_token, std::move(*updates), table.view_stats(), *table.cf_stats(), tr_state,
                 std::move(memory_units), service::allow_hints::yes, wait_for_all_updates::no);
         } catch (...) {

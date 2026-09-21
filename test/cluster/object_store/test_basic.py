@@ -10,7 +10,7 @@ import json
 import time
 import uuid
 
-from test.pylib.s3mock_server import create_conf
+from test.pylib.minio_server import MinioServer
 from cassandra.protocol import ConfigurationException
 from cassandra.query import SimpleStatement, ConsistencyLevel
 from test.pylib.rest_client import ScyllaMetricsClient
@@ -339,9 +339,9 @@ async def test_memtable_flush_retries(manager: ScyllaClusterManager, tmpdir, obj
 @pytest.mark.parametrize('config_with_full_url', [True, False])
 async def test_get_object_store_endpoints(manager: ScyllaClusterManager, config_with_full_url):
     if config_with_full_url:
-        objconf = create_conf('http://a:123', 'region')
+        objconf = MinioServer.create_conf('http://a:123', 'region')
     else:
-        objconf = create_conf('a', 'region')
+        objconf = MinioServer.create_conf('a', 'region')
         objconf[0]["port"] = 123
         objconf[0]["use_https"] = False
         del objconf[0]["type"]

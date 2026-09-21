@@ -204,7 +204,7 @@ async def do_test_backup_helper(manager: ScyllaClusterManager, object_storage,
         await manager.api.enable_injection(server.ip_addr, breakpoint_name, one_shot=True)
 
         print('Backup snapshot')
-        # use a unique path, because we're running more than one test using the same S3 server and ks/cf name.
+        # use a unique path, because we're running more than one test using the same minio and ks/cf name.
         # If we just use {cf}/backup, files like "schema.cql" and "manifest.json" will remain after previous test
         # case, and we will count these erroneously.
         prefix = unique_name('backup_')
@@ -253,66 +253,6 @@ async def test_backup_is_abortable(manager: ScyllaClusterManager, object_storage
 async def test_backup_is_abortable_in_s3_client(manager: ScyllaClusterManager, object_storage):
     '''check that backing up a snapshot for a keyspace works'''
     await do_test_backup_abort(manager, object_storage, breakpoint_name="backup_task_pre_upload", min_files=0, max_files=1)
-
-
-@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
-async def test_backup_waits_for_sstable_deletion_notification(manager: ScyllaClusterManager, object_storage):
-    '''a backup worker must outlive the sstable-deletion notifications it started
-
-    The sstables_manager signal has a void result, so the slot's future is dropped and
-    worker::deleted_sstable() runs detached. sharded<worker>::stop() therefore destroys
-    the worker while a notification is still on its way to the backup shard, and the
-    cross-shard continuation dereferences freed memory (CUSTOMER-714, SCYLLADB-3029).
-    '''
-
-    objconf = object_storage.create_endpoint_conf()
-    cfg = {'enable_user_defined_functions': False,
-           'object_storage_endpoints': objconf,
-           'task_ttl_in_seconds': 300
-           }
-    cmd = ['--logger-log-level', 'snapshots=trace:task_manager=trace:api=info']
-    server = await manager.server_add(config=cfg, cmdline=cmd)
-    cql = manager.get_cql()
-    cf = 'test_cf'
-    async with new_test_keyspace(manager, "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': '1'}") as ks:
-        await cql.run_async(f"CREATE TABLE {ks}.{cf} ( name text primary key, value text );")
-        await asyncio.gather(*(cql.run_async(f"INSERT INTO {ks}.{cf} ( name, value ) VALUES ('{name}', '{value}');") for name, value in [('0', 'zero'), ('1', 'one'), ('2', 'two')]))
-        snap_name, files = await take_snapshot_on_one_server(ks, server, manager, logger)
-        assert len(files) > 0
-
-        # Keep the upload loop parked so the workers stay alive and subscribed,
-        # and park the first deletion notification that refers to a snapshot sstable.
-        await manager.api.enable_injection(server.ip_addr, "backup_task_pre_upload", one_shot=True)
-        await manager.api.enable_injection(server.ip_addr, "backup_task_deleted_sstable", one_shot=True)
-
-        log = await manager.server_open_log(server.server_id)
-        mark = await log.mark()
-
-        prefix = unique_name('backup_')
-        tid = await manager.api.backup(server.ip_addr, ks, cf, snap_name, object_storage.address, object_storage.bucket_name, prefix)
-        await manager.api.wait_for_injection_enter(server.ip_addr, "backup_task_pre_upload")
-
-        # Retire the snapshotted sstables: add a second one and compact them together.
-        await asyncio.gather(*(cql.run_async(f"INSERT INTO {ks}.{cf} ( name, value ) VALUES ('{name}', '{value}');") for name, value in [('3', 'three'), ('4', 'four')]))
-        await manager.api.flush_keyspace(server.ip_addr, ks)
-        await manager.api.keyspace_compaction(server.ip_addr, ks, cf)
-        await manager.api.wait_for_injection_enter(server.ip_addr, "backup_task_deleted_sstable")
-
-        # Tear the backup down while that notification is still in flight.
-        await manager.api.abort_task(server.ip_addr, tid)
-        await manager.api.message_injection(server.ip_addr, "backup_task_pre_upload")
-
-        # Wait until the task is about to destroy its workers, rather than sleeping.
-        # From here on, stopping the workers must wait for the parked notification.
-        await log.wait_for('backup_task: stopping workers', from_mark=mark)
-        status = await manager.api.get_task_status(server.ip_addr, tid)
-        assert status['state'] == 'running', \
-            f"backup task reached {status['state']} while a deletion notification was still in flight"
-
-        await manager.api.message_injection(server.ip_addr, "backup_task_deleted_sstable")
-        status = await manager.api.wait_task(server.ip_addr, tid)
-        assert (status is not None) and (status['state'] == 'failed')
-
 
 
 @pytest.mark.parametrize("flavor", ['plain', 'abort', 'encrypt', 'view'])
@@ -364,10 +304,8 @@ async def test_simple_backup_and_restore(manager: ScyllaClusterManager, object_s
                             "WHERE value IS NOT NULL AND name IS NOT NULL PRIMARY KEY (value, name)")
             await wait_for_view(cql, view, 1)
 
-        def list_sstables(include_staging=False):
-            table_dir = f'{workdir}/data/{ks}/{cf_dir}'
-            dirs = [table_dir, f'{table_dir}/staging'] if include_staging else [table_dir]
-            return [f for d in dirs for f in os.scandir(d) if f.is_file()]
+        def list_sstables():
+            return [f for f in os.scandir(f'{workdir}/data/{ks}/{cf_dir}') if f.is_file()]
 
         orig_res = cql.execute(f"SELECT * FROM {ks}.{cf}")
         orig_rows = {x.name: x.value for x in orig_res}
@@ -421,11 +359,7 @@ async def test_simple_backup_and_restore(manager: ScyllaClusterManager, object_s
             assert status['progress_completed'] > 0
 
         print('Check that sstables came back')
-        # A restore into a table that has a view streams the sstables with
-        # stream_reason::repair, so they land in staging/ and only move into the table's
-        # own directory once the view update generator has processed them, which is after
-        # the restore task reports done.
-        files = list_sstables(include_staging=with_view)
+        files = list_sstables()
 
         sstable_names = [f'{entry.name}' for entry in files if entry.name.endswith('.db')]
         db_objects = [object for object in objects if object.endswith('.db')]
@@ -1398,60 +1332,6 @@ async def test_restore_tablets_with_different_tablet_hints(build_mode: str, mana
 
         # Verify that restore altered the table back with the tablet hints set before restore started
         desc = (await cql.run_async(f"DESC TABLE {ks}.test"))[0].create_statement
-        assert f"'min_tablet_count': '{min_tablet_count_before_restore}'" in desc, f"Expected min_tablet_count={min_tablet_count_before_restore} in: {desc}"
-        assert f"'max_tablet_count': '{max_tablet_count_before_restore}'" in desc, f"Expected max_tablet_count={max_tablet_count_before_restore} in: {desc}"
-
-
-@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
-async def test_restore_tablets_hints_survive_node_loss(build_mode: str, manager: ScyllaClusterManager, object_storage):
-    '''Check that the tablet hints configured on the table before restore survive the
-    loss of the node driving the restore.
-
-    During tablet-aware restore, the table's tablet hints are pinned to the tablet
-    count from the backup manifest and altered back to their pre-restore values once
-    the restore is done. The pre-restore hints must be persisted before the pinning
-    so that they survive node crashes during restore.'''
-
-    topology = topo(rf = 2, nodes = 4, racks = 2, dcs = 1)
-    servers, host_ids = await create_cluster(topology, manager, logger, object_storage)
-    log = await manager.server_open_log(servers[0].server_id)
-    await log.wait_for("raft_topology - start topology coordinator fiber", timeout=10)
-
-    cql = manager.get_cql()
-
-    num_keys = 24
-    backup_tablet_count = 8
-    min_tablet_count_before_restore = 2
-    max_tablet_count_before_restore = 2
-
-    async with new_test_keyspace(manager, f"WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': {topology.rf}}}") as ks:
-        await cql.run_async(f"CREATE TABLE {ks}.test ( pk text primary key, value int ) WITH tablets = {{'min_tablet_count': {backup_tablet_count}}};")
-        insert_stmt = cql.prepare(f"INSERT INTO {ks}.test (pk, value) VALUES (?, ?)")
-        insert_stmt.consistency_level = ConsistencyLevel.ALL
-        await asyncio.gather(*(cql.run_async(insert_stmt, (str(i), i)) for i in range(num_keys)))
-        snap_name, _ = await take_snapshot(ks, servers, manager, logger)
-        await asyncio.gather(*(do_backup(s, snap_name, f'{s.server_id}/{snap_name}', ks, 'test', object_storage, manager, logger) for s in servers))
-
-    async with new_test_keyspace(manager, f"WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': {topology.rf}}}") as ks:
-        await cql.run_async(f"CREATE TABLE {ks}.test ( pk text primary key, value int ) WITH tablets = {{'min_tablet_count': {min_tablet_count_before_restore}, 'max_tablet_count': {max_tablet_count_before_restore}}};")
-
-        await manager.api.enable_injection(servers[2].ip_addr, "pause_tablet_restore", one_shot=True)
-
-        manifests = [ f'{s.server_id}/{snap_name}/manifest.json' for s in servers ]
-        tid = await manager.api.restore_tablets(servers[1].ip_addr, ks, 'test', snap_name, servers[1].datacenter, object_storage.address, object_storage.bucket_name, manifests)
-        await manager.api.wait_for_injection_enter(servers[2].ip_addr, "pause_tablet_restore", deadline=time.time() + 120)
-
-        await manager.server_stop(servers[1].server_id, convict=True)
-        with pytest.raises(aiohttp.client_exceptions.ClientConnectorError):
-            await manager.api.wait_task(servers[1].ip_addr, tid)
-
-        tid = await manager.api.restore_tablets(servers[3].ip_addr, ks, 'test', snap_name, servers[3].datacenter, object_storage.address, object_storage.bucket_name, manifests)
-        await manager.api.message_injection(servers[2].ip_addr, "pause_tablet_restore")
-        status = await asyncio.wait_for(manager.api.wait_task(servers[3].ip_addr, tid), timeout=120)
-        logger.info(f'Re-issued restore finished with: {status}')
-
-        host3 = (await wait_for_cql_and_get_hosts(cql, [servers[3]], time.time() + 60))[0]
-        desc = (await cql.run_async(f"DESC TABLE {ks}.test", host=host3))[0].create_statement
         assert f"'min_tablet_count': '{min_tablet_count_before_restore}'" in desc, f"Expected min_tablet_count={min_tablet_count_before_restore} in: {desc}"
         assert f"'max_tablet_count': '{max_tablet_count_before_restore}'" in desc, f"Expected max_tablet_count={max_tablet_count_before_restore} in: {desc}"
 

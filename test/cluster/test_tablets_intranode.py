@@ -8,7 +8,7 @@ from cassandra.cluster import Session, ConsistencyLevel
 from test.pylib.scylla_cluster_manager import ScyllaClusterManager
 from test.pylib.util import wait_for_cql_and_get_hosts, start_writes
 from test.pylib.tablets import get_tablet_replica, get_all_tablet_replicas
-from test.cluster.util import new_test_keyspace, FeatureConfig
+from test.cluster.util import new_test_keyspace
 
 
 import pytest
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
-async def test_intranode_migration(manager: ScyllaClusterManager, storage_config: FeatureConfig):
+async def test_intranode_migration(manager: ScyllaClusterManager):
     logger.info("Bootstrapping cluster")
     cmdline = [
         '--logger-log-level', 'storage_service=trace',
@@ -31,15 +31,12 @@ async def test_intranode_migration(manager: ScyllaClusterManager, storage_config
         '--logger-log-level', 'tablets=trace',
         '--logger-log-level', 'database=trace',
     ]
-    cfg = storage_config.get_cluster_cfg()
-    servers = [await manager.server_add(config=cfg, cmdline=cmdline)]
+    servers = [await manager.server_add(cmdline=cmdline)]
 
     await manager.disable_tablet_balancing()
 
     cql = manager.get_cql()
-    keyspace_opts = storage_config.get_keyspace_opts(
-        "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND tablets = {'initial': 1}")
-    async with new_test_keyspace(manager, keyspace_opts) as ks:
+    async with new_test_keyspace(manager, "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND tablets = {'initial': 1}") as ks:
         await cql.run_async(f"CREATE TABLE {ks}.test (pk int PRIMARY KEY, c int);")
 
         finish_writes = await start_writes(cql, ks, "test")
@@ -62,22 +59,19 @@ async def test_intranode_migration(manager: ScyllaClusterManager, storage_config
 
 
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
-async def test_crash_during_intranode_migration(manager: ScyllaClusterManager, storage_config: FeatureConfig):
+async def test_crash_during_intranode_migration(manager: ScyllaClusterManager):
     cmdline = [
         '--logger-log-level', 'tablets=trace',
         '--logger-log-level', 'database=trace',
         '--commitlog-sync', 'batch', # So that ACKed writes are not lost on crash
     ]
-    cfg = storage_config.get_cluster_cfg()
-    servers = [await manager.server_add(config=cfg, cmdline=cmdline)]
+    servers = [await manager.server_add(cmdline=cmdline)]
 
     await manager.disable_tablet_balancing()
 
     cql = manager.get_cql()
 
-    keyspace_opts = storage_config.get_keyspace_opts(
-        "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND tablets = {'initial': 4}")
-    async with new_test_keyspace(manager, keyspace_opts) as ks:
+    async with new_test_keyspace(manager, "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND tablets = {'initial': 4}") as ks:
         await cql.run_async(f"CREATE TABLE {ks}.test (pk int PRIMARY KEY, c int);")
 
         finish_writes = await start_writes(cql, ks, "test", ignore_errors=True)
@@ -116,7 +110,7 @@ async def test_crash_during_intranode_migration(manager: ScyllaClusterManager, s
 
 
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
-async def test_cross_shard_migration(manager: ScyllaClusterManager, storage_config: FeatureConfig):
+async def test_cross_shard_migration(manager: ScyllaClusterManager):
     """
     Test scenario where writes are concurrently made with migration, where
     some of them are coordinated by the owning host and some by the non-owning host.
@@ -138,15 +132,12 @@ async def test_cross_shard_migration(manager: ScyllaClusterManager, storage_conf
         '--logger-log-level', 'database=trace',
     ]
 
-    cfg = storage_config.get_cluster_cfg()
-    servers = await manager.servers_add(2, config=cfg, cmdline=cmdline)
+    servers = await manager.servers_add(2, cmdline=cmdline)
 
     await manager.disable_tablet_balancing()
 
     cql = manager.get_cql()
-    keyspace_opts = storage_config.get_keyspace_opts(
-        "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND tablets = {'initial': 2}")
-    async with new_test_keyspace(manager, keyspace_opts) as ks:
+    async with new_test_keyspace(manager, "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} AND tablets = {'initial': 2}") as ks:
         await cql.run_async(f"CREATE TABLE {ks}.test (pk int PRIMARY KEY, c int);")
 
         finish_writes = await start_writes(cql, ks, "test")

@@ -147,8 +147,6 @@ add_scylla_test(index_reader_test
 add_scylla_test(input_stream_test
   KIND BOOST
   LIBRARIES Seastar::seastar_testing)
-add_scylla_test(interval_index_test
-  KIND BOOST)
 add_scylla_test(intrusive_array_test
   KIND SEASTAR)
 add_scylla_test(json_test
@@ -355,7 +353,6 @@ add_scylla_test(combined_tests
     cache_algorithm_test.cc
     castas_fcts_test.cc
     cdc_test.cc
-    cluster_config_manager_test.cc
     column_mapping_test.cc
     commitlog_cleanup_test.cc
     commitlog_raft_replay_test.cc
@@ -372,7 +369,6 @@ add_scylla_test(combined_tests
     disk_space_monitor_test.cc
     digest_checked_data_source_test.cc
     error_injection_test.cc
-    external_search_test.cc
     extensions_test.cc
     filtering_test.cc
     group0_cmd_merge_test.cc
@@ -411,7 +407,6 @@ add_scylla_test(combined_tests
     sstable_compressor_factory_test.cc
     sstable_compression_config_test.cc
     sstable_directory_test.cc
-    sstables_manager_subscription_test.cc
     sstable_set_test.cc
     sstable_tablet_streaming_test.cc
     statement_restrictions_test.cc

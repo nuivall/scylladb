@@ -42,7 +42,7 @@ from cassandra.connection import UnixSocketEndPoint
 from cassandra.policies import ExponentialReconnectionPolicy  # type: ignore
 from cassandra.policies import WhiteListRoundRobinPolicy  # type: ignore
 
-from test import TOP_SRC_DIR, TEST_DIR, asan_options, ubsan_options
+from test import TOP_SRC_DIR, TEST_DIR
 from test.pylib.driver_utils import safe_driver_shutdown, safe_shutting_down
 from test.pylib.internal_types import ServerNum, IPAddress, HostID, ServerInfo, ServerUpState
 from test.pylib.rest_client import ScyllaRESTAPIClient, HTTPError
@@ -209,21 +209,6 @@ async def get_scylla_2025_1_description(build_mode: str) -> ScyllaVersionDescrip
         argv=[],
     )
 
-
-async def get_scylla_2026_1_executable(build_mode: str) -> str:
-    is_debug = build_mode == 'debug' or build_mode == 'sanitize'
-    package = "debug" if is_debug else ""
-    arch = platform.machine()
-    return fetch_and_install_scylla_version(2026, 1, arch=arch, pack=package)
-
-
-async def get_scylla_2026_1_description(build_mode: str) -> ScyllaVersionDescription:
-    return ScyllaVersionDescription(
-        path=str(await get_scylla_2026_1_executable(build_mode)),
-        config={},
-        argv=[],
-    )
-
 # [--smp, 1], [--smp, 2] -> [--smp, 2]
 # [--smp, 1], [--smp] -> [--smp]
 # [--smp, 1], [--smp, __missing__] -> [--smp]
@@ -352,13 +337,6 @@ class ScyllaServer:
         self.logger = logger
         self.log_file = None
         self.cmdline_options = cmdline_options
-        # Kept so a later switch_version() can recompute cmdline_options without
-        # re-baking in the old version's version-specific argv (e.g. a
-        # --logger-log-level for a logger the new executable doesn't know about).
-        # Populated by the caller (ScyllaCluster.add_server) with the per-server
-        # `cmdline` it was given, i.e. everything in `cmdline_options` above except
-        # SCYLLA_CMDLINE_OPTIONS, the version's argv, and the cluster-level options.
-        self._per_server_cmdline_options: List[str] = []
         self.auth_provider: Optional[AuthProvider] = None
         self.cmd: Optional[Process] = None
         self.start_stop_lock = asyncio.Lock()
@@ -587,22 +565,7 @@ class ScyllaServer:
     def update_cmdline(self, cmdline_options: List[str]) -> None:
         """Update the command-line options by merging the new options into the existing ones.
            Takes effect only after the node is restarted."""
-        # Also merge into _per_server_cmdline_options so a later switch_version() keeps
-        # options added here, not just the ones supplied when the server was added.
-        self._per_server_cmdline_options = merge_cmdline_options(self._per_server_cmdline_options, cmdline_options)
         self.cmdline_options = merge_cmdline_options(self.cmdline_options, cmdline_options)
-
-    def switch_version(self, version: ScyllaVersionDescription, cluster_cmdline_options: List[str],
-                        cluster_cmdline_options_override: List[str]) -> None:
-        """Recompute cmdline_options for a different Scylla version, so that
-           version-specific argv (e.g. from ScyllaVersionDescription.argv) doesn't
-           leak across a switch_executable() to a version which doesn't support it.
-           Takes effect only after the node is restarted."""
-        cmdline_options = merge_cmdline_options(SCYLLA_CMDLINE_OPTIONS, version.argv)
-        cmdline_options = merge_cmdline_options(cmdline_options, cluster_cmdline_options)
-        cmdline_options = merge_cmdline_options(cmdline_options, self._per_server_cmdline_options)
-        cmdline_options = merge_cmdline_options(cmdline_options, cluster_cmdline_options_override)
-        self.cmdline_options = cmdline_options
 
     def take_log_savepoint(self) -> None:
         """Save the server current log size when a test starts so that if
@@ -886,8 +849,8 @@ class ScyllaServer:
         # remove from env to make sure user's SCYLLA_HOME has no impact
         env.pop('SCYLLA_HOME', None)
         env.update(self.append_env if append_env_override is None else append_env_override)
-        env['UBSAN_OPTIONS'] = ubsan_options()
-        env['ASAN_OPTIONS'] = asan_options()
+        env['UBSAN_OPTIONS'] = f'halt_on_error=1:abort_on_error=1:suppressions={TOP_SRC_DIR / "ubsan-suppressions.supp"}'
+        env['ASAN_OPTIONS'] = f'disable_coredump=0:abort_on_error=1:detect_stack_use_after_return=1'
 
         # Set up socket for receiving sd_notify messages from Scylla
         self._setup_notify_socket()

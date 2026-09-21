@@ -178,7 +178,7 @@ select_statement::parameters::orderings_type const& select_statement::parameters
 }
 
 timeout_config_selector
-select_timeout(const restrictions::select_restrictions& restrictions) {
+select_timeout(const restrictions::statement_restrictions& restrictions) {
     if (restrictions.is_key_range()) {
         return &timeout_config::range_read_timeout;
     } else {
@@ -190,7 +190,7 @@ select_statement::select_statement(schema_ptr schema,
                                    uint32_t bound_terms,
                                    lw_shared_ptr<const parameters> parameters,
                                    ::shared_ptr<selection::selection> selection,
-                                   ::shared_ptr<const restrictions::select_restrictions> restrictions,
+                                   ::shared_ptr<const restrictions::statement_restrictions> restrictions,
                                    ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
                                    bool is_reversed,
                                    ordering_comparator_type ordering_comparator,
@@ -680,14 +680,6 @@ generate_base_key_from_index_pk(const partition_key& index_pk, const std::option
     return KeyType::from_range(exploded_base_key);
 }
 
-bool view_indexed_table_select_statement::needs_post_filtering() const {
-    const column_definition* cdef = _schema->get_column_definition(to_bytes(_index.target_column()));
-    if (cdef && (cdef->is_regular() || cdef->is_static())) {
-        return true;
-    }
-    return select_statement::needs_post_filtering();
-}
-
 lw_shared_ptr<query::read_command>
 view_indexed_table_select_statement::prepare_command_for_base_query(query_processor& qp, const query_options& options,
         service::query_state& state, gc_clock::time_point now, bool use_paging) const {
@@ -1029,7 +1021,7 @@ select_statement::process_results_complex(foreign_ptr<lw_shared_ptr<query::resul
     });
 }
 
-const ::shared_ptr<const restrictions::select_restrictions> select_statement::get_restrictions() const {
+const ::shared_ptr<const restrictions::statement_restrictions> select_statement::get_restrictions() const {
     return _restrictions;
 }
 
@@ -1040,7 +1032,7 @@ service::pager::query_plan select_statement::scanned_plan() const {
 primary_key_select_statement::primary_key_select_statement(schema_ptr schema, uint32_t bound_terms,
                                                            lw_shared_ptr<const parameters> parameters,
                                                            ::shared_ptr<selection::selection> selection,
-                                                           ::shared_ptr<const restrictions::select_restrictions> restrictions,
+                                                           ::shared_ptr<const restrictions::statement_restrictions> restrictions,
                                                            ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
                                                            bool is_reversed,
                                                            ordering_comparator_type ordering_comparator,
@@ -1052,7 +1044,7 @@ primary_key_select_statement::primary_key_select_statement(schema_ptr schema, ui
 {
 }
 
-bool check_needs_allow_filtering_anyway(const restrictions::select_restrictions& restrictions) {
+bool check_needs_allow_filtering_anyway(const restrictions::statement_restrictions& restrictions) {
     // Even if no filtering happens on the coordinator, we still warn about poor performance when partition
     // slice is defined but in potentially unlimited number of partitions (see #7608).
     return (restrictions.partition_key_restrictions_is_empty() || restrictions.has_token_restrictions()) // Potentially unlimited partitions.
@@ -1066,7 +1058,7 @@ view_indexed_table_select_statement::prepare(data_dictionary::database db,
                                         uint32_t bound_terms,
                                         lw_shared_ptr<const parameters> parameters,
                                         ::shared_ptr<selection::selection> selection,
-                                        ::shared_ptr<const restrictions::select_restrictions> restrictions,
+                                        ::shared_ptr<const restrictions::statement_restrictions> restrictions,
                                         ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
                                         bool is_reversed,
                                         ordering_comparator_type ordering_comparator,
@@ -1111,7 +1103,7 @@ view_indexed_table_select_statement::prepare(data_dictionary::database db,
 view_indexed_table_select_statement::view_indexed_table_select_statement(schema_ptr schema, uint32_t bound_terms,
                                                            lw_shared_ptr<const parameters> parameters,
                                                            ::shared_ptr<selection::selection> selection,
-                                                           ::shared_ptr<const restrictions::select_restrictions> restrictions,
+                                                           ::shared_ptr<const restrictions::statement_restrictions> restrictions,
                                                            ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
                                                            bool is_reversed,
                                                            ordering_comparator_type ordering_comparator,
@@ -1644,7 +1636,7 @@ public:
         uint32_t bound_terms,
         lw_shared_ptr<const parameters> parameters,
         ::shared_ptr<selection::selection> selection,
-        ::shared_ptr<const restrictions::select_restrictions> restrictions,
+        ::shared_ptr<const restrictions::statement_restrictions> restrictions,
         ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
         bool is_reversed,
         ordering_comparator_type ordering_comparator,
@@ -1659,7 +1651,7 @@ public:
         uint32_t bound_terms,
         lw_shared_ptr<const parameters> parameters,
         ::shared_ptr<selection::selection> selection,
-        ::shared_ptr<const restrictions::select_restrictions> restrictions,
+        ::shared_ptr<const restrictions::statement_restrictions> restrictions,
         ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
         bool is_reversed,
         ordering_comparator_type ordering_comparator,
@@ -1682,7 +1674,7 @@ private:
     uint32_t bound_terms,
     lw_shared_ptr<const select_statement::parameters> parameters,
     ::shared_ptr<selection::selection> selection,
-    ::shared_ptr<const restrictions::select_restrictions> restrictions,
+    ::shared_ptr<const restrictions::statement_restrictions> restrictions,
     ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
     bool is_reversed,
     parallelized_select_statement::ordering_comparator_type ordering_comparator,
@@ -1712,7 +1704,7 @@ parallelized_select_statement::parallelized_select_statement(
     uint32_t bound_terms,
     lw_shared_ptr<const parallelized_select_statement::parameters> parameters,
     ::shared_ptr<selection::selection> selection,
-    ::shared_ptr<const restrictions::select_restrictions> restrictions,
+    ::shared_ptr<const restrictions::statement_restrictions> restrictions,
     ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
     bool is_reversed,
     parallelized_select_statement::ordering_comparator_type ordering_comparator,
@@ -1814,7 +1806,7 @@ mutation_fragments_select_statement::mutation_fragments_select_statement(
             uint32_t bound_terms,
             lw_shared_ptr<const parameters> parameters,
             ::shared_ptr<selection::selection> selection,
-            ::shared_ptr<const restrictions::select_restrictions> restrictions,
+            ::shared_ptr<const restrictions::statement_restrictions> restrictions,
             ::shared_ptr<std::vector<size_t>> group_by_cell_indices,
             bool is_reversed,
             ordering_comparator_type ordering_comparator,
@@ -2104,7 +2096,7 @@ group_by_references_clustering_keys(const selection::selection& sel, const std::
     });
 }
 
-std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) {
+std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg, bool for_view) {
     if (_no_from && _select_clause.empty()) {
         // No table to expand the wildcard against.
         // Rejecting before maybe_jsonize_select_clause() guards against SELECT JSON *.
@@ -2167,10 +2159,13 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
     // Prepare BM25() calls in SELECT: reject when absent from ORDER BY, or replace
     // with temporary nodes that an external_values_provider fills at execution time.
     expr::temporary_allocator temporaries_allocator;
-    prepare_bm25_selectors(prepared_selectors, bm25_ordering_info_opt, temporaries_allocator, ctx);
+    if (prepare_bm25_selectors(prepared_selectors, bm25_ordering_info_opt, temporaries_allocator)) {
+        for (auto& term : bm25_ordering_info_opt->selected_bm25_terms) {
+            expr::fill_prepare_context(term, ctx);
+        }
+    }
 
-    // Likewise for ANN(), except that a rescoring index computes the score locally, filling no slot.
-    prepare_ann_selectors(prepared_selectors, ann_ordering_info_opt, temporaries_allocator, db, schema, ctx);
+    prepare_ann_selectors(prepared_selectors);
 
     for (auto& ps : prepared_selectors) {
         expr::fill_prepare_context(ps.expr, ctx);
@@ -2182,8 +2177,9 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
     select_statement::ordering_comparator_type ordering_comparator;
     bool hide_last_column = false;
     if (is_ann_query && ann_ordering_info_opt->is_rescoring_enabled) {
-        ordering_comparator = rescored_similarity_ordering(prepared_selectors, *ann_ordering_info_opt, db, schema);
+        uint32_t similarity_column_index = add_similarity_function_to_selectors(prepared_selectors, *ann_ordering_info_opt, db, schema);
         hide_last_column = true;
+        ordering_comparator = get_similarity_ordering_comparator(prepared_selectors, similarity_column_index);
     }
 
     for (auto& ps : prepared_selectors) {
@@ -2216,7 +2212,7 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
         throw exceptions::invalid_request_exception("PER PARTITION LIMIT is not allowed with aggregate queries.");
     }
 
-    auto restrictions = prepare_restrictions(db, schema, ctx, selection, _parameters->allow_filtering() || is_ann_query || has_bm25_ordering,
+    auto restrictions = prepare_restrictions(db, schema, ctx, selection, for_view, _parameters->allow_filtering() || is_ann_query || has_bm25_ordering,
             restrictions::check_indexes(!_parameters->is_mutation_fragments()), _pinned_plan);
 
     const auto& scoring_restrictions = restrictions->get_scoring_function_restrictions();
@@ -2250,6 +2246,7 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
         std::visit([&](auto&& ordering) {
             using T = std::decay_t<decltype(ordering)>;
             if constexpr (!std::is_same_v<T, raw::select_statement::scoring_function_ordering>) {
+                throwing_assert(!for_view);
                 verify_ordering_is_allowed(*_parameters, *restrictions);
                 prepared_orderings_type prepared_orderings = prepare_orderings(*schema);
                 verify_ordering_is_valid(prepared_orderings, *schema, *restrictions);
@@ -2316,15 +2313,6 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
     };
 
     if (strong_consistency::is_strongly_consistent(db, schema->ks_name())) {
-        if (_parameters->is_mutation_fragments()) {
-            throw exceptions::invalid_request_exception("SELECT FROM MUTATION_FRAGMENTS() is not supported on strongly consistent tables");
-        }
-        if (_parameters->is_prune_materialized_view()) {
-            throw exceptions::invalid_request_exception("PRUNE MATERIALIZED VIEW is not supported on strongly consistent tables");
-        }
-        if (!group_by_cell_indices->empty()) {
-            throw exceptions::invalid_request_exception("Strongly consistent queries don't support GROUP BY");
-        }
         stmt = ::make_shared<strong_consistency::select_statement>(
                 schema,
                 ctx.bound_variables_size(),
@@ -2369,9 +2357,8 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
                 std::move(prepared_attrs));
     } else if (is_ann_query) {
         stmt = vector_indexed_table_select_statement::prepare(db, schema, ctx.bound_variables_size(), _parameters, std::move(selection), std::move(restrictions),
-                std::move(group_by_cell_indices), is_reversed_, std::move(ordering_comparator),
-                prepare_limit(db, ctx, _limit), prepare_limit(db, ctx, _per_partition_limit), stats, std::move(*ann_ordering_info_opt),
-                std::move(prepared_attrs));
+                std::move(group_by_cell_indices), is_reversed_, std::move(ordering_comparator), std::move(ann_ordering_info_opt->_prepared_ann_ordering),
+                prepare_limit(db, ctx, _limit), prepare_limit(db, ctx, _per_partition_limit), stats, ann_ordering_info_opt->_index, std::move(prepared_attrs));
     } else if (is_fts_query) {
         stmt = fulltext_indexed_table_select_statement::prepare(
             db,
@@ -2440,18 +2427,19 @@ std::unique_ptr<prepared_statement> select_statement::prepare(data_dictionary::d
     return make_unique<prepared_statement>(audit_info(), std::move(stmt), ctx, std::move(partition_key_bind_indices), std::move(warnings));
 }
 
-::shared_ptr<const restrictions::select_restrictions>
+::shared_ptr<const restrictions::statement_restrictions>
 select_statement::prepare_restrictions(data_dictionary::database db,
                                        schema_ptr schema,
                                        prepare_context& ctx,
                                        ::shared_ptr<selection::selection> selection,
+                                       bool for_view,
                                        bool allow_filtering,
                                        restrictions::check_indexes do_check_indexes,
                                        restrictions::pinned_plan_opt pinned_plan)
 {
     try {
-        return restrictions::analyze_select_restrictions(db, schema, _where_clause, ctx,
-            selection->contains_only_static_columns(), allow_filtering, do_check_indexes, std::move(pinned_plan));
+        return restrictions::analyze_statement_restrictions(db, schema, statement_type::SELECT, _where_clause, ctx,
+            selection->contains_only_static_columns(), for_view, allow_filtering, do_check_indexes, std::move(pinned_plan));
     } catch (const exceptions::unrecognized_entity_exception& e) {
         if (contains_alias(e.entity)) {
             throw exceptions::invalid_request_exception(format("Aliases aren't allowed in the WHERE clause (name: '{}')", e.entity));
@@ -2474,7 +2462,7 @@ select_statement::prepare_limit(data_dictionary::database db, prepare_context& c
     return prep_limit;
 }
 
-void select_statement::verify_ordering_is_allowed(const parameters& params, const restrictions::select_restrictions& restrictions)
+void select_statement::verify_ordering_is_allowed(const parameters& params, const restrictions::statement_restrictions& restrictions)
 {
     if (restrictions.uses_secondary_indexing()) {
         throw exceptions::invalid_request_exception("ORDER BY with 2ndary indexes is not supported.");
@@ -2553,7 +2541,7 @@ bool select_statement::is_ordering_reversed(const prepared_orderings_type& order
 
 void select_statement::verify_ordering_is_valid(const prepared_orderings_type& orderings,
                                                 const schema& schema,
-                                                const restrictions::select_restrictions& restrictions) const {
+                                                const restrictions::statement_restrictions& restrictions) const {
     if (orderings.empty()) {
         return;
     }
@@ -2600,7 +2588,7 @@ void select_statement::verify_ordering_is_valid(const prepared_orderings_type& o
 
 select_statement::ordering_comparator_type select_statement::get_ordering_comparator(const prepared_orderings_type& orderings,
     selection::selection& selection,
-    const restrictions::select_restrictions& restrictions) {
+    const restrictions::statement_restrictions& restrictions) {
     if (!restrictions.key_is_in_relation()) {
         return {};
     }
@@ -2641,7 +2629,7 @@ select_statement::ordering_comparator_type select_statement::get_ordering_compar
 
 void select_statement::validate_distinct_selection(const schema& schema,
                                                    const selection::selection& selection,
-                                                   const restrictions::select_restrictions& restrictions) const
+                                                   const restrictions::statement_restrictions& restrictions) const
 {
     if (_per_partition_limit) {
         throw exceptions::invalid_request_exception("PER PARTITION LIMIT is not allowed with SELECT DISTINCT queries");
@@ -2673,7 +2661,7 @@ void select_statement::validate_distinct_selection(const schema& schema,
 
 /// True iff restrictions require ALLOW FILTERING despite there being no coordinator-side filtering.
 static bool needs_allow_filtering_anyway(
-        const restrictions::select_restrictions& restrictions,
+        const restrictions::statement_restrictions& restrictions,
         db::tri_mode_restriction_t::mode strict_allow_filtering,
         std::vector<sstring>& warnings) {
     using flag_t = db::tri_mode_restriction_t::mode;
@@ -2692,7 +2680,7 @@ static bool needs_allow_filtering_anyway(
 
 /** If ALLOW FILTERING was not specified, this verifies that it is not needed */
 void select_statement::check_needs_filtering(
-        const restrictions::select_restrictions& restrictions,
+        const restrictions::statement_restrictions& restrictions,
         db::tri_mode_restriction_t::mode strict_allow_filtering,
         std::vector<sstring>& warnings)
 {
@@ -2716,7 +2704,7 @@ void select_statement::check_needs_filtering(
  */
 void select_statement::ensure_filtering_columns_retrieval(data_dictionary::database db,
                                         selection::selection& selection,
-                                        const restrictions::select_restrictions& restrictions) {
+                                        const restrictions::statement_restrictions& restrictions) {
     for (auto&& cdef : restrictions.get_column_defs_for_filtering(db)) {
         selection.add_column_for_post_processing(*cdef);
     }

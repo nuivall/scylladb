@@ -279,8 +279,8 @@ public:
         using action_fn = noncopyable_function<future<> (task::impl&)>;
         using progress_fn = noncopyable_function<future<task::progress> ()>;
         using workload_fn = noncopyable_function<future<std::optional<double>> ()>;
-        using abort_fn = noncopyable_function<void (seastar::abort_source&) noexcept>;
-        using finalize_fn = noncopyable_function<future<> () noexcept>;
+        using abort_fn = noncopyable_function<void (seastar::abort_source&)>;
+        using finalize_fn = noncopyable_function<future<> ()>;
     private:
         std::string _type;
         tasks::is_abortable _is_abortable;
@@ -293,11 +293,9 @@ public:
         abort_fn _abort_fn;
         finalize_fn _finalizer;
 
-        // The progress once the task is complete, so that it is computed at most once
-        // and remains available after the progress callback is released.
-        mutable std::optional<task_manager::task::progress> _cached_progress;
-        // The workload callback's first result: the expected total does not change once known.
-        mutable std::optional<double> _cached_workload;
+        // Engaged only after the task is finished and its resources have been released.
+        std::optional<task_manager::task::progress> _cached_progress;
+        std::optional<double> _cached_workload;
     public:
         generic_task_impl(
             module_ptr module,

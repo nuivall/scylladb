@@ -148,7 +148,7 @@ lw_shared_ptr<const sstables::sstable_set> table::make_compound_sstable_set() co
 }
 
 lw_shared_ptr<sstables::sstable_set> compaction_group::make_maintenance_sstable_set() const {
-    return make_lw_shared<sstables::sstable_set>(sstables::make_partitioned_sstable_set(_t.schema()));
+    return make_lw_shared<sstables::sstable_set>(sstables::make_partitioned_sstable_set(_t.schema(), token_range()));
 }
 
 void table::refresh_compound_sstable_set() {
@@ -2585,10 +2585,6 @@ compaction_group::do_update_sstable_sets_on_compaction_completion(compaction::co
     // if the deletion fails (note deletion of shared sstables can take
     // unbounded time, because all shards must agree on the deletion).
 
-    utils::get_local_injector().inject("update_sstable_sets_on_compaction_completion_fail", [] {
-        throw std::runtime_error{"update_sstable_sets_on_compaction_completion_fail error injection"};
-    });
-
     // make sure all old sstables belong *ONLY* to current shard before we proceed to their deletion.
     for (auto& sst : desc.old_sstables) {
         auto shards = sst->get_shards_for_this_sstable();
@@ -2720,12 +2716,6 @@ compaction_group::do_update_sstable_sets_on_compaction_completion(compaction::co
     cache.refresh_snapshot();
 
     _t.rebuild_statistics();
-    // desc.new_gc_sstables are deliberately left out. They hold only data this
-    // compaction is dropping, they exist just long enough to keep a crash from
-    // resurrecting it, and they are released by the same compaction that
-    // created them. Their large-partition, large-row and large-collection
-    // records describe garbage, so feeding them to the guardrail would report
-    // limit violations for data that is on its way out.
     for (auto& sst : desc.new_sstables) {
         _t._large_data_guardrail->register_sstable(sst);
     }
@@ -2739,7 +2729,8 @@ compaction_group::update_sstable_sets_on_compaction_completion(compaction::compa
     // table. By the time this runs the outputs are unreachable through every other channel
     // (finish() already moved them out of the compaction, and they are sealed so ~sstable()
     // won't unlink them either), so a failure here would otherwise leak them on disk forever.
-    auto new_sstables = desc.all_new_sstables();
+    auto new_sstables = desc.new_sstables;
+    std::ranges::copy(desc.new_gc_sstables, std::back_inserter(new_sstables));
     bool attached = false;
     std::exception_ptr ex;
     try {
@@ -3554,7 +3545,6 @@ bool has_size_on_leaving (locator::tablet_transition_stage stage) {
         case locator::tablet_transition_stage::streaming:                               [[fallthrough]];
         case locator::tablet_transition_stage::write_both_read_new:                     [[fallthrough]];
         case locator::tablet_transition_stage::use_new:                                 [[fallthrough]];
-        case locator::tablet_transition_stage::sc_rollback:                             [[fallthrough]];
         case locator::tablet_transition_stage::cleanup_target:                          [[fallthrough]];
         case locator::tablet_transition_stage::revert_migration:                        [[fallthrough]];
         case locator::tablet_transition_stage::rebuild_repair:                          [[fallthrough]];
@@ -3574,7 +3564,6 @@ bool has_size_on_pending (locator::tablet_transition_stage stage) {
         case locator::tablet_transition_stage::write_both_read_old:                     [[fallthrough]];
         case locator::tablet_transition_stage::write_both_read_old_fallback_cleanup:    [[fallthrough]];
         case locator::tablet_transition_stage::streaming:                               [[fallthrough]];
-        case locator::tablet_transition_stage::sc_rollback:                             [[fallthrough]];
         case locator::tablet_transition_stage::cleanup_target:                          [[fallthrough]];
         case locator::tablet_transition_stage::revert_migration:                        [[fallthrough]];
         case locator::tablet_transition_stage::rebuild_repair:
@@ -5300,8 +5289,7 @@ table::disable_auto_compaction() {
     auto holder = _async_gate.hold();
 
     co_await parallel_foreach_compaction_group_view([this] (compaction::compaction_group_view& view) {
-        return _compaction_manager.stop_ongoing_compactions("disable auto-compaction", &view,
-                compaction::compaction_type_set::of<compaction::compaction_type::Compaction>());
+        return _compaction_manager.stop_ongoing_compactions("disable auto-compaction", &view, compaction::compaction_type::Compaction);
     });
 
     if (uses_logstor()) {

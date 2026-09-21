@@ -9,7 +9,6 @@
 #pragma once
 
 #include "cql3/cql_statement.hh"
-#include "db/consistency_level_type.hh"
 #include "locator/tablets.hh"
 
 namespace service::strong_consistency { struct stats; }
@@ -26,7 +25,5 @@ future<::shared_ptr<cql_transport::messages::result_message>> redirect_statement
     locator::host_id_or_exception_callback on_forwarding_finished = {});
 
 bool is_strongly_consistent(data_dictionary::database db, std::string_view ks_name);
-
-void validate_write_consistency_level(const db::consistency_level& cl);
 
 }

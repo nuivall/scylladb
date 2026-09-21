@@ -196,7 +196,7 @@ public:
     static_assert(std::numeric_limits<mask_type>::max() >= ((size_t)1 << Enum::max_sequence), "mask type too small");
 
     template<enum_type e>
-    constexpr bool contains() const {
+    bool contains() const {
         return bool(_mask & mask_for<e>());
     }
 
@@ -204,7 +204,7 @@ public:
         return bool(_mask & mask_for(e));
     }
 
-    constexpr bool intersects(const enum_set& other) const {
+    bool intersects(const enum_set& other) const {
         return bool(_mask & other._mask);
     }
 
@@ -248,7 +248,7 @@ public:
         return bool(_mask);
     }
 
-    constexpr mask_type mask() const {
+    mask_type mask() const {
         return _mask;
     }
 

@@ -15,7 +15,7 @@ from test.cluster.lwt.lwt_common import (
     DEFAULT_WORKERS,
     DEFAULT_NUM_KEYS,
 )
-from test.cluster.util import new_test_keyspace, FeatureConfig
+from test.cluster.util import new_test_keyspace
 from test.pylib.scylla_cluster_manager import ScyllaClusterManager
 from test.pylib.tablets import get_tablet_count
 
@@ -132,11 +132,7 @@ async def run_random_resizes(
 
 
 @pytest.mark.no_parallel
-@pytest.mark.skip_storage('gs', reason='GCS flavor intermittently stalls a tablet split, with the '
-                                       'count never leaving the pre-split value, and takes 9x the '
-                                       'local runtime; deeper investigation is needed')
-async def test_multi_column_lwt_during_split_merge(manager: ScyllaClusterManager, scale_timeout,
-                                                   storage_config: FeatureConfig):
+async def test_multi_column_lwt_during_split_merge(manager: ScyllaClusterManager, scale_timeout):
     """
     Test scenario:
       1. Start N servers with tablets enabled
@@ -151,7 +147,6 @@ async def test_multi_column_lwt_during_split_merge(manager: ScyllaClusterManager
         "tablet_load_stats_refresh_interval_in_seconds": 1,
         "target-tablet-size-in-bytes": 1024 * 16,
     }
-    cfg = storage_config.get_cluster_cfg(cfg)
     properties = [
         {"dc": "dc1", "rack": "r1"},
         {"dc": "dc1", "rack": "r2"},
@@ -167,9 +162,8 @@ async def test_multi_column_lwt_during_split_merge(manager: ScyllaClusterManager
 
     async with new_test_keyspace(
         manager,
-        storage_config.get_keyspace_opts(
-            "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 3} "
-            "AND tablets = {'initial': 1}"),
+        "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 3} "
+        "AND tablets = {'initial': 1}",
     ) as ks:
         stop_event_ = asyncio.Event()
         table = "lwt_split_merge_table"

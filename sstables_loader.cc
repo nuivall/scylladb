@@ -41,7 +41,7 @@
 
 #include "sstables/object_storage_client.hh"
 #include "utils/rjson.hh"
-#include "table_helper.hh"
+#include "db/system_distributed_keyspace.hh"
 
 #include <cfloat>
 #include <algorithm>
@@ -505,7 +505,7 @@ future<> sstable_streamer::stream_sstable_mutations(streaming::plan_id ops_uuid,
     const auto cf_id = s->id();
     const auto reason = streaming::stream_reason::repair;
 
-    auto sst_set = make_lw_shared<sstables::sstable_set>(sstables::make_partitioned_sstable_set(s));
+    auto sst_set = make_lw_shared<sstables::sstable_set>(sstables::make_partitioned_sstable_set(s, std::move(token_range)));
     size_t estimated_partitions = 0;
     for (auto& sst : sstables) {
         estimated_partitions += co_await sst->estimated_keys_for_range(token_range);
@@ -1204,11 +1204,9 @@ static future<manifest_summary> process_manifest(input_stream<char>& is, sstring
         auto last_token = rjson::to_token(rjson::get(sstable_entry, "last_token"));
         auto toc_name = rjson::to_sstring(rjson::get(sstable_entry, "toc_name"));
         auto tablet_id = rjson::get<size_t>(sstable_entry, "tablet_id");
-        // The fields below are not needed to restore the sstable, they are only recorded
-        // in system_distributed.snapshot_sstables for informational purposes.
-        auto repaired_at = rjson::get_opt<int64_t>(sstable_entry, "repaired_at").value_or(0);
-        auto data_size = rjson::get_opt<int64_t>(sstable_entry, "data_size").value_or(0);
-        auto index_size = rjson::get_opt<int64_t>(sstable_entry, "index_size").value_or(0);
+        auto repaired_at = rjson::get<int64_t>(sstable_entry, "repaired_at");
+        auto data_size = rjson::get<int64_t>(sstable_entry, "data_size");
+        auto index_size = rjson::get<int64_t>(sstable_entry, "index_size");
         auto prefix = sstring(std::filesystem::path(manifest_prefix).parent_path().string());
         // Insert the snapshot sstable metadata into system_distributed.snapshot_sstables with a TTL of 3 days, that should be enough
         // for any snapshot restore operation to complete, and after that the metadata will be automatically cleaned up from the table
@@ -1261,11 +1259,6 @@ class sstables_loader::tablet_restore_task_impl : public tasks::task_manager::ta
     table_id _tid;
     sstring _snap_name;
     size_t _tablet_count;
-    // Pre-restore tablet hints, recovered by restore_tablets() from the schema
-    // persisted in system_distributed.snapshot_tables; run() alters the table
-    // back to them once the restore is done.
-    std::optional<size_t> _original_min_tablet_count;
-    std::optional<size_t> _original_max_tablet_count;
     tasks::task_manager::task::progress _progress;
     seastar::named_gate _gate{"progress_updater"};
     timer<seastar::lowres_clock> _progress_update_timer;
@@ -1291,15 +1284,12 @@ class sstables_loader::tablet_restore_task_impl : public tasks::task_manager::ta
 
 public:
     tablet_restore_task_impl(tasks::task_manager::module_ptr module, sharded<sstables_loader>& loader, sstring ks,
-            table_id tid, sstring snap_name, manifest_summary ms,
-            std::optional<size_t> original_min_tablet_count, std::optional<size_t> original_max_tablet_count) noexcept
+            table_id tid, sstring snap_name, manifest_summary ms) noexcept
         : tasks::task_manager::task::impl(module, tasks::task_id::create_random_id(), 0, "node", ks, "", "", tasks::task_id::create_null_id())
         , _loader(loader)
         , _tid(std::move(tid))
         , _snap_name(std::move(snap_name))
         , _tablet_count(ms.tablet_count)
-        , _original_min_tablet_count(original_min_tablet_count)
-        , _original_max_tablet_count(original_max_tablet_count)
         , _progress_update_timer([this] {
             if (auto gh = _gate.try_hold()) {
                 std::ignore = update_progress().finally([this, gh = std::move(*gh)] {
@@ -1355,6 +1345,9 @@ protected:
     virtual future<> run() override {
         auto& loader = _loader.local();
 
+        auto current_schema = loader.local_db().find_schema(_tid);
+        auto min_tablet_count = current_schema->tablet_options().min_tablet_count;
+        auto max_tablet_count = current_schema->tablet_options().max_tablet_count;
         co_await loader._ss.local().alter_table_with_tablet_hints(_tid, _tablet_count, _tablet_count);
 
         std::exception_ptr eptr;
@@ -1369,7 +1362,7 @@ protected:
             llog.info("Restoring table with tid {} to the original schema", _tid);
             // remove_unset: the table saved nullopt because it had no hint of its own, and
             // passing nullopt back would leave it pinned at min == max forever.
-            co_await loader._ss.local().alter_table_with_tablet_hints(_tid, _original_min_tablet_count, _original_max_tablet_count,
+            co_await loader._ss.local().alter_table_with_tablet_hints(_tid, min_tablet_count, max_tablet_count,
                     service::wait_balancer::no, service::remove_unset::yes);
         } catch (...) {
             llog.error("Failed to restore original schema for table_id {}. Error: {:t}", _tid, std::current_exception());
@@ -1436,42 +1429,6 @@ future<tasks::task_id> sstables_loader::restore_tablets(table_id tid, sstring ke
         co_await sth.insert_snapshot_remote_location(snap_name, loc.datacenter, loc.endpoint, loc.bucket, loc.prefix, db::snapshot_state::remote);
     }
 
-    // Persist the schema of the target table in system_distributed.snapshot_tables
-    // before the restore task pins the tablet hints, so the original hints survive a
-    // crash of this node. If an entry for this snapshot and table already exists, this
-    // restore either resumes an earlier attempt that may have already pinned the
-    // hints, or restores into the same table the snapshot was taken from; in both
-    // cases the original hints are recovered from the persisted schema instead of
-    // the live one.
-    auto entries = co_await sth.get_snapshot_tables(snap_name, keyspace, table, db::consistency_level::QUORUM);
-    auto t = _db.local().get_tables_metadata().get_table_if_exists(tid);
-    if (!t) {
-        throw replica::no_such_column_family(tid);
-    }
-    schema_ptr original_schema;
-    if (entries.empty()) {
-        original_schema = t->schema();
-        auto entry = sth.make_snapshot_table_entry(snap_name, *t);
-        co_await sth.insert_snapshot_tables(std::span(&entry, 1));
-    } else {
-        const auto& entry = entries.front();
-        if (entry.type != db::snapshot_table_type::cql_table) {
-            throw std::runtime_error(fmt::format("Failed to recover the pre-restore schema of table {}.{} stored for snapshot {}: the entry does not describe a CQL table (type={})",
-                keyspace, table, snap_name, static_cast<int32_t>(entry.type)));
-        }
-        try {
-            original_schema = table_helper::parse_new_cf_statement(_sys_dist_ks.qp(), entry.table_schema);
-        } catch (...) {
-            throw std::runtime_error(fmt::format("Failed to recover the pre-restore schema of table {}.{} stored for snapshot {}: {}",
-                keyspace, table, snap_name, std::current_exception()));
-        }
-        // Refresh the TTL of the entry so that repeated crash/re-issue cycles
-        // spanning a long time do not outlive it.
-        co_await sth.insert_snapshot_tables(std::span(&entry, 1));
-    }
-    auto original_hints = original_schema->tablet_options();
-
-    auto task = co_await _task_manager_module->make_and_start_task<tablet_restore_task_impl>(tasks::make_empty_task_info(), container(), keyspace, tid, std::move(snap_name), summary,
-            original_hints.min_tablet_count, original_hints.max_tablet_count);
+    auto task = co_await _task_manager_module->make_and_start_task<tablet_restore_task_impl>(tasks::make_empty_task_info(), container(), keyspace, tid, std::move(snap_name), summary);
     co_return task->id();
 }
