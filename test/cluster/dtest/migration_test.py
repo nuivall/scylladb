@@ -19,14 +19,13 @@ import uuid
 import pytest
 from cassandra import ConsistencyLevel
 from cassandra.query import SimpleStatement
-from ccmlib.common import BIN_DIR, join_bin
 from ccmlib.node import NodetoolError, ToolError
 from ccmlib.scylla_node import ScyllaNode
 
 from dtest_class import Tester, create_cf, create_ks
 from dtest_setup_overrides import DTestSetupOverrides
 from tools.assertions import assert_one
-from tools.cassandra_helpers import CassandraCluster, java_version_exist
+from tools.cassandra_helpers import CassandraCluster
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import (
     check_c1c2_result_one,
@@ -795,8 +794,6 @@ class TestTTLWithMigrate(Tester):
     # @pytest.mark.next_gating      # Removing from gating for now, till it passes consistently
     # timeuuid based identifier was introduced in Cassandra 4.1. so we cannot test it with
     # Cassandra 3.x. see @jira_ticket CASSANDRA-17048
-    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for the Scylla-to-Cassandra migration; no Cassandra test harness in this tree")
-    @pytest.mark.skipif(condition=not java_version_exist(8), reason="test depends on cassandra 3.x, and needs java 8 to run")
     @pytest.mark.skip_if(with_feature("tablets"))
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_big_table_with_ttls(self, request):  # noqa: PLR0915
@@ -958,8 +955,8 @@ class TestTTLWithMigrate(Tester):
 
     def migrate_to_cassandra(self, keyspace_name, table_name, scylla_node, take_dump=True, scylla_big_partition_count=None, count_query="", request=None):  # noqa: PLR0913
         cassandra_data_json = ""
-        cc = CassandraCluster(cassandra_version="3.11.16", request=request, test_instance=self)
-        cassandra_node1 = cc.run_migration(scylla_cluster=self.cluster, scylla_test_path=self.test_path, keyspace_names_list=[keyspace_name], table_names=[table_name])
+        cc = CassandraCluster(cassandra_version="3.11", request=request, test_instance=self)
+        cassandra_node1 = cc.run_migration(scylla_cluster=self.cluster, keyspace_names_list=[keyspace_name], table_names=[table_name])
         if take_dump:
             cassandra_data_json = self._dump_data(cluster=cc.cluster, node=cassandra_node1, scylla_node=scylla_node, node_owner="Cassandra")
 
@@ -996,16 +993,17 @@ class TestTTLWithMigrate(Tester):
                 node.watch_log_for("Deleting", from_mark=mark, filename=log_file)
         logger.info("Run sstabledump")
 
-        if node_owner == "Scylla":
-            return node.dump_sstables(keyspace_name, table_name)
-
-        if scylla_node is None or type(scylla_node) is not ScyllaNode:
+        # Both sides are dumped with the same tool, `scylla sstable`, or the two
+        # dumps would not be comparable. Cassandra's data directory is a bind
+        # mount, so the tool reads it from the host like any other directory.
+        tool_node = node if node.is_scylla() else scylla_node
+        if not isinstance(tool_node, ScyllaNode):
             raise RuntimeError(f"scylla_node has unexpected type {type(scylla_node)!s}, expected ScyllaNode")
 
         sstables = node.get_sstablespath(keyspace=keyspace_name, tables=[table_name])
-        scylla_path = join_bin(scylla_node.get_path(), BIN_DIR, "scylla")
-        args = [scylla_path, "sstable", "dump-data", "--merge", *sstables]
-        res = subprocess.run(args, capture_output=True, text=True, check=False, env=scylla_node._get_environ())
+        assert sstables, f"No sstables found for {keyspace_name}.{table_name} on {node.name}"
+        args = [tool_node.scylla_exe(), "sstable", "dump-data", "--merge", *sstables]
+        res = subprocess.run(args, capture_output=True, text=True, check=False)
         if res.returncode:
             raise ToolError(command=" ".join(args), exit_status=res.returncode, stdout=res.stdout, stderr=res.stderr)
         return json.loads(res.stdout)["sstables"]["anonymous"]
