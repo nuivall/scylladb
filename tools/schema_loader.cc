@@ -347,17 +347,18 @@ std::vector<schema_ptr> do_load_schemas(const db::config& cfg, std::string_view 
             auto view = p->create_view_for_index(it->schema, index, db);
             real_db.tables.emplace_back(dd_impl, dd_impl.unwrap(ks), view, true);
         } else if (auto p = dynamic_cast<cql3::statements::modification_statement*>(statement);
-                p && (p->type.is_insert() || p->type.is_update())) {
-            if (p->keyspace() != db::schema_tables::NAME && p->column_family() != db::schema_tables::DROPPED_COLUMNS) {
+                p && (p->spec().type.is_insert() || p->spec().type.is_update())) {
+            const auto& spec = p->spec();
+            if (spec.keyspace() != db::schema_tables::NAME && spec.column_family() != db::schema_tables::DROPPED_COLUMNS) {
                 throw std::runtime_error(fmt::format("tools::do_load_schemas(): expected modification statement to be against {}.{}, but it is against {}.{}",
-                            db::schema_tables::NAME, db::schema_tables::DROPPED_COLUMNS, p->keyspace(), p->column_family()));
+                            db::schema_tables::NAME, db::schema_tables::DROPPED_COLUMNS, spec.keyspace(), spec.column_family()));
             }
             auto schema = db::schema_tables::dropped_columns();
-            cql3::statements::modification_statement::json_cache_opt json_cache{};
+            cql3::statements::modification_spec::json_cache_opt json_cache{};
             cql3::update_parameters params(schema, cql3::query_options::DEFAULT, api::new_timestamp(), schema->default_time_to_live(), cql3::update_parameters::prefetch_data(schema));
-            auto pkeys = p->build_partition_keys(cql3::query_options::DEFAULT, json_cache);
-            auto ckranges = p->create_clustering_ranges(cql3::query_options::DEFAULT, json_cache);
-            auto updates = p->apply_updates(pkeys, ckranges, params, json_cache);
+            auto pkeys = spec.build_partition_keys(cql3::query_options::DEFAULT, json_cache);
+            auto ckranges = spec.create_clustering_ranges(cql3::query_options::DEFAULT, json_cache);
+            auto updates = spec.apply_updates(pkeys, ckranges, params, json_cache);
             if (updates.size() != 1) {
                 throw std::runtime_error(fmt::format("tools::do_load_schemas(): expected one update per statement for {}.{}, got: {}",
                             db::schema_tables::NAME, db::schema_tables::DROPPED_COLUMNS, updates.size()));

@@ -326,12 +326,13 @@ public:
         if (!modif_stmt) {
             throw std::runtime_error(format("get_stmt_mutations: not a modification statement: {}", text));
         }
+        const auto& spec = modif_stmt->spec();
         auto& qo = cql3::query_options::DEFAULT;
         auto timeout = db::timeout_clock::now() + qs->get_client_state().get_timeout_config().write_timeout;
-        cql3::statements::modification_statement::json_cache_opt json_cache = modif_stmt->maybe_prepare_json_cache(qo);
-        std::vector<dht::partition_range> keys = modif_stmt->build_partition_keys(qo, json_cache);
+        cql3::statements::modification_spec::json_cache_opt json_cache = spec.maybe_prepare_json_cache(qo);
+        std::vector<dht::partition_range> keys = spec.build_partition_keys(qo, json_cache);
 
-        return cql3::statements::get_mutations(*modif_stmt, local_qp(), qo, timeout, false, qo.get_timestamp(*qs), *qs, json_cache, keys)
+        return cql3::statements::get_mutations(spec, local_qp(), qo, timeout, false, qo.get_timestamp(*qs), *qs, json_cache, keys)
             .finally([qs, modif_stmt = std::move(modif_stmt)] {});
     }
 
