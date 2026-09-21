@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import re
@@ -18,6 +19,7 @@ from dtest_scylla_manager import (
     CqlStatus,
     HostHealth,
     HostRestStatus,
+    MANAGER_UNAVAILABLE_REASON,
     Memory,
     NodeStatus,
     ScyllaManagerError,
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.scylla_manager
+@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestManagerHealthCheck(Tester, ScyllaManagerMixin):
     def get_manager_cluster(self):
         logger.debug("Create Manager Tool instance to run scylla-manager operations")
@@ -230,12 +233,12 @@ class TestManagerHealthCheck(Tester, ScyllaManagerMixin):
         topology_layout = generate_cluster_topology(dc_num=1, rack_num=1, nodes_per_rack=2)
         self.config_and_create_cluster(topology=topology_layout)  # cluster to be used as the manager's backend
 
-        generate_ssl_stores(self.test_path)
+        generate_ssl_stores(self.cluster.get_path())
         options = {
             "enabled": True,
-            "certificate": os.path.join(self.test_path, "ccm_node.pem"),
-            "keyfile": os.path.join(self.test_path, "ccm_node.key"),
-            "truststore": os.path.join(self.test_path, "ccm_node.cer"),
+            "certificate": os.path.join(self.cluster.get_path(), "ccm_node.pem"),
+            "keyfile": os.path.join(self.cluster.get_path(), "ccm_node.key"),
+            "truststore": os.path.join(self.cluster.get_path(), "ccm_node.cer"),
             "require_client_auth": True,
         }
         secondary_topology_layout = generate_cluster_topology(dc_num=1, rack_num=1, nodes_per_rack=3)
