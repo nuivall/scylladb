@@ -212,9 +212,16 @@ class ScyllaManager:
 
     # ---------------------------------------------------------------- tools
 
-    def _run(self, args: list[str], ignore_exit_status: bool = False) -> tuple[str, str]:
+    def _run(self, args: list[str], ignore_exit_status: bool = False, timeout: float = 300) -> tuple[str, str]:
         p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
-        stdout, stderr = p.communicate()
+        try:
+            stdout, stderr = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            stdout, stderr = p.communicate()
+            raise ScyllaManagerError(
+                " ".join(args), -1, stdout, f"timed out after {timeout}s and was killed: {stderr}"
+            ) from None
         if p.returncode != 0 and not ignore_exit_status:
             raise ScyllaManagerError(" ".join(args), p.returncode, stdout, stderr)
         return stdout, stderr
