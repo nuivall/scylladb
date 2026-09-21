@@ -13,7 +13,7 @@ import tempfile
 import threading
 import uuid
 from enum import Enum
-from functools import cached_property
+from functools import cached_property, lru_cache
 from pathlib import Path
 
 import boto3
@@ -22,6 +22,8 @@ from cassandra import ConsistencyLevel
 from docker.errors import DockerException
 from kmip.services import auth
 from kmip.services.server.server import KmipServer
+
+from test.pylib.skip_types import skip_env
 
 from dtest_class import Tester, create_cf, wait_for
 from tools.cluster_topology import generate_cluster_topology
@@ -62,6 +64,25 @@ supported_cipher_algorithms = {
     # "RC2/CBC": [80, 128],  # [40, 80, 128]  # 40 to 128
     # "RC2": [80, 128],  # [40, 80, 128]  # 40 to 128
 }
+
+
+@lru_cache
+def scylla_has_kmip(scylla_exe: str) -> bool:
+    """Whether this Scylla was built with KMIP support.
+
+    ent/encryption/kmip_host.cc compiles the "KMIP support not enabled" message
+    only when HAVE_KMIP is off, so finding it in the binary means the feature is
+    missing and a node configured with kmip_hosts refuses to start.
+    """
+
+    marker = b"KMIP support not enabled"
+    tail = b""
+    with open(scylla_exe, "rb") as binary:
+        while chunk := binary.read(8 << 20):
+            if marker in tail + chunk:
+                return False
+            tail = chunk[-len(marker):]
+    return True
 
 
 class BaseKeyProviderFactory:
@@ -552,6 +573,8 @@ class EncryptionAtRestBase(Tester):
         elif key_provider == KeyProviderEnum.replicated:
             ret = ReplicatedKeyProviderFactory(self)
         elif key_provider == KeyProviderEnum.kmip:
+            if not scylla_has_kmip(self.cluster.manager.cluster.scylla_exe):
+                skip_env("this Scylla was built without KMIP support (HAVE_KMIP)")
             ret = KmipKeyProviderFactory(self)
         elif key_provider == KeyProviderEnum.kms:
             ret = KMSKeyProviderFactory(self)
