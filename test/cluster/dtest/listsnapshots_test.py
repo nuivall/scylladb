@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import re
@@ -47,8 +48,6 @@ def normalize_size(size, units):
     return size * 1024 ** known_units.index(units)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 @pytest.mark.single_node
 class TestNodetoolListSnapshots(Tester):
     """Validate nodetool listshapshot command
@@ -274,7 +273,6 @@ class TestNodetoolListSnapshots(Tester):
         # assert that all snapshot size and names are valid
         assert self.compare_filesize_and_output(node, results), "Not all snapshot size and names are valid"
 
-    @pytest.mark.dtest_debug
     def test_snapshot_for_several_kses(self):
         """
         Validate the correctness of listsnapshots command if

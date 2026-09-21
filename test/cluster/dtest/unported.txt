@@ -14,7 +14,6 @@ cluster_replacement_test.py
 compact_storage_tests.py
 compaction_additional_test.py
 compaction_test.py
-compression_test.py
 concurrent_schema_changes_test.py
 consistency_test.py
 consistent_bootstrap_test.py
@@ -39,7 +38,6 @@ internode_ssl_test.py
 largecolumn_test.py
 ldap_test.py
 like_operator_test.py
-listsnapshots_test.py
 lwt_banking_load_test.py
 lwt_destructive_ddl_test.py
 lwt_random_test.py
@@ -64,7 +62,6 @@ paxos_tests.py
 per_partition_rate_limiting_test.py
 persistence_test.py
 pushed_notifications_test.py
-putget_test.py
 read_amplification_test.py
 read_repair_test.py
 repair_additional_test.py
@@ -77,7 +74,6 @@ rest_api_tests.py
 reversed_queries_test.py
 rolling_upgrade_test.py
 schema_everywhere_test.py
-schema_test.py
 scylla_sstable_test.py
 scyllatop_test.py
 secondary_indexes_test.py
