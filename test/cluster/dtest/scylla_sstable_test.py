@@ -15,9 +15,6 @@ from decimal import Decimal
 import pytest
 from dateutil.parser import parse
 
-# cqlsh_tests hasn't been ported out of unported/ yet (it's a large, separate
-# batch of its own); reach into it via the namespace package for now. Update
-# this to a plain "from cqlsh_tests..." import once it moves out of unported/.
 from cqlsh_tests.cqlsh_copy_tests import CqlshPrepare
 from dtest_class import Tester
 from tools.data import rows_to_list
@@ -149,7 +146,6 @@ class TestScyllaSstableDumpData(ScyllaSstable):
 
 
 class TestScyllaSstableDumpataAllDatatypes(CqlshPrepare, ScyllaSstable):
-    @pytest.mark.skip_env(reason="depends on cqlsh_tests.CqlshPrepare.all_datatypes_prepare, not yet ported out of unported/")
     def test_sstabledump_all_datatypes(self):
         cluster = self.cluster
         cluster.populate(1).start()
