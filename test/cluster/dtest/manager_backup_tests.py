@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import random
@@ -33,6 +34,7 @@ from dtest_class import Tester, WaitTimeoutExpiredError, create_cf, create_ks, w
 from dtest_scylla_manager import (
     C1_PREFIX,
     C2_PREFIX,
+    MANAGER_UNAVAILABLE_REASON,
     ScyllaManagerError,
     ScyllaManagerMixin,
     ScyllaManagerTool,
@@ -358,6 +360,7 @@ class ManagerBackupMixin:
 
 
 @pytest.mark.scylla_manager
+@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaMgmtBackup(Tester, ManagerBackupMixin, ScyllaManagerMixin):
     @pytest.fixture(params=["native", "rclone"], scope="function", autouse=True)
     def setup_manager_method(self, request):
@@ -1329,8 +1332,8 @@ def create_cron_list_from_timedelta(minutes=0, hours=0):
     return cron_list
 
 
-@pytest.mark.dtest_full
 @pytest.mark.scylla_manager
+@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestBackupWithEaR(EncryptionAtRestBase, ManagerBackupMixin, ScyllaManagerMixin):
     @pytest.fixture(params=["native", "rclone"], scope="function", autouse=True)
     def setup_manager_method(self, request):
