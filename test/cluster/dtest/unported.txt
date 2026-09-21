@@ -26,7 +26,6 @@ cqlsh_tests/cqlsh_copy_tests.py
 cqlsh_tests/cqlsh_tests.py
 deletion_test.py
 encryption_at_rest_test.py
-heat_weighted_load_balancing_test.py
 ics_compaction_test.py
 internode_ssl_test.py
 ldap_test.py
@@ -56,12 +55,10 @@ replace_address_test.py
 resharding_test.py
 reversed_queries_test.py
 rolling_upgrade_test.py
-schema_everywhere_test.py
 scyllatop_test.py
 secondary_indexes_test.py
 sla_per_user_test.py
 snapshot_test.py
-sstable_generation_loading_test.py
 stress_tool_test.py
 system_tables_test.py
 topology_operation_during_upgrade_test.py
