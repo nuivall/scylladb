@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import datetime
 import logging
 import threading
@@ -33,7 +34,7 @@ from tools.assertions import (
 )
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import insert_c1c2, rows_to_list
-from tools.marks import issue_open, unmark_if, with_feature
+from tools.marks import with_feature
 from tools.metrics import get_node_metrics
 from tools.misc import ImmutableMapping
 from tools.stress import assert_cs_success, create_stress_compatible_table, format_cs_output
@@ -46,8 +47,6 @@ class NodeUnavailableError(Exception):
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_full
 @pytest.mark.parametrize("rbo_status", [True, False], ids=["rbo_enabled", "rbo_disabled"])
 class TestReplaceAddress(Tester):
     rbo_enabled: bool
@@ -96,7 +95,6 @@ class TestReplaceAddress(Tester):
         tokens_list = [token.split()[-1] for token in ring_lines]
         return sorted(tokens_list)
 
-    @pytest.mark.unmark_if("next_gating", condition=issue_open("https://github.com/scylladb/scylladb/issues/15786"))  # cause of https://github.com/scylladb/scylladb/issues/15786
     @pytest.mark.use_cassandra_stress
     def test_replace_stopped_node(self):
         """
@@ -104,7 +102,6 @@ class TestReplaceAddress(Tester):
         """
         self._replace_node_test(gently=False)
 
-    @pytest.mark.unmark_if("next_gating", condition=issue_open("https://github.com/scylladb/scylladb/issues/15602"))
     @pytest.mark.use_cassandra_stress
     def test_replace_shutdown_node(self):
         """
@@ -343,7 +340,6 @@ class TestReplaceAddress(Tester):
 
         node4.start(wait_for_binary_proto=True, replace_node_host_id=node3.hostid())
 
-    @pytest.mark.dtest_debug
     def test_replace_active_node(self):
         logger.info("Starting cluster with 3 nodes.")
         self.init_cluster(num_nodes=3)
@@ -456,7 +452,6 @@ class TestReplaceAddress(Tester):
         assert moved_tokens_list == tokens
         assert self.get_sorted_tokens(node1, node3.address()) == []
 
-    @pytest.mark.skip_if(issue_open("scylladb/scylladb#21718"))
     def test_replace_node_no_hibernate_state(self):  # noqa: PLR0915
         """Test that there is no HIBERNATE status for a replacing node.
 
@@ -535,7 +530,6 @@ class TestReplaceAddress(Tester):
         peers = [(peer, str(host_id), len(tokens)) for peer, host_id, tokens in sorted(rows_to_list(res))]
         assert peers == expected_peers, f"Unexpected peers result. Expected {expected_peers}, got {peers}"
 
-    @unmark_if("next_gating", condition=issue_open("scylladb/scylladb#19645"))
     def test_replace_with_background_workload(self):
         """
         The subtest is used to reproduce https://github.com/scylladb/scylla/issues/4705
@@ -728,7 +722,6 @@ class TestReplaceAddress(Tester):
         fixture_dtest_setup.ignore_log_patterns.append(r".*seastar::rpc::closed_error[ :]+\(?connection is closed\)?.*")
 
     @pytest.mark.skip_if(with_feature("tablets"))
-    @pytest.mark.dtest_heavy
     def test_replace_node_diff_ip_take_write(self):  # noqa: PLR0915
         logger.info("Starting cluster with 5 nodes.")
         cluster = self.cluster
@@ -816,7 +809,6 @@ class TestReplaceAddress(Tester):
         write_thread.result()
 
     @pytest.mark.skip_if(with_feature("tablets"))
-    @pytest.mark.dtest_heavy
     def test_replace_node_same_ip_take_write(self):  # noqa: PLR0915
         logger.info("Starting cluster with 5 nodes.")
         cluster = self.cluster

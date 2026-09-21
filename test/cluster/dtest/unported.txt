@@ -27,7 +27,6 @@ migration_test.py
 mixed_version_test.py
 nodetool_additional_test.py
 repair_additional_test.py
-replace_address_test.py
 reversed_queries_test.py
 rolling_upgrade_test.py
 scyllatop_test.py
@@ -36,7 +35,6 @@ snapshot_test.py
 stress_tool_test.py
 system_tables_test.py
 topology_operation_during_upgrade_test.py
-toppartitions_test.py
 twcs_additional_test.py
 update_cluster_layout_tests.py
 upgrade_test.py
