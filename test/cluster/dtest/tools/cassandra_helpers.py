@@ -44,7 +44,11 @@ class CassandraCluster:
         from tools.cassandra_docker import CassandraDockerCluster
 
         # Set up Cassandra cluster
-        self.cluster = CassandraDockerCluster(version=self.cassandra_version, workdir=self.test_path)
+        self.cluster = CassandraDockerCluster(
+            version=self.cassandra_version,
+            workdir=self.test_path,
+            datacenter=self.scylla_cluster.nodelist()[0].data_center if self.scylla_cluster else None,
+        )
         self.request.addfinalizer(self.tear_down)
         config_options = dict(config_options or {})
         # remove experimental_features parameter that cassandra doesn't support

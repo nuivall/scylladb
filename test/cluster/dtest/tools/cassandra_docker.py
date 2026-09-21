@@ -62,6 +62,10 @@ DEFAULT_MAX_HEAP_SIZE = "1G"
 DEFAULT_HEAP_NEWSIZE = "256M"
 DEFAULT_MEM_LIMIT = "2g"
 
+# One rack is enough: the migrated keyspaces replicate per datacenter, and with
+# as many Cassandra nodes as Scylla nodes every node is a replica anyway.
+DEFAULT_RACK = "rack1"
+
 # Cassandra takes tens of seconds to open the native transport on a cold JVM,
 # and gossip between nodes settles after that.
 BINARY_PROTO_TIMEOUT = 600
@@ -217,6 +221,10 @@ class CassandraDockerNode:
             "HEAP_NEWSIZE": DEFAULT_HEAP_NEWSIZE,
             "CASSANDRA_CLUSTER_NAME": self.cluster.name,
         }
+        if self.cluster.datacenter:
+            environment["CASSANDRA_ENDPOINT_SNITCH"] = "GossipingPropertyFileSnitch"
+            environment["CASSANDRA_DC"] = self.cluster.datacenter
+            environment["CASSANDRA_RACK"] = DEFAULT_RACK
         if seeds:
             environment["CASSANDRA_SEEDS"] = ",".join(seeds)
 
@@ -315,10 +323,14 @@ class CassandraDockerNode:
 class CassandraDockerCluster:
     """A Cassandra cluster of `cassandra` containers, with the bits of ccm's Cluster the migration tests use."""
 
-    def __init__(self, version: str, workdir: str, name: str = "test"):
+    def __init__(self, version: str, workdir: str, name: str = "test", datacenter: str | None = None):
         self.version = version
         self.name = name
         self.workdir = workdir
+        # The keyspaces migrated from Scylla name Scylla's datacenter in their
+        # NetworkTopologyStrategy, so Cassandra has to answer to the same name
+        # or nothing is a replica of anything.
+        self.datacenter = datacenter
         self.config_options: dict[str, Any] = {}
         self._nodes: list[CassandraDockerNode] = []
         self.container_prefix = f"dtest-cassandra-{os.getpid()}-{id(self):x}"
