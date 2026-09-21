@@ -64,8 +64,8 @@ DEFAULT_MEM_LIMIT = "2g"
 
 # Cassandra takes tens of seconds to open the native transport on a cold JVM,
 # and gossip between nodes settles after that.
-BINARY_PROTO_TIMEOUT = 300
-OTHER_NOTICE_TIMEOUT = 300
+BINARY_PROTO_TIMEOUT = 600
+OTHER_NOTICE_TIMEOUT = 600
 
 
 class CassandraDockerNode:
@@ -281,8 +281,10 @@ class CassandraDockerNode:
                 dump_container_logs(self.container)
                 raise RuntimeError(f"Cassandra container for {self.name} died while starting")
             exit_code, output = self._exec(["nodetool", "statusbinary"])
+            # "not running" also contains "running", so match the whole word:
+            # a node that is still bootstrapping reports exactly "not running".
             last = output.strip()
-            if exit_code == 0 and "running" in last:
+            if exit_code == 0 and last.splitlines()[-1:] == ["running"]:
                 logger.debug(f"{self.name} native transport is up")
                 return
             time.sleep(2)
