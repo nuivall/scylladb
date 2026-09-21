@@ -1,14 +1,16 @@
-import pytest
-from cassandra.cluster import Session
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
 
-from dtest_class import Tester, create_ks
+import pytest
+
+from dtest_class import Tester
 from tools.cassandra_stess import CassandraStressDocker
 from tools.data import rows_to_list
 
-pytestmark = pytest.mark.next_gating
 
-
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 @pytest.mark.use_cassandra_stress
 class TestStressSparsenessRatio(Tester):
@@ -53,7 +55,6 @@ class TestStressSparsenessRatio(Tester):
         assert pytest.approx(float(num_nones) / num_results, abs=delta) == expected_ratio
 
 
-@pytest.mark.dtest_full
 class TestCassandraStress(Tester):
     def test_cassandra_stress_sanity(self):
         self.cluster.populate(2).start(wait_for_binary_proto=True, wait_other_notice=True)
@@ -73,8 +74,7 @@ class TestCassandraStress(Tester):
             result = cassandra_stress_docker.wait_for_stress_results()
             assert result.rc == 0, result.stderr
 
-    @pytest.mark.skip(reason="internal validation test for docker resource limits, not a real dtest")
-    @pytest.mark.tools_unittest
+    @pytest.mark.skip_env(reason="internal validation test for docker resource limits, not a real dtest")
     def test_cassandra_stress_docker_resource_limits(self):
         """
         Test that Docker containers created by CassandraStressDocker have proper resource limits.
