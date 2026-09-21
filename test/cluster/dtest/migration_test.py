@@ -980,23 +980,21 @@ class TestTTLWithMigrate(Tester):
         return cassandra_data_json
 
     def _dump_data(self, cluster, node, node_owner, scylla_node=None, keyspace_name="ks", table_name="cf", compaction=True):  # noqa: PLR0913
-        if compaction:
-            # A ccm Scylla node has both a system.log and a debug.log; the
-            # in-tree one has a single log, and its shim rejects a filename.
-            if node.is_scylla():
-                log_file = None
-            elif node.get_cassandra_version() < "2.2":
-                log_file = "system.log"
-            else:
-                log_file = "debug.log"
         logger.info("Flush data to the disk before dump")
         cluster.flush()
         if compaction:
-            mark = node.mark_log(filename=log_file)
-            logger.info("Compacting sstables")
-            node.nodetool(f"compact {keyspace_name} {table_name}")
-            node.watch_log_for("Compacted", from_mark=mark, filename=log_file)
-            if node_owner == "Cassandra":
+            if node.is_scylla():
+                # Scylla's nodetool compact returns once the major compaction is
+                # over, and it reports it at debug level, so there is nothing to
+                # wait for and nothing to watch for.
+                logger.info("Compacting sstables")
+                node.nodetool(f"compact {keyspace_name} {table_name}")
+            else:
+                log_file = "system.log" if node.get_cassandra_version() < "2.2" else "debug.log"
+                mark = node.mark_log(filename=log_file)
+                logger.info("Compacting sstables")
+                node.nodetool(f"compact {keyspace_name} {table_name}")
+                node.watch_log_for("Compacted", from_mark=mark, filename=log_file)
                 # Cassandra deletes the input sstable after compaction is over.
                 # Based on the logs, there can be as much as 100ms between the
                 # two, enough that we attempt to dump the deleted sstable below
