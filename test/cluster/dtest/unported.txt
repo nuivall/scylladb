@@ -31,7 +31,6 @@ materialized_views_test.py
 migration_test.py
 mixed_version_test.py
 nodetool_additional_test.py
-paging_test.py
 repair_additional_test.py
 replace_address_test.py
 reversed_queries_test.py
