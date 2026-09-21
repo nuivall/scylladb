@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import os.path
 import time
@@ -18,14 +24,15 @@ from upgrade_test import UpgradeTester, tablets_supported, upgrade_matrix_from_l
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
-
 
 class RollingUpgradeBase(UpgradeTester):
     __test__ = False
 
-    # Test had history of timing out in debug, see: https://github.com/scylladb/scylla-dtest/issues/3275
-    @pytest.mark.scylla_mode("!debug")
+    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ScyllaNode.upgrade()/.upgrader, "
+                                  "SystemServiceClient.get_highest_supported_sstable_version() and friends are not "
+                                  "implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages "
+                                  "a single Scylla binary per run")
+    @pytest.mark.skip_mode(mode="debug", reason="test has a history of timing out in debug mode (scylladb/scylla-dtest#3275)")
     @pytest.mark.use_cassandra_stress
     def test_rolling_upgrade(self, dtest_config):
         self.clone_upgrade_path(dtest_config)
@@ -282,8 +289,6 @@ class RollingUpgradeBase(UpgradeTester):
             yaml.safe_dump(data, fp)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.require("jira:SCYLLADB-2062")
 class TestRollingUpgrade(RollingUpgradeBase):
     __test__ = True
     _multiprocess_can_split_ = False
