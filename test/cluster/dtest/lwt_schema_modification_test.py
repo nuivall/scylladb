@@ -17,7 +17,6 @@ from psutil import cpu_count
 
 from dtest_class import Tester, create_ks, retry_till_success
 from tools.cluster_topology import generate_rack_topology_based_rf
-from tools.marks import issue_open, with_feature
 
 logger = logging.getLogger(__name__)
 
