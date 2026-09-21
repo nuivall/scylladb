@@ -3,27 +3,23 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 
 import pytest
 
 from cqlsh_tests.cqlsh_copy_tests import CqlshPrepare
-from tools.marks import require, unmark
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 @pytest.mark.single_node
-@pytest.mark.next_gating
 class TestCQLCast(CqlshPrepare):
     """Class provides interface for CAST scalar function"""
 
     COLUMN_NAME_TEMPLATE = "{}_clmn"
     KEYSPACE_NAME = "ks"
 
-    @require("#3108")
     def test_cast_negative(self):
         """Function performs positive tests CAST scalar function for user-defined type"""
         test_from = ["text", "date"]
@@ -74,7 +70,6 @@ class TestCQLCast(CqlshPrepare):
         test_from = ["decimal"]
         self._test_run(test_from, TestData.POSITIVE_VALUES)
 
-    @pytest.mark.dtest_debug
     def test_cast_date(self):
         """Function performs positive tests CAST scalar function for date type"""
         test_from = ["date"]
@@ -85,7 +80,6 @@ class TestCQLCast(CqlshPrepare):
         test_from = ["time"]
         self._test_run(test_from, TestData.POSITIVE_VALUES)
 
-    @unmark.next_gating
     def test_cast_timestamp(self):
         """Function performs positive tests CAST scalar function for timestamp type"""
         test_from = ["timestamp"]
@@ -116,7 +110,6 @@ class TestCQLCast(CqlshPrepare):
         test_from = ["timeuuid"]
         self._test_run(test_from, TestData.POSITIVE_VALUES)
 
-    @require("#13601")
     def test_avg_cast_from_varint_to_decimal(self):
         # To remove the case from issue test, go to TestData.POSITIVE_VALUES and remove comment simbol "#" from relavant type
         # seems like cassandra bug: https://issues.apache.org/jira/browse/CASSANDRA-18470

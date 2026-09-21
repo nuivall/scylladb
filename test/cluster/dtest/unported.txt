@@ -1,14 +1,6 @@
 backup_restore_object_storage_tests.py
-cql_additional_tests.py
-cql_cast_test.py
-cql_tracing_addition_test.py
-cql_tracing_test.py
-cqlsh_tests/cqlsh_copy_tests.py
-cqlsh_tests/cqlsh_tests.py
 encryption_at_rest_test.py
-internode_ssl_test.py
 ldap_test.py
-lwt_random_test.py
 manager_backup_tests.py
 manager_general_tests.py
 manager_health_check_tests.py

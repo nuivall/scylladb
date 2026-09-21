@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import time
@@ -19,9 +20,6 @@ from tools.sslkeygen import wait_for_cert_reload
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_debug
-@pytest.mark.dtest_full
 class TestInternodeSSL(Tester):
     def test_putget_with_internode_ssl(self):
         """

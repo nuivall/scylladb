@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import math
 import os
@@ -38,7 +39,7 @@ from tools.assertions import (
     assert_one,
     assert_row_count,
 )
-from tools.cassandra_helpers import CassandraCluster, java_version_exist
+from tools.cassandra_helpers import CassandraCluster
 from tools.cluster_topology import generate_cluster_topology, generate_rack_topology_based_rf
 from tools.data import (
     create_index,
@@ -46,7 +47,7 @@ from tools.data import (
     get_rows_set_from_res,
     rows_to_list,
 )
-from tools.marks import issue_open, unmark, with_feature
+from tools.marks import with_feature
 from tools.metrics import get_node_metrics
 from tools.retrying import retrying
 from tools.stress import format_cs_output
@@ -54,10 +55,7 @@ from tools.tables_view_manager import index_is_built, wait_for_view
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
-
-@pytest.mark.dtest_full
 class TestCQL(Tester):
     @pytest.fixture(scope="class")
     def compaction_strategy_for_migration(self):
@@ -801,7 +799,6 @@ class TestCQL(Tester):
         rows_list = rows_to_list(res)
         assert rows_list == [[0, 0, 0, 0, 0], [0, 0, 1, 1, 0], [0, 0, 1, 1, -1], [0, 0, 1, 0, 2], [0, -1, 2, 2, 2]], rows_list
 
-    @pytest.mark.require("#64")
     @pytest.mark.single_node
     def test_simple_tuple_query(self):
         """
@@ -865,7 +862,6 @@ class TestCQL(Tester):
         invalid_values = (160616626311127, 16061662631112228)
         self.query_coloumn_timeuuid(invalid_values, subtests)
 
-    @pytest.mark.require("#7691")
     def test_query_coloumn_timeuuid_with_invalid_values_issue7691(self, subtests):
         """Test time functions combination and invalid time values issue #7691"""
         invalid_values = (16061662631112223339,)
@@ -908,7 +904,7 @@ class TestCQL(Tester):
         assert len(res) == 4, list(res)
 
     @pytest.mark.single_node
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_filter_by_counter(self, subtests):
         session = self.prepare()
 
@@ -969,7 +965,7 @@ class TestCQL(Tester):
             assert_all(session=session, query="select * from clicks where c1 = 0 ALLOW FILTERING", expected=[[1, 0, 0, 0, None], [0, 0, 0, None, None]])
 
     @pytest.mark.single_node
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_counters(self):
         """
         Validate counter support.
@@ -1624,7 +1620,7 @@ class TestCQL(Tester):
         assert rows_to_list(res) == [[2]], list(res)
 
     @pytest.mark.single_node
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_reserved_keyword(self):
         session = self.prepare()
 
@@ -2788,7 +2784,6 @@ class TestCQL(Tester):
             assert_invalid(session, "SELECT content FROM blogs WHERE time1 = 1 AND time2 = 1 AND author='foo'")
             assert_invalid(session, "SELECT content FROM blogs WHERE time1 = 1 AND time2 > 0 AND author='foo'")
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_limit_bugs(self):
         """Test for LIMIT bugs from 4579"""
@@ -2975,7 +2970,7 @@ class TestCQL(Tester):
         res = session.execute("SELECT blog_id, timestamp FROM test WHERE author = 'bob'")
         assert rows_to_list(res) == [[1, 0], [1, 3], [0, 0]], list(res)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     @pytest.mark.single_node
     def test_validate_counter_regular(self):
         """
@@ -3243,7 +3238,6 @@ class TestCQL(Tester):
         res = session.execute("SELECT * FROM test WHERE k = true")
         assert rows_to_list(res) == [[True, False]], list(res)
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_multiordering(self):
         session = self.prepare()
@@ -3382,7 +3376,6 @@ class TestCQL(Tester):
         res = session.execute("SELECT v1, v2 FROM test WHERE k IN (0, 1, 2)")
         assert rows_to_list(res) == [], list(res)
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_allow_filtering(self):
         """
@@ -3457,7 +3450,6 @@ class TestCQL(Tester):
             self._assert_invalid_filtering(session=session, query=q)
             self._assert_valid_query(session=session, query=q + " ALLOW FILTERING")
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_range_with_deletes(self):
         session = self.prepare()
@@ -6223,7 +6215,7 @@ class TestCQL(Tester):
 
         self.mc_validate_data(session=cassandra_session, table_name=table_name, data_amount=data_amount, dataset=dataset, columns=columns, keys_columns_amount=keys_columns_amount)
 
-    @pytest.mark.skipif(condition=not java_version_exist(8), reason="test depends on cassandra 3.x, and needs java 8 to run")
+    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for mc-sstable migration; no Cassandra test harness in this tree")
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_mc_sstables_case_sensitive_insert(self, request, compaction_strategy_for_migration):
         """
@@ -6243,7 +6235,7 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    @pytest.mark.skipif(condition=not java_version_exist(8), reason="test depends on cassandra 3.x, and needs java 8 to run")
+    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for mc-sstable migration; no Cassandra test harness in this tree")
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_mc_sstables_case_sensitive_update_value(self, request, compaction_strategy_for_migration):
         """
@@ -6281,7 +6273,7 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    @pytest.mark.skipif(condition=not java_version_exist(8), reason="test depends on cassandra 3.x, and needs java 8 to run")
+    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for mc-sstable migration; no Cassandra test harness in this tree")
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_mc_sstables_case_sensitive_delete_value(self, request, compaction_strategy_for_migration):
         """
@@ -6312,7 +6304,7 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    @pytest.mark.skipif(condition=not java_version_exist(8), reason="test depends on cassandra 3.x, and needs java 8 to run")
+    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for mc-sstable migration; no Cassandra test harness in this tree")
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_mc_sstables_case_sensitive_add_column(self, request, compaction_strategy_for_migration):
         """
@@ -6675,7 +6667,6 @@ class TestCQL(Tester):
         assert result.response_future.warnings and expected_message in result.response_future.warnings, "Starting with 4.6 a warning should be generated for query which can potentially contain infinite partitions"
 
 
-@pytest.mark.dtest_full
 class TestsCQLAdditional(Tester):
     def prepare(self, options=None):
         """
@@ -6743,7 +6734,6 @@ class TestsCQLAdditional(Tester):
             assert str(err) == "Indexes are not supported yet"
             assert getattr(err, "code") == 0000
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     @pytest.mark.lwt
     def test_lightweight_transaction(self):
@@ -6830,7 +6820,6 @@ class TestsCQLAdditional(Tester):
             assert str(err) == "Not implemented: LIST"
             assert getattr(err, "code") == 0000
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_limit_date_value_out_of_range(self):
         # positive case for scylladb/scylladb#1694
@@ -6886,7 +6875,6 @@ class TestsCQLAdditional(Tester):
         num_rows = int(re.search(regex, out).group(1))
         assert num_rows == 100
 
-    @pytest.mark.require("2251")
     @pytest.mark.single_node
     def test_limit_date_value_out_of_range_lower_limit(self):
         cluster = self.prepare()
@@ -6957,7 +6945,6 @@ class TestsCQLAdditional(Tester):
         num_rows = int(re.search(regex, out).group(1))
         assert num_rows == 10
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_select_all_data_and_filter_explicitly(self):
         # https://github.com/scylladb/scylla/issues/2272
@@ -7036,8 +7023,7 @@ class TestsCQLAdditional(Tester):
         # expect the same data
         assert r_explicitly == r_implicitly
 
-    @unmark.next_gating  # https://github.com/scylladb/scylladb/issues/14806
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_create_100tables(self):
         """
         The scenario referenced https://github.com/scylladb/scylla/issues/2923
@@ -7257,8 +7243,6 @@ class TestsCQLAdditional(Tester):
                 assert result[0].val1 is None
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 @pytest.mark.single_node
 class TestsMultiColumnRestrictionSimple(Tester):
     INSERT_COLUMNS = "key,clmn_int,clmn_text,clmn_timestamp,clmn_bool,clmn_ascii,clmn_uuid,clmn_blob"
@@ -7536,7 +7520,6 @@ class TestsMultiColumnRestrictionSimple(Tester):
         assert_all(session=session, query=select_stmt + "where key > 1 and clmn_int < 5 and clmn_text <= 'text2' and clmn_timestamp < 63873478378 ALLOW FILTERING", expected=[], ignore_order=True)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestsMultiColumnRestrictionCollection(Tester):
     TABLE_NAME = "cf"
@@ -7692,7 +7675,6 @@ class TestsMultiColumnRestrictionCollection(Tester):
         assert_all(session=session, query=select_stmt + "where id = 0 and map_uuid CONTAINS f54f6a76-b383-11e9-a2a3-2a2ae2dbcce4 and f_set_int CONTAINS 9 ALLOW FILTERING", expected=[], ignore_order=True)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.lwt
 class TestLWTWithCQL(Tester):
     """
