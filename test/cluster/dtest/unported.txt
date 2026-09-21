@@ -24,7 +24,6 @@ internode_ssl_test.py
 ldap_test.py
 like_operator_test.py
 lwt_random_test.py
-lwt_test.py
 manager_backup_tests.py
 manager_general_tests.py
 manager_health_check_tests.py
