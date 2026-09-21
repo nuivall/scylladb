@@ -3,14 +3,13 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import pytest
 from cassandra.cluster import ResultSet, Session
 
 from tools.testers import ClusterSetupArgs, ConnectionArgs, CQLTester
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestStaticColumnQueries(CQLTester):
     CONNECTION_ARGS = ConnectionArgs()
     CLUSTER_SETUP_ARGS = ClusterSetupArgs()
