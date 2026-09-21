@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import time
 
@@ -19,8 +20,6 @@ from tools.schema import get_replication_options
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestSimpleCluster(Tester):
     __scylla_args__ = []
 

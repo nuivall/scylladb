@@ -39,7 +39,6 @@ largecolumn_test.py
 ldap_test.py
 like_operator_test.py
 lwt_banking_load_test.py
-lwt_destructive_ddl_test.py
 lwt_random_test.py
 lwt_schema_modification_test.py
 lwt_test.py
@@ -58,7 +57,6 @@ nodetool_additional_test.py
 nodetool_test.py
 paging_additional_test.py
 paging_test.py
-paxos_tests.py
 per_partition_rate_limiting_test.py
 persistence_test.py
 pushed_notifications_test.py
@@ -77,7 +75,6 @@ schema_everywhere_test.py
 scylla_sstable_test.py
 scyllatop_test.py
 secondary_indexes_test.py
-simple_cluster_driver_test.py
 simple_no_driver_test.py
 sla_per_user_test.py
 snapshot_test.py
@@ -94,7 +91,6 @@ twcs_additional_test.py
 update_cluster_layout_tests.py
 updateable_config_test.py
 upgrade_test.py
-user_functions_test.py
 user_types_test.py
 wide_rows_test.py
 workload_prioritization_upgrade_test.py
