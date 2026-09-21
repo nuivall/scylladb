@@ -2,7 +2,6 @@ alternator_stream_tests.py
 backup_restore_object_storage_tests.py
 backup_restore_tests.py
 bootstrap_test.py
-cassandra_batch_test.py
 cdc_batch_test.py
 cdc_snapshot_operation_test.py
 cdc_static_row_test.py
@@ -12,7 +11,6 @@ cdc_ttl_test.py
 cdc_types_test.py
 cleanup_test.py
 cluster_replacement_test.py
-clustering_key_filter_test.py
 compact_storage_tests.py
 compaction_additional_test.py
 compaction_test.py
@@ -23,7 +21,6 @@ consistent_bootstrap_test.py
 counter_tests.py
 cql_additional_tests.py
 cql_cast_test.py
-cql_static_columns_tests.py
 cql_system_clients_test.py
 cql_tests.py
 cql_tracing_addition_test.py
@@ -92,8 +89,6 @@ sstable_generation_loading_test.py
 stress_tool_test.py
 system_tables_test.py
 tablets_test.py
-test_cdc_large_values.py
-test_distributed_aggregates.py
 throughput_limits_test.py
 topology_operation_during_upgrade_test.py
 topology_test.py

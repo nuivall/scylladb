@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -12,23 +13,18 @@ import pytest
 from cassandra.cluster import Session, SimpleStatement
 from ccmlib.scylla_node import ScyllaNode
 
-from cdc_test import CDCInitializeHelper
 from dtest_class import Tester, create_ks
 from dtest_setup import DTestSetup
 from dtest_setup_overrides import DTestSetupOverrides
-from tools.marks import issue_open, unmark
 from tools.misc import ImmutableMapping
 
 MB = 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
-
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 @pytest.mark.scylla_cdc
-class TestLargeColumnsWithCDC(Tester, CDCInitializeHelper):
+class TestLargeColumnsWithCDC(Tester):
     @pytest.fixture(scope="function", autouse=True)
     def fixture_dtest_setup_overrides(self, dtest_config):
         dtest_setup_overrides = DTestSetupOverrides()
@@ -38,8 +34,14 @@ class TestLargeColumnsWithCDC(Tester, CDCInitializeHelper):
         return dtest_setup_overrides
 
     def prepare_cluster(self, n: int, custom_args: list[str] | None = None) -> tuple[ScyllaNode, Session]:
-        self.populate_sequentially(n, custom_args=custom_args)
+        # Inlined from unported/cdc_test.py::CDCInitializeHelper.populate_sequentially
+        # for the single-node case, so this file does not depend on the not-yet-ported
+        # cdc_test module. Revisit once cdc_test.py itself is ported.
+        jvm_args = ["--blocked-reactor-notify-ms", "100" if self.cluster.scylla_mode != "debug" else "1000000"]
+        jvm_args += custom_args or []
+        self.cluster.populate(n)
         node: ScyllaNode = self.cluster.nodelist()[0]
+        node.start(wait_for_binary_proto=True, wait_other_notice=True, jvm_args=jvm_args)
         session: Session = self.patient_cql_connection(node, request_timeout=120)
         create_ks(session, "ks", n)
         self.expected_errors = [
@@ -93,7 +95,6 @@ class TestLargeColumnsWithCDC(Tester, CDCInitializeHelper):
         )
 
     @pytest.mark.parametrize("prepare_statements", [True, False], ids=["prepared_statements", "unprepared_statements"])
-    @unmark.next_gating  # https://github.com/scylladb/scylla-dtest/issues/3354
     def test_row_with_several_columns_of_blobs_with_cdc_preimage_full_postimage(self, prepare_statements: bool, fixture_dtest_setup: DTestSetup):
         """test row with several columns of blob type
 
