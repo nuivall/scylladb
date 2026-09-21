@@ -128,7 +128,13 @@ class CassandraCluster:
                 for table in tables:
                     copy_from = self.get_table_folder(base_path=from_base_path, node=node, keyspace_name=ks, table_name=table)
                     copy_to = self.get_table_folder(base_path=to_base_path, node=node, keyspace_name=ks, table_name=table, create=create_to_folder)
-                    logger.debug(f"Copy data files for {ks}.{table} table: from {copy_from} to {copy_to}")
+                    # get_cf_dir() returns None when the table has no directory
+                    # yet, which used to turn the whole migration into a silent
+                    # no-op and only showed up as an empty table at the far end.
+                    assert copy_from, f"No directory for {ks}.{table} on {node.name} under {from_base_path or node.get_path()}"
+                    assert copy_to, f"No directory for {ks}.{table} on {node.name} under {to_base_path or node.get_path()}"
+                    files = sorted(os.listdir(copy_from))
+                    logger.info(f"Copy {len(files)} data files for {ks}.{table} on {node.name}: from {copy_from} to {copy_to}: {files}")
                     copy_files_to(from_dir=copy_from, to_dir=copy_to, files_only=True)
 
     def copy_scylla_data_to_cassandra(self, nodes=None):
