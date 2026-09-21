@@ -399,7 +399,7 @@ future<shared_ptr<cql_transport::messages::result_message>> batch_statement::exe
 
         std::vector<query::clustering_range> ranges = statement.create_clustering_ranges(statement_options, json_cache);
 
-        request->add_row_update(statement, std::move(ranges), std::move(json_cache), statement_options);
+        request->add_row_update(statement.spec(), std::move(ranges), std::move(json_cache), statement_options);
     }
     if (!request) {
         throw exceptions::invalid_request_exception(format("Unrestricted partition key in a conditional BATCH"));

@@ -11,7 +11,7 @@
 #include "cdc/log.hh"
 #include "utils/assert.hh"
 #include "service/paxos/cas_request.hh"
-#include "cql3/statements/modification_statement.hh"
+#include "cql3/statements/modification_spec.hh"
 
 namespace cql3::statements {
 
@@ -24,11 +24,11 @@ using namespace std::chrono;
  * we'll have only one.
  */
 struct cas_row_update {
-    modification_statement const& statement;
+    modification_spec const& spec;
     std::vector<query::clustering_range> ranges;
-    modification_statement::json_cache_opt json_cache;
+    modification_spec::json_cache_opt json_cache;
     // This statement query options. Different from cas_request::query_options,
-    // which may stand for BATCH statement, not individual modification_statement,
+    // which may stand for BATCH statement, not individual modification,
     // in case of BATCH
     const query_options& options;
 };
@@ -64,8 +64,8 @@ public:
 
     lw_shared_ptr<query::read_command> read_command(query_processor& qp) const;
 
-    void add_row_update(const modification_statement& stmt_arg, std::vector<query::clustering_range> ranges_arg,
-        modification_statement::json_cache_opt json_cache_arg, const query_options& options_arg);
+    void add_row_update(const modification_spec& spec_arg, std::vector<query::clustering_range> ranges_arg,
+        modification_spec::json_cache_opt json_cache_arg, const query_options& options_arg);
 
     virtual std::optional<mutation> apply(foreign_ptr<lw_shared_ptr<query::result>> qr,
             const query::partition_slice& slice, api::timestamp_type ts, cdc::per_request_options&) override;

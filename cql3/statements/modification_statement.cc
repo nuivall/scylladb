@@ -341,7 +341,7 @@ modification_statement::execute_with_condition(query_processor& qp, service::que
     auto* request_ptr = request.get();
     // cas_request can be used for batches as well single statements; Here we have just a single
     // modification in the list of CAS commands, since we're handling single-statement execution.
-    request->add_row_update(*this, std::move(ranges), std::move(json_cache), options);
+    request->add_row_update(spec(), std::move(ranges), std::move(json_cache), options);
 
     auto token = request->key()[0].start()->value().as_decorated_key().token();
 

@@ -9,7 +9,7 @@
  */
 
 #include "mutation/mutation.hh"
-#include "modification_statement.hh"
+#include "modification_spec.hh"
 #include "cas_request.hh"
 #include <seastar/core/sleep.hh>
 #include "cql3/result_set.hh"
@@ -24,13 +24,13 @@ namespace cql3::statements {
 
 using namespace std::chrono;
 
-void cas_request::add_row_update(const modification_statement& stmt_arg,
+void cas_request::add_row_update(const modification_spec& spec_arg,
         std::vector<query::clustering_range> ranges_arg,
-        modification_statement::json_cache_opt json_cache_arg,
+        modification_spec::json_cache_opt json_cache_arg,
         const query_options& options_arg) {
     // TODO: reserve updates array for batches
     _updates.emplace_back(cas_row_update{
-        .statement = stmt_arg,
+        .spec = spec_arg,
         .ranges = std::move(ranges_arg),
         .json_cache = std::move(json_cache_arg),
         .options = options_arg});
@@ -42,9 +42,9 @@ std::optional<mutation> cas_request::apply_updates(api::timestamp_type ts) const
     // to pass a mutation onward.
     std::optional<mutation> mutation_set;
     for (const cas_row_update& op: _updates) {
-        update_parameters params(_schema, op.options, ts, op.statement.get_time_to_live(op.options), _rows);
+        update_parameters params(_schema, op.options, ts, op.spec.get_time_to_live(op.options), _rows);
 
-        auto statement_mutations = op.statement.apply_updates(_key, op.ranges, params, op.json_cache);
+        auto statement_mutations = op.spec.apply_updates(_key, op.ranges, params, op.json_cache);
         // Append all mutations (in fact only one) to the consolidated one.
         for (mutation& m : statement_mutations) {
             if (mutation_set.has_value() == false) {
@@ -64,13 +64,13 @@ lw_shared_ptr<query::read_command> cas_request::read_command(query_processor& qp
     std::vector<query::clustering_range> ranges;
 
     for (const cas_row_update& op : _updates) {
-        if (op.statement.has_conditions() == false && op.statement.requires_read() == false) {
+        if (op.spec.has_conditions() == false && op.spec.requires_read() == false) {
             // No point in pre-fetching the old row if the statement doesn't check it in a CAS and
             // doesn't use it to apply updates.
             continue;
         }
-        columns_to_read.union_with(op.statement.columns_to_read());
-        if (op.statement.has_only_static_column_conditions() && !op.statement.requires_read()) {
+        columns_to_read.union_with(op.spec.columns_to_read());
+        if (op.spec.has_only_static_column_conditions() && !op.spec.requires_read()) {
             // If a statement has only static column conditions and doesn't have operations that
             // require read, it doesn't matter what clustering key range to query - any partition
             // row will do for the check.
@@ -100,12 +100,12 @@ lw_shared_ptr<query::read_command> cas_request::read_command(query_processor& qp
 
 bool cas_request::applies_to() const {
     for (const cas_row_update& op: _updates) {
-        if (!op.statement.has_conditions()) {
+        if (!op.spec.has_conditions()) {
             continue;
         }
         // No need to check subsequent conditions as we have already failed the current one.
         auto old_row = find_old_row(op).row;
-        if (!op.statement.applies_to(_rows.selection.get(), old_row, op.options)) {
+        if (!op.spec.applies_to(_rows.selection.get(), old_row, op.options)) {
             return false;
         }
     }
@@ -145,7 +145,7 @@ cas_request::old_row cas_request::find_old_row(const cas_row_update& op) const {
     auto row = _rows.find_row(pkey, ckey);
     auto ckey_ptr = &ckey;
     if (row == nullptr && !ckey.is_empty() &&
-        !op.statement.has_if_exist_condition() && !op.statement.has_if_not_exist_condition()) {
+        !op.spec.has_if_exist_condition() && !op.spec.has_if_not_exist_condition()) {
         row = _rows.find_row(pkey, empty_ckey);
         ckey_ptr = &empty_ckey;
     }
