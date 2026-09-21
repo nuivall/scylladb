@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import random
 import threading
@@ -19,8 +20,6 @@ from tools.log_utils import wait_for_any_log
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestLwtDestructiveDDL(Tester):
     """
     Destructive DDL in presence of LWT: execute destructive DDL
