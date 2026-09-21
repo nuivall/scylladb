@@ -1,8 +1,0 @@
-backup_restore_object_storage_tests.py
-manager_backup_tests.py
-manager_general_tests.py
-manager_health_check_tests.py
-manager_repair_tests.py
-manager_restore_tests.py
-manager_suspension_test.py
-manager_task_tests.py
