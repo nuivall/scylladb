@@ -8,7 +8,6 @@ cdc_ttl_test.py
 cdc_types_test.py
 compaction_additional_test.py
 compaction_test.py
-concurrent_schema_changes_test.py
 consistency_test.py
 cql_additional_tests.py
 cql_cast_test.py
