@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import random
@@ -39,7 +40,6 @@ bootstrap_start_log_pat = r"Starting to bootstrap|raft topology: start streaming
 bootstrap_done_log_pat = r"Bootstrap completed!|raft topology: streaming completed|raft_topology - streaming completed"
 
 
-@pytest.mark.dtest_full
 class TestBootstrap(Tester):
     @pytest.fixture(scope="function", autouse=True)
     def fixture_dtest_setup_overrides(self, dtest_config):
@@ -68,9 +68,6 @@ class TestBootstrap(Tester):
             return initial_value
         return -1
 
-    @pytest.mark.next_gating
-    @pytest.mark.dtest_debug
-    @pytest.mark.dtest_smoke
     @pytest.mark.single_node
     def test_start_stop(self):
         logger.info("populating cluster with one node")
@@ -82,9 +79,6 @@ class TestBootstrap(Tester):
         cluster.stop()
         logger.info("done")
 
-    @pytest.mark.next_gating
-    @pytest.mark.dtest_debug
-    @pytest.mark.dtest_smoke
     def test_start_stop_node(self):
         logger.info("populating cluster with three nodes")
         cluster = self.cluster
@@ -98,8 +92,6 @@ class TestBootstrap(Tester):
         cluster.stop()
         logger.info("done")
 
-    @pytest.mark.next_gating
-    @pytest.mark.dtest_debug
     def test_add_node(self):
         logger.info("populating cluster with three nodes")
         cluster = self.cluster
@@ -114,8 +106,8 @@ class TestBootstrap(Tester):
         cluster.stop()
         logger.info("done")
 
-    @pytest.mark.next_gating
-    @pytest.mark.dtest_debug
+    @pytest.mark.skip(reason="the in-tree ccm shim always registers a new server with the cluster; "
+                              "it has no way to create a node that new_node(add_node=False) leaves detached")
     def test_add_detached_node(self, request: pytest.FixtureRequest):
         logger.info("populating cluster with three nodes")
         cluster = self.cluster
@@ -137,7 +129,6 @@ class TestBootstrap(Tester):
         cluster.stop()
         logger.info("done")
 
-    @pytest.mark.next_gating
     # Tablets are migrated asynchronously post bootstrap,
     # without offstrastegy compaction.
     @pytest.mark.required_features("!tablets")
@@ -187,7 +178,6 @@ class TestBootstrap(Tester):
         session = self.patient_cql_connection(node2)
         assert_one(session, "SELECT count(*) from ks.cf", [keys], cl=ConsistencyLevel.ONE)
 
-    @pytest.mark.next_gating
     def test_simple_bootstrap(self):
         cluster = self.cluster
         tokens = cluster.balanced_tokens(2)
@@ -265,8 +255,6 @@ class TestBootstrap(Tester):
         new_rows = list(session.execute(f"SELECT * FROM {stress_table}"))
         assert original_rows == new_rows
 
-    @pytest.mark.next_gating
-    @pytest.mark.dtest_debug
     @pytest.mark.use_cassandra_stress
     def test_manual_bootstrap(self):
         """Test adding a new node and bootstrapping it manually. No auto_bootstrap.
@@ -294,8 +282,7 @@ class TestBootstrap(Tester):
         current_rows = list(session.execute("SELECT * FROM %s" % stress_table))
         assert original_rows == current_rows
 
-    @pytest.mark.scylla_mode("!debug")
-    @pytest.mark.next_gating
+    @pytest.mark.skip_mode(mode="debug", reason="test is too slow in debug mode")
     @pytest.mark.use_cassandra_stress
     def test_local_quorum_bootstrap(self, tmp_path):
         """Test that CL local_quorum works while a node is bootstrapping. CASSANDRA-8058"""
@@ -589,7 +576,7 @@ class TestBootstrap(Tester):
         stress_thread = write_in_background(node1, duration_seconds=30)
 
         logger.info("Adding new node")
-        new_node = cluster.new_node(i=cluster_size + 1, debug=True, auto_bootstrap=True, is_seed=False, data_center="dc1", rack="r1")
+        new_node = cluster.new_node(i=cluster_size + 1, auto_bootstrap=True, is_seed=False, data_center="dc1", rack="r1")
         start_new_node_thread = executor.submit(lambda: new_node.start(wait_for_binary_proto=True, jvm_args=["--logger-log-level", "stream_session=debug"], no_wait=True))
         mark_log = new_node.mark_log()
 
@@ -678,7 +665,7 @@ class TestBootstrap(Tester):
         stress_thread = write_in_background(node1, duration_seconds=30)
 
         logger.info("Adding new node")
-        new_node = cluster.new_node(i=cluster_size + 1, debug=True, auto_bootstrap=True, is_seed=False, data_center="dc1", rack="r3")
+        new_node = cluster.new_node(i=cluster_size + 1, auto_bootstrap=True, is_seed=False, data_center="dc1", rack="r3")
         start_new_node_thread = executor.submit(lambda: new_node.start(wait_for_binary_proto=True, jvm_args=["--logger-log-level", "stream_session=debug"], no_wait=True))
         mark_log = new_node.mark_log()
 
@@ -757,7 +744,9 @@ class TestBootstrap(Tester):
 
         node4: ScyllaNode = cluster.new_node(4, data_center=1, rack=2)
         mark4 = node4.mark_log()
-        node4.start(wait_other_notice=False, wait_for_binary_proto=False)
+        # node4 is meant to be rejected: tell the harness so, or it treats the
+        # non-zero exit the test is asking for as a crash.
+        node4.start(wait_other_notice=False, wait_for_binary_proto=False, expected_error=expected_error)
         node4.watch_log_for(expected_error, from_mark=mark4)
         node4.stop(wait_other_notice=False)
 
