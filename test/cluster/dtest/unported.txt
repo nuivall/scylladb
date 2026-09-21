@@ -18,7 +18,6 @@ cqlsh_tests/cqlsh_copy_tests.py
 cqlsh_tests/cqlsh_tests.py
 deletion_test.py
 encryption_at_rest_test.py
-ics_compaction_test.py
 internode_ssl_test.py
 ldap_test.py
 like_operator_test.py
