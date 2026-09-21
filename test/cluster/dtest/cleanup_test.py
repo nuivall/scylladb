@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import re
@@ -26,7 +27,6 @@ from tools.snapshots import make_snapshot, restore_snapshot_with_refresh
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
 class TestCleanup(Tester):
     def prepare(self, nodes, num_keys, timeout=None, consistency=ConsistencyLevel.ALL, amount_of_tables=1, rf=None):  # noqa: PLR0913
         cluster = self.cluster
@@ -49,7 +49,6 @@ class TestCleanup(Tester):
                 for i in range(amount_of_tables):
                     insert_c1c2(session=session, keys=range(num_keys), consistency=consistency, cf=f"cf{i}")
 
-    @pytest.mark.next_gating
     @pytest.mark.single_node
     def test_cleanup(self):
         num_keys = 100000 if isinstance(self.cluster, ScyllaCluster) and self.cluster.scylla_mode != "debug" else 10000
@@ -70,7 +69,6 @@ class TestCleanup(Tester):
 
         assert rows.one()[0] == num_keys
 
-    @pytest.mark.next_gating
     def test_cluster_cleanup(self):
         num_keys = 100000 if isinstance(self.cluster, ScyllaCluster) and self.cluster.scylla_mode != "debug" else 10000
         timeout = self.cql_timeout(300)
@@ -142,7 +140,6 @@ class TestCleanup(Tester):
         assert size_before > size_after, f"Cleanup is supposed to decrease disk utilisation, before=({sstables_before}, {size_before}) and after=({sstables_after}, {size_after})"
 
     # Reproducer for https://github.com/scylladb/scylladb/issues/1239
-    @pytest.mark.next_gating
     def test_cluster_cleanup_no_resurrection(self):
         """
         - Write data to 2-node cluster
@@ -382,7 +379,6 @@ class TestCleanup(Tester):
         assert actual_num_keys == expected_num_keys
 
     @pytest.mark.single_node
-    @pytest.mark.next_gating
     @pytest.mark.required_features("!tablets")  # cleanup skips tablets
     def test_drop_table_during_cleanup(self):
         """
