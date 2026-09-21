@@ -14,17 +14,24 @@ from cassandra.auth import PlainTextAuthProvider
 
 from test.pylib.scylla_cluster_manager import ScyllaClusterManager
 from test.cluster.dtest.ccmlib.common import logger
+from test.cluster.dtest.ccmlib.scylla_manager import ScyllaManager
 from test.cluster.dtest.ccmlib.scylla_node import ScyllaNode
 
 if TYPE_CHECKING:
     from typing import Any
 
 
-SCYLLA_VERSION_FILE = Path(__file__).parent.parent.parent.parent / "build" / "SCYLLA-VERSION-FILE"
+# .../test/cluster/dtest/ccmlib/scylla_cluster.py -> the source root
+SCYLLA_VERSION_FILE = Path(__file__).parents[4] / "build" / "SCYLLA-VERSION-FILE"
 
 
 class ScyllaCluster:
-    def __init__(self, manager: ScyllaClusterManager, scylla_mode: str, force_wait_for_cluster_start: bool = False):
+    def __init__(self,  # noqa: PLR0913
+                 manager: ScyllaClusterManager,
+                 scylla_mode: str,
+                 force_wait_for_cluster_start: bool = False,
+                 manager_install_dir: str | Path | None = None,
+                 skip_manager_server: bool = False):
         self.manager = manager
         self.scylla_mode = scylla_mode
         self._config_options = {}
@@ -41,6 +48,24 @@ class ScyllaCluster:
             self.default_wait_for_binary_proto = 420
 
         self.force_wait_for_cluster_start = force_wait_for_cluster_start
+
+        # Scylla Manager, when the test asked for one.  skip_manager_server
+        # keeps the per-node agents but leaves the server to another cluster's
+        # manager (see the secondary_cluster fixture).
+        self.skip_manager_server = skip_manager_server
+        self._scylla_manager = ScyllaManager(self, manager_install_dir) if manager_install_dir else None
+
+    def get_path(self) -> str:
+        """Return this cluster's own directory, beside the servers' work dirs.
+
+        The in-tree cluster shim keeps nothing here itself -- every server has
+        its own work dir under the suite log dir -- but Scylla Manager needs a
+        per-cluster place for its config, binaries and log.
+        """
+
+        path = Path(self.manager.cluster.vardir) / f"dtest-cluster-{self.manager.cluster.name}"
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
 
     def _add_nodes(self, servers: list) -> None:
         """Create ScyllaNode instances for the given servers and cache them."""
@@ -59,6 +84,37 @@ class ScyllaCluster:
 
     def get_node_ip(self, nodeid: int) -> str:
         return self.nodelist()[nodeid-1].address()
+
+    def new_node(self,  # noqa: PLR0913
+                 i: int,  # not used here: node names follow the order nodes are created
+                 auto_bootstrap: bool = False,
+                 debug: bool | None = None,  # not used in scylla-dtest
+                 initial_token: str | None = None,
+                 add_node: bool = True,
+                 is_seed: bool = True,
+                 data_center: str | None = None,
+                 rack: str | None = None) -> ScyllaNode:
+        """Add one more node to the cluster, stopped, and return it."""
+
+        assert debug is None or not debug, "argument `debug` is not supported"
+        assert add_node, "creating a node without adding it to the cluster is not supported"
+        assert initial_token is None, "argument `initial_token` is not supported"
+
+        if data_center and rack:
+            placement = {"property_file": {"dc": data_center, "rack": rack}}
+        else:
+            # Without an explicit rack, let the harness pick one, in the given
+            # datacenter or in the one the cluster already lives in.
+            placement = {"auto_rack_dc": data_center or (self._nodes[0].data_center if self._nodes else "dc1")}
+
+        first = len(self._nodes)
+        self._add_nodes(self.manager.servers_add(
+            servers_num=1,
+            config=self._config_options,
+            start=False,
+            **placement,
+        ))
+        return self._nodes[first]
 
     def populate(self, nodes: int | list[int]) -> ScyllaCluster:
         if self._config_options.get("alternator_enforce_authorization"):
@@ -149,13 +205,19 @@ class ScyllaCluster:
         assert profile_options is None, "argument `profile_options` is not supported"
         assert quiet_start is None, "argument `quiet_start` is not supported"
 
-        return self.start_nodes(
+        started = self.start_nodes(
             no_wait=no_wait,
             wait_for_binary_proto=wait_for_binary_proto,
             wait_other_notice=wait_other_notice,
             wait_normal_token_owner=wait_normal_token_owner,
             jvm_args=jvm_args,
         )
+
+        # The manager keeps its metadata in this cluster, so it can only start
+        # once the nodes serve CQL.
+        self.start_scylla_manager()
+
+        return started
 
     def stop_nodes(self,
                    nodes: list[ScyllaNode] | None = None,
@@ -186,6 +248,7 @@ class ScyllaCluster:
              wait_other_notice: bool = False,
              other_nodes: list[ScyllaNode] | None = None,
              wait_seconds: int | None = None) -> list[ScyllaNode]:
+        self.stop_scylla_manager(gently=gently)
         return self.stop_nodes(
             wait=wait,
             gently=gently,
@@ -193,6 +256,50 @@ class ScyllaCluster:
             other_nodes=other_nodes,
             wait_seconds=wait_seconds,
         )
+
+    def remove(self,
+               node: ScyllaNode | None = None,
+               wait_other_notice: bool = False,
+               other_nodes: list[ScyllaNode] | None = None) -> None:
+        """Kill a node and drop it from the cluster, or kill the whole cluster.
+
+        Mirrors scylla-ccm's Cluster.remove(): the node is killed, not
+        decommissioned, so the rest of the ring still knows about it and
+        reports it as down.
+        """
+
+        if node is None:
+            self.stop(gently=False, wait_other_notice=wait_other_notice, other_nodes=other_nodes)
+            return
+
+        if node not in self._nodes:
+            return
+
+        self._nodes.remove(node)
+        node.stop(gently=False, wait_other_notice=wait_other_notice, other_nodes=other_nodes)
+
+    def sctool(self, cmd: list[str]) -> tuple[str, str]:
+        if self._scylla_manager is None:
+            raise RuntimeError("scylla manager not enabled - sctool command cannot be executed")
+        return self._scylla_manager.sctool(cmd)
+
+    def start_scylla_manager(self) -> None:
+        if not self._scylla_manager or self.skip_manager_server:
+            return
+        self._scylla_manager.start()
+
+    def stop_scylla_manager(self, gently: bool = True) -> None:
+        if not self._scylla_manager or self.skip_manager_server:
+            return
+        self._scylla_manager.stop(gently)
+
+    def stress(self, stress_options: list[str], **kwargs):
+        """Run `cassandra-stress` against the first running node."""
+
+        for node in self.nodelist():
+            if node.is_running():
+                return node.stress(stress_options, **kwargs)
+        raise RuntimeError("no running node to run cassandra-stress against")
 
     def nodetool(self, nodetool_cmd: str) -> ScyllaCluster:
         for node in self.nodelist():

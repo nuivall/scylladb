@@ -21,8 +21,23 @@ from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ruamel.yaml import YAML
+
 from test import TOP_SRC_DIR
-from test.cluster.dtest.ccmlib.common import ArgumentError, wait_for, BIN_DIR
+from test.cluster.dtest.ccmlib.common import (
+    ArgumentError,
+    wait_for,
+    BIN_DIR,
+    SCYLLAMANAGER_AGENT_CONF,
+    SCYLLA_CONF_DIR,
+    check_socket_listening,
+    parse_interface,
+)
+from test.cluster.dtest.ccmlib.scylla_manager import (
+    AGENT_API_PORT,
+    AGENT_DEBUG_PORT,
+    AGENT_PROMETHEUS_PORT,
+)
 from test.pylib.internal_types import ServerUpState
 
 if TYPE_CHECKING:
@@ -49,6 +64,10 @@ CASSANDRA_OPTIONS_MAPPING = {
 DEFAULT_SMP = 2
 DEFAULT_MEMORY_PER_CPU = 512 * 1024 * 1024  # bytes
 DEFAULT_SCYLLA_LOG_LEVEL = "info"
+
+# Scylla's REST API port; the manager agent reads the node's configuration through it.
+SCYLLA_API_PORT = 10000
+AGENT_START_TIMEOUT = 180
 
 # The real cqlsh binary, as shipped by this repo (a thin wrapper around
 # tools/cqlsh/bin/cqlsh.py). Used by ScyllaNode.run_cqlsh() below.
@@ -168,6 +187,11 @@ class ScyllaNode:
         self.__classes_log_level = {}
 
         self.bootstrap = True
+
+        # The Scylla Manager agent that runs beside this node, when the cluster
+        # was given a manager. It is started and stopped together with the node.
+        self.scylla_manager = cluster._scylla_manager
+        self._process_agent = None
 
     def set_configuration_options(self,
                                   values: dict | None = None,
@@ -508,6 +532,9 @@ class ScyllaNode:
             connect_driver=False,
         )
 
+        if self.scylla_manager and self.scylla_manager.is_agent_available:
+            self.start_scylla_manager_agent()
+
         if wait_for_binary_proto is None:
             wait_for_binary_proto = self.cluster.force_wait_for_cluster_start and not no_wait
         if wait_other_notice is None:
@@ -532,6 +559,8 @@ class ScyllaNode:
              gently: bool = True,
              wait_seconds: int = 127,
              marks: list[int] | None = None) -> bool:
+        self.stop_scylla_manager_agent(gently=gently)
+
         if not self.is_running():
             return False
 
@@ -593,6 +622,97 @@ class ScyllaNode:
         """Return the path to this node top level directory (where config/data is stored.)"""
 
         return self.cluster.manager.server_get_workdir(server_id=self.server_id)
+
+    def get_conf_dir(self) -> str:
+        """Return the path to this node's configuration directory."""
+
+        return os.path.join(self.get_path(), SCYLLA_CONF_DIR)
+
+    def logfilename(self) -> str:
+        """Return the path to this node's Scylla log."""
+
+        return str(Path(self.get_path()).with_suffix(".log"))
+
+    def get_datacenter_name(self) -> str:
+        return self.data_center
+
+    # ------------------------------------------------- Scylla Manager agent
+
+    def _create_agent_config(self) -> str:
+        """Write the agent's config file and return its path.
+
+        Every port here is bound to this node's own address, so agents of
+        clusters running in parallel never collide.
+        """
+
+        conf_file = os.path.join(self.get_conf_dir(), SCYLLAMANAGER_AGENT_CONF)
+        data = {
+            "https": f"{self.address()}:{AGENT_API_PORT}",
+            "auth_token": self.scylla_manager.auth_token,
+            "tls_cert_file": self.scylla_manager.agent_tls_cert_file,
+            "tls_key_file": self.scylla_manager.agent_tls_key_file,
+            "logger": {"level": "debug"},
+            "debug": f"{self.address()}:{AGENT_DEBUG_PORT}",
+            "scylla": {"api_address": self.address(), "api_port": SCYLLA_API_PORT},
+            "prometheus": f"{self.address()}:{AGENT_PROMETHEUS_PORT}",
+        }
+        with open(conf_file, "w") as f:
+            YAML().dump(data, f)
+        return conf_file
+
+    def update_agent_config(self, new_settings: dict, restart_agent_after_change: bool = True) -> None:
+        conf_file = os.path.join(self.get_conf_dir(), SCYLLAMANAGER_AGENT_CONF)
+        yaml = YAML()
+        with open(conf_file) as f:
+            current_config = yaml.load(f)
+
+        current_config.update(new_settings)
+
+        with open(conf_file, "w") as f:
+            yaml.dump(current_config, f)
+
+        if restart_agent_after_change:
+            self.restart_scylla_manager_agent(gently=True, recreate_config=False)
+
+    def start_scylla_manager_agent(self, create_config: bool = True) -> None:
+        agent_bin = self.scylla_manager._get_bin("scylla-manager-agent")
+        config_file = self._create_agent_config() if create_config else os.path.join(self.get_conf_dir(), SCYLLAMANAGER_AGENT_CONF)
+        log_file = self.logfilename() + ".manager_agent"
+
+        args = [agent_bin, "--config-file", config_file]
+        self.debug(f"Starting Scylla Manager agent: {args}")
+        with open(log_file, "a") as agent_log:
+            self._process_agent = subprocess.Popen(args, stdout=agent_log, stderr=agent_log, close_fds=True)
+
+        with open(config_file) as f:
+            listening_port = int(YAML().load(f)["https"].split(":")[1])
+
+        api_interface = parse_interface(self.address(), listening_port)
+        if not check_socket_listening(api_interface, timeout=AGENT_START_TIMEOUT):
+            raise NodeError(
+                f"scylla-manager-agent API {api_interface[0]}:{api_interface[1]} is not listening after "
+                f"{AGENT_START_TIMEOUT}s; see {log_file}"
+            )
+
+    def stop_scylla_manager_agent(self, gently: bool = True) -> None:
+        if not self._process_agent:
+            return
+        try:
+            if gently:
+                self._process_agent.terminate()
+            else:
+                self._process_agent.kill()
+            self._process_agent.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            self._process_agent.kill()
+            self._process_agent.wait(timeout=30)
+        except OSError:
+            pass
+        self._process_agent = None
+
+    def restart_scylla_manager_agent(self, gently: bool = True, recreate_config: bool = True) -> None:
+        self.stop_scylla_manager_agent(gently=gently)
+        self.start_scylla_manager_agent(create_config=recreate_config)
 
     def stress(self, stress_options: list[str], **kwargs):
         """

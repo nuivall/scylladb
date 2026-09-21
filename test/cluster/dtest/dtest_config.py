@@ -14,6 +14,7 @@ class DTestConfig:
         self.experimental_features = []
         self.tablets = False
         self.scylla_features = set()
+        self.manager_package = None
 
     def setup(self, request):
         self.use_vnodes = request.config.getoption("--use-vnodes")
@@ -21,6 +22,7 @@ class DTestConfig:
         self.experimental_features = request.config.getoption("--experimental-features") or set()
         self.tablets = request.config.getoption("--tablets", default=False)
         self.scylla_features = request.config.scylla_features
+        self.manager_package = request.config.getoption("--scylla-manager-package", default=None)
 
     @property
     def is_scylla(self):
