@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import datetime
 import logging
 import random
@@ -34,14 +35,13 @@ status_messages = (
 clients = ("Android", "iThing", "Chromium", "Mozilla", "Emacs")
 
 
-@pytest.mark.dtest_full
 @pytest.mark.parametrize(
     "strategy",
     [
         pytest.param("LeveledCompactionStrategy"),
         pytest.param("SizeTieredCompactionStrategy"),
-        pytest.param("TimeWindowCompactionStrategy", marks=pytest.mark.next_gating),
-        pytest.param("IncrementalCompactionStrategy", marks=pytest.mark.next_gating),
+        pytest.param("TimeWindowCompactionStrategy"),
+        pytest.param("IncrementalCompactionStrategy"),
     ],
 )
 class TestWideRows(Tester):
@@ -557,7 +557,6 @@ class TestWideRows(Tester):
         self.cluster.compact()
         return row_number
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_wide_rows(self):
         self.write_wide_rows()
