@@ -1,8 +1,13 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import copy
 import logging
 import os
 import shutil
-import subprocess
 from concurrent.futures.thread import ThreadPoolExecutor
 from time import sleep
 
@@ -11,7 +16,7 @@ from cassandra import ConsistencyLevel
 from cassandra.cluster import Session
 from cassandra.concurrent import execute_concurrent_with_args
 from ccmlib import scylla_repository
-from ccmlib.common import SCYLLA_CONF, get_default_scylla_yaml, get_version_from_build
+from ccmlib.common import SCYLLA_CONF, get_default_scylla_yaml
 from ccmlib.scylla_cluster import ScyllaCluster, ScyllaNode
 from ccmlib.utils.version import ComparableScyllaVersion
 from filelock import FileLock
@@ -23,10 +28,23 @@ from tools.assertions import assert_all
 from tools.cluster import enable_views_with_tablets_experimental_feature, new_node, run_rest_api
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import simulate_write_process_in_minutes
-from tools.marks import issue_open
 from tools.session import get_enabled_features, get_supported_features, wait_reconnection
 
 logger = logging.getLogger(__name__)
+
+# NOTE ON UPGRADE SUPPORT IN THIS TREE
+#
+# The in-tree ccmlib shim (test/cluster/dtest/ccmlib/) manages exactly one Scylla
+# binary per run via test.pylib.scylla_cluster_manager, and has none of the
+# version-switching machinery this module relies on:
+#   * ccmlib.scylla_repository.setup() (downloads/caches a relocatable package) is
+#     a stub that raises NotImplementedError -- see its docstring.
+#   * ScyllaCluster has no set_install_dir()/upgrade_cluster(), and ScyllaNode has
+#     no upgrade()/node_scylla_version/get_conf_dir()/update_yaml().
+# So every test below that actually drives an upgrade is kept (body untouched) but
+# skip_env'd with that reason. UpgradeTester/BaseTests stay importable -- and their
+# helper methods runnable -- because none of the missing calls happen until a test
+# method actually executes, and skipped tests never reach that point.
 
 upgrade_matrix_full_path = ["release:2025.1", "release:2025.3", "release:2025.4", "release:2026.1"]
 upgrade_matrix_from_last_release_version = ["release:2026.1"]
@@ -357,7 +375,7 @@ class UpgradeTester(Tester):
 class BaseTests(UpgradeTester):
     __test__ = False
 
-    @pytest.mark.require("jira:SCYLLADB-1884")
+    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ccmlib.scylla_repository.setup(), ScyllaCluster.upgrade_cluster()/set_install_dir(), and ScyllaNode.upgrade() are not implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     @pytest.mark.no_boot_speedups
     def test_cluster_upgrade(self, dtest_config):
         """
@@ -401,6 +419,7 @@ class BaseTests(UpgradeTester):
 
         session.cluster.shutdown()
 
+    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ccmlib.scylla_repository.setup(), ScyllaCluster.upgrade_cluster()/set_install_dir(), and ScyllaNode.upgrade() are not implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     def test_one_node_upgrade(self, dtest_config):
         """
         Test upgrade one node.
@@ -436,7 +455,7 @@ class BaseTests(UpgradeTester):
 
         session.cluster.shutdown()
 
-    @pytest.mark.require("jira:SCYLLADB-1884")
+    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ccmlib.scylla_repository.setup(), ScyllaCluster.upgrade_cluster()/set_install_dir(), and ScyllaNode.upgrade() are not implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     def test_upgrade_cluster_nodes_with_twcs(self, dtest_config):
         """
         Test upgrade all nodes in the cluster sequentially.
@@ -500,49 +519,46 @@ class BaseTests(UpgradeTester):
         session.cluster.shutdown()
 
 
-@pytest.mark.dtest_full
 class TestUpgradeFullPath(BaseTests):
     __test__ = True
 
     upgrade_path = upgrade_matrix_full_path
     init_version = upgrade_path[0]
 
-    @pytest.mark.skip("skip the test for this matrix")
+    @pytest.mark.skip_env(reason="this upgrade-matrix variant does not exercise this test method (see the sibling class that does)")
     def test_one_node_upgrade(self):
         pass
 
-    @pytest.mark.skip("skip the test for this matrix")
+    @pytest.mark.skip_env(reason="this upgrade-matrix variant does not exercise this test method (see the sibling class that does)")
     def test_upgrade_cluster_nodes_with_twcs(self):
         pass
 
 
-@pytest.mark.dtest_full
 class TestUpgradeOneNode(BaseTests):
     __test__ = True
 
     upgrade_path = upgrade_matrix_from_last_release_version
     init_version = upgrade_path[0]
 
-    @pytest.mark.skip("skip the test for this matrix")
+    @pytest.mark.skip_env(reason="this upgrade-matrix variant does not exercise this test method (see the sibling class that does)")
     def test_cluster_upgrade(self):
         pass
 
-    @pytest.mark.skip("skip the test for this matrix")
+    @pytest.mark.skip_env(reason="this upgrade-matrix variant does not exercise this test method (see the sibling class that does)")
     def test_upgrade_cluster_nodes_with_twcs(self):
         pass
 
 
-@pytest.mark.dtest_full
 class TestUpgradeClusterWithEnableDisableTWCSQueries(BaseTests):
     __test__ = True
 
     upgrade_path = upgrade_matrix_from_last_release_version
     init_version = upgrade_path[0]
 
-    @pytest.mark.skip("skip the test for this matrix")
+    @pytest.mark.skip_env(reason="this upgrade-matrix variant does not exercise this test method (see the sibling class that does)")
     def test_cluster_upgrade(self):
         pass
 
-    @pytest.mark.skip("skip the test for this matrix")
+    @pytest.mark.skip_env(reason="this upgrade-matrix variant does not exercise this test method (see the sibling class that does)")
     def test_one_node_upgrade(self):
         pass
