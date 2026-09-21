@@ -23,7 +23,6 @@ consistent_bootstrap_test.py
 counter_tests.py
 cql_additional_tests.py
 cql_cast_test.py
-cql_session_test.py
 cql_static_columns_tests.py
 cql_system_clients_test.py
 cql_tests.py
@@ -67,10 +66,8 @@ paging_test.py
 paxos_tests.py
 per_partition_rate_limiting_test.py
 persistence_test.py
-prepared_statements_test.py
 pushed_notifications_test.py
 putget_test.py
-range_ghost_test.py
 read_amplification_test.py
 read_repair_test.py
 repair_additional_test.py
@@ -84,13 +81,10 @@ reversed_queries_test.py
 rolling_upgrade_test.py
 schema_everywhere_test.py
 schema_test.py
-scylla_help_command_test.py
 scylla_sstable_test.py
 scyllatop_test.py
 secondary_indexes_test.py
-simple_boot_shutdown_test.py
 simple_cluster_driver_test.py
-simple_driver_test.py
 simple_no_driver_test.py
 sla_per_user_test.py
 snapshot_test.py
@@ -106,7 +100,6 @@ topology_test.py
 toppartitions_test.py
 ttl_test.py
 twcs_additional_test.py
-udtencoding_test.py
 update_cluster_layout_tests.py
 updateable_config_test.py
 upgrade_test.py

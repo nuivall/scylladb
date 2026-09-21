@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import time
 
 import pytest
@@ -10,9 +11,7 @@ import pytest
 from dtest_class import Tester, create_cf, create_ks
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
-@pytest.mark.next_gating
 class TestRangeGhosts(Tester):
     def test_ghosts(self):
         """Check range ghost are correctly removed by the system"""
