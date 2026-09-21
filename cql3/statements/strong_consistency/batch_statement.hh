@@ -8,53 +8,41 @@
 
 #pragma once
 
-#include "cql3/cql_statement.hh"
-#include "cql3/attributes.hh"
 #include "cql3/statements/batch_statement.hh"
 
 namespace cql3::statements::strong_consistency {
 
-class batch_statement : public cql_statement {
+/*
+ * A batch committed through the Raft group which owns the partition its
+ * modifications address: their mutations are merged into one, which is what
+ * makes the batch atomic, and is also why they all have to target the same
+ * partition.
+ */
+class batch_statement final : public cql3::statements::batch_statement {
     using result_message = cql_transport::messages::result_message;
-public:
-    using type = cql3::statements::batch_statement::type;
-
-    using single_statement = cql3::statements::batch_statement::single_statement;
-private:
-    int _bound_terms;
-    type _type;
-    std::vector<single_statement> _statements;
-    std::unique_ptr<attributes> _attrs;
 
 public:
-    batch_statement(int bound_terms, type type_, std::vector<single_statement> statements, std::unique_ptr<attributes> attrs);
+    batch_statement(int bound_terms, type type_,
+                    std::vector<single_statement> statements,
+                    std::unique_ptr<attributes> attrs,
+                    cql_stats& stats);
 
-    batch_statement(type type_, std::vector<single_statement> statements, std::unique_ptr<attributes> attrs);
+    batch_statement(type type_,
+                    std::vector<single_statement> statements,
+                    std::unique_ptr<attributes> attrs,
+                    cql_stats& stats);
 
-    virtual future<shared_ptr<result_message>> execute(query_processor& qp, service::query_state& state,
+    future<shared_ptr<result_message>> execute(query_processor& qp, service::query_state& state,
         const query_options& options, std::optional<service::group0_guard> guard) const override;
 
-    virtual future<shared_ptr<result_message>> execute_without_checking_exception_message(query_processor& qp,
+    future<shared_ptr<result_message>> execute_without_checking_exception_message(query_processor& qp,
         service::query_state& qs, const query_options& options,
         std::optional<service::group0_guard> guard) const override;
 
-    virtual future<> check_access(query_processor& qp, const service::client_state& state) const override;
-
-    virtual uint32_t get_bound_terms() const override;
-
-    virtual bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const override;
-
-    void validate() const;
-
-    virtual void validate(query_processor& qp, const service::client_state& state) const override;
-
-    const std::vector<single_statement>& get_statements() const {
-        return _statements;
-    }
-
-    bool should_reclassify_control_connection() const override {
-        return true;
-    }
+private:
+    // Rejects what the strongly consistent write path cannot honour. Runs from
+    // the constructor, like the eventually consistent batch's own validation.
+    void validate_strongly_consistent() const;
 };
 
 }

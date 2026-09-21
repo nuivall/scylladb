@@ -230,7 +230,7 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
 
     shared_ptr<cql_statement> statement;
     if (has_sc_statements) {
-        statement = ::make_shared<strong_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs));
+        statement = ::make_shared<strong_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
     } else {
         statement = ::make_shared<eventual_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
     }
