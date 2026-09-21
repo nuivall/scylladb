@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import re
 import time
@@ -16,6 +17,7 @@ from dtest_class import Tester, WaitTimeoutExpiredError, create_cf, create_ks
 from dtest_scylla_manager import (
     HostHealth,
     HostRestStatus,
+    MANAGER_UNAVAILABLE_REASON,
     NodeStatus,
     RepairTask,
     ScyllaManagerError,
@@ -35,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.scylla_manager
+@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaMgmtRepair(Tester, ScyllaManagerMixin):
     KEYSPACE_NAME = "ks"
 
@@ -388,7 +391,7 @@ class TestScyllaMgmtRepair(Tester, ScyllaManagerMixin):
         repair_task.wait_for_status(list_status=[TaskStatus.DONE])
         self._assert_multiple_row_ranges_from_specific_node(node_to_query=dc2_node2, nodes_to_shut_down=[dc1_node1, dc1_node2, dc2_node1], keyspace_name=self.KEYSPACE_NAME, tables_and_row_count_dict=dict(second_data_range, cf_dc1=[]))
 
-    @pytest.mark.skip("Times out in the jenkins job")
+    @pytest.mark.skip_env(reason="Times out in the jenkins job")
     def test_fail_fast(self):
         """
         When the '--fail-fast' flag is used on a repair command, the task should immediately fail upon error,
