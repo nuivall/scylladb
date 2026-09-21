@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -16,16 +17,12 @@ from cdc_test import CDCInitializeHelper
 from dtest_class import Tester, create_ks
 from dtest_setup import DTestSetup
 from dtest_setup_overrides import DTestSetupOverrides
-from tools.marks import issue_open, unmark
 from tools.misc import ImmutableMapping
 
 MB = 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
-
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 @pytest.mark.scylla_cdc
 class TestLargeColumnsWithCDC(Tester, CDCInitializeHelper):
@@ -93,7 +90,6 @@ class TestLargeColumnsWithCDC(Tester, CDCInitializeHelper):
         )
 
     @pytest.mark.parametrize("prepare_statements", [True, False], ids=["prepared_statements", "unprepared_statements"])
-    @unmark.next_gating  # https://github.com/scylladb/scylla-dtest/issues/3354
     def test_row_with_several_columns_of_blobs_with_cdc_preimage_full_postimage(self, prepare_statements: bool, fixture_dtest_setup: DTestSetup):
         """test row with several columns of blob type
 
