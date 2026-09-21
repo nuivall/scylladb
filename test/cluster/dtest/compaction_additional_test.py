@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import datetime
 import glob
 import itertools
@@ -53,7 +54,7 @@ from tools.files import (
     get_node_cf_dir,
     get_sstables_files,
 )
-from tools.marks import issue_open, unmark, with_feature
+from tools.marks import with_feature
 from tools.misc import ImmutableMapping, dump_sstables
 from tools.rest_clients import StorageServiceClient
 from tools.scylla_defines import CompactionStrategy
@@ -61,7 +62,6 @@ from tools.stress import fill_data_by_cs
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -130,7 +130,6 @@ def get_strategies_upgrade_options() -> list[Any]:
     return list(itertools.product(_strategies, _strategies))
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCompactionAdditional(CompactionAdditionalTester):
     SSTABLE_PREFIX_REG_EXPR = "m[c-est]|n[a-b]|o[a]|d[a]"
@@ -164,7 +163,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
 
         assert tombstones_found, "Tombstones were not found"
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_compaction_delete_with_smp_change(self):  # noqa: PLR0915
         """
@@ -393,6 +391,14 @@ class TestCompactionAdditional(CompactionAdditionalTester):
             self.write_n_data_files(node=node1, session=session, key_space=key_space_name, num_of_files=7, num_of_keys=10)
             self.wait_for_new_minute()
 
+        # TWCS closes a window only when an sstable of a newer window arrives ("now" is the newest window
+        # seen, not the wall clock), and then major-compacts it if it holds more than one sstable. With a
+        # fast flush, the last window written above still holds several sstables, so close it with
+        # one more flush and let its compaction finish: the files listed below then all belong to windows
+        # that are closed and compacted, which is what the second phase must not touch.
+        self.write_n_data_files(node=node1, session=session, key_space=key_space_name, num_of_files=1, num_of_keys=10)
+        node1.wait_for_compactions(key_space_name, "cf")
+
         # Get list of sstables names
         cf_dir = get_node_cf_dir(node1, key_space_name, "cf")
         sstables_files1 = get_sstables_files(cf_dir, f_type="Data")
@@ -590,9 +596,8 @@ class TestCompactionAdditional(CompactionAdditionalTester):
 
     @pytest.mark.single_node
     @pytest.mark.use_cassandra_stress
-    @unmark.next_gating
     @pytest.mark.parametrize("strategy1,strategy2", get_strategies_upgrade_options(), ids=generate_ids)
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#16739"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_refresh_and_restart_after_compaction_strategy_change(self, strategy1, strategy2):  # noqa: PLR0915
         """
         This test tries to load backup sstable by refresh and restart after changing the compaction strategy.
@@ -736,7 +741,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
 
     @pytest.mark.single_node
     @pytest.mark.use_cassandra_stress
-    @unmark.next_gating  # https://github.com/scylladb/scylla-enterprise/issues/3385
     @pytest.mark.parametrize("strategy1,strategy2", get_strategies_upgrade_options(), ids=generate_ids)
     @pytest.mark.skip_if(with_feature("tablets"))
     def test_reshard_after_compaction_strategy_and_smp_change(self, strategy1, strategy2):  # noqa: PLR0915
@@ -872,7 +876,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
         ids=["100-10_000-100_000", "10_000-100-100_000", "10_000-100_000-100", "100-100_000-10_000", "100_000-10_000-100", "100_000-100-10_00"],
     )
     @pytest.mark.single_node
-    @pytest.mark.dtest_full
     def test_major_compaction_processes_tables_in_order_by_size(self, cf_sizes: tuple):
         """
         Major compaction should process tables in a sorted order,
@@ -939,8 +942,15 @@ class TestCompactionAdditional(CompactionAdditionalTester):
         assert sorted_by_time == sorted_by_size, "The list of rows sorted by size is not identical to the list of rows sorted by compaction time"
 
     def wait_for_new_minute(self):
-        while dt.now().second > 5:
-            time.sleep(1)
+        """Sleep until the next minute starts.
+
+        Always cross a minute boundary: returning at once while the clock is still in the first seconds of
+        a minute let a writer that is quicker than that put its "next minute" of data into the same time
+        window.
+        """
+        next_minute = dt.now().replace(second=0, microsecond=0) + datetime.timedelta(minutes=1)
+        while (remaining := (next_minute - dt.now()).total_seconds()) > 0:
+            time.sleep(min(remaining, 1))
 
     def get_sstables_compactions_flow(self, node, exprs, from_mark):
         compact_sstables = []
@@ -1020,7 +1030,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
             assert not double_compacted_sstables, f"Found sstables that were compacted by both regular compactions and cleanup (table '{tables[i]}'): {double_compacted_sstables}"
 
     @pytest.mark.single_node
-    @unmark.next_gating
     def test_double_compaction_by_cleanup_and_major_compactions(self):
         """
         Cover the issue https://github.com/scylladb/scylla/issues/8155
@@ -1187,7 +1196,6 @@ class TestCompactionAdditional(CompactionAdditionalTester):
         assert len(get_list_of_sstables(node1, "ks", "tb")) == 1, "after deletion, major compaction should have compacted sstables regardless of time window"
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCompactionAdditionalStrategy(CompactionAdditionalTester):
     strategy = None
@@ -1255,7 +1263,7 @@ class TestCompactionAdditionalStrategy(CompactionAdditionalTester):
         node1.flush()
         node1.compact()
         node1.stop()
-        files = glob.glob(os.path.join(node1.get_path(), "commitlogs", "*"))
+        files = glob.glob(os.path.join(node1.get_path(), "commitlog", "*"))
         for f in files:
             try:
                 os.remove(f)
@@ -1293,7 +1301,6 @@ class TestCompactionAdditionalStrategy(CompactionAdditionalTester):
 
         assert before_start_sstables != after_start_sstables, f"No compaction detected after restarting {node1.name}. SSTables in ks/cf: {after_start_sstables}"
 
-    @pytest.mark.dtest_debug
     def test_compaction_removes_ttld_data_after_gc_period(self):
         """
         Test that compaction removes TTLd data after gc_period
@@ -1368,7 +1375,6 @@ class TestCompactionAdditionalStrategy(CompactionAdditionalTester):
             w.close()
 
 
-@pytest.mark.dtest_full
 class TestTimeWindowDataSegregation(CompactionAdditionalTester):
     keyspace_name = "ks"
     table_name = "test"
@@ -2429,7 +2435,6 @@ class TestTimeWindowDataSegregation(CompactionAdditionalTester):
         return sorted_sstables
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestValidationCompaction(CompactionAdditionalTester):
     KS = "ks"
@@ -2437,7 +2442,7 @@ class TestValidationCompaction(CompactionAdditionalTester):
     CF_2 = "cf2"
     RF = 1
     CORRUPT_DATA_FILE_NAME = "mc-1-big-Data.db"
-    CORRUPT_DATA_FILE_DIR = Path("test-sstables/sstable_with_invalid_fragment/ks/cf-test")
+    CORRUPT_DATA_FILE_DIR = Path(__file__).parent / "test-sstables/sstable_with_invalid_fragment/ks/cf-test"
     CORRUPT_DATA_FILE_PATH = CORRUPT_DATA_FILE_DIR / CORRUPT_DATA_FILE_NAME
     DATA_FILE_NAME = "md-1-big-Data.db"
     PK19_PATTERN = r"\x19\x00\x00\x00 \(\{key:\s*pk\{000419000000\},\s*token:\s*-5674409923619649499\}\)"
@@ -2558,7 +2563,6 @@ class TestLCSSSTablePromotion(CompactionAdditionalTester):
             node.wait_for_compactions(self.KS, self.CF)
         return levels
 
-    @pytest.mark.dtest_full
     def test_lcs_sstable_promotion(self):
         """
         This test validates that LCS adheres to the restrictions
