@@ -7,5 +7,4 @@ manager_restore_tests.py
 manager_suspension_test.py
 manager_task_tests.py
 migration_test.py
-reversed_queries_test.py
 update_cluster_layout_tests.py
