@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import os
 import re
@@ -27,6 +33,24 @@ logger = logging.getLogger(__name__)
 SPACE_PLACEHOLDER = r"SPACE"
 C1_PREFIX = "value%d"
 C2_PREFIX = "other_value%d"
+
+# These tests drive a real Scylla Manager server through sctool, and the manager in turn talks
+# to a scylla-manager-agent sidecar it expects alongside every cluster node plus a Scylla cluster
+# of its own to store its metadata. Upstream dtest got all of that from a CCM plugin (it installed
+# and started scylla-manager/scylla-manager-agent binaries next to each ccm node, see
+# ccmlib.scylla_manager and common.SCYLLAMANAGER_DIR/SCYLLAMANAGER_CONF referenced below). The
+# in-tree ccm shim (test/cluster/dtest/ccmlib) provisions nodes through
+# test.pylib.scylla_cluster_manager.ScyllaClusterManager instead and has none of that: no sctool
+# binary, no manager server, no agent sidecar, no manager-owned backend cluster, and no
+# prepare_scylla_manager()/skip_manager_server hooks on DTestSetup. A scylladb/scylla-manager
+# server image is pullable here, but wiring a working manager needs the agent sidecar per node
+# and its own metadata cluster added to the shim, which is real infrastructure work, not a
+# per-test fixture swap, and it is not present.
+MANAGER_UNAVAILABLE_REASON = (
+    "requires a running Scylla Manager server plus its sctool CLI and a scylla-manager-agent "
+    "sidecar on every cluster node; none of these are provided by the in-tree ccm cluster shim "
+    "(test/cluster/dtest/ccmlib) or dtest_setup.py"
+)
 
 
 class ComparableHealthCheckField:
