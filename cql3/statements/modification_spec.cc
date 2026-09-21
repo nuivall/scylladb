@@ -11,11 +11,14 @@
 #include "utils/assert.hh"
 #include "cql3/statements/modification_spec.hh"
 #include "cql3/attributes.hh"
+#include "cql3/operation.hh"
 #include "cql3/query_processor.hh"
+#include "cql3/result_set.hh"
 #include "cql3/selection/selection.hh"
 #include "cql3/expr/expr-utils.hh"
 #include "cql3/expr/evaluate.hh"
 #include "data_dictionary/data_dictionary.hh"
+#include "types/collection.hh"
 
 #include <optional>
 
@@ -45,6 +48,9 @@ modification_spec::modification_spec(statement_type type_, uint32_t bound_terms,
     , s{schema_}
     , attrs{std::move(attrs_)}
     , _stats(stats_)
+    , _columns_to_read(schema_->all_columns_count())
+    , _columns_of_cas_result_set(schema_->all_columns_count())
+    , _column_operations{}
     , _ks_sel(::is_internal_keyspace(schema_->ks_name()) ? ks_selector::SYSTEM : ks_selector::NONSYSTEM)
     , _timeout_config_selector(modification_timeout(*schema_))
 { }
@@ -200,6 +206,96 @@ void modification_spec::set_if_exist_condition() {
 
 bool modification_spec::has_if_exist_condition() const {
     return _if_exists;
+}
+void modification_spec::build_cas_result_set_metadata() {
+
+    std::vector<lw_shared_ptr<column_specification>> columns;
+    // Add the mandatory [applied] column to result set metadata
+    auto applied = make_lw_shared<cql3::column_specification>(s->ks_name(), s->cf_name(),
+            make_shared<cql3::column_identifier>("[applied]", false), boolean_type);
+
+    columns.push_back(applied);
+
+    const auto& all_columns = s->all_columns();
+    if (_if_exists || _if_not_exists) {
+        // If all our conditions are columns conditions (IF x = ?), then it's enough to query
+        // the columns from the conditions. If we have a IF EXISTS or IF NOT EXISTS however,
+        // we need to query all columns for the row since if the condition fails, we want to
+        // return everything to the user.
+        // XXX Static columns make this a bit more complex, in that if an insert only static
+        // columns, then the existence condition applies only to the static columns themselves, and
+        // so we don't want to include regular columns in that case.
+        for (const auto& def : all_columns) {
+            _columns_of_cas_result_set.set(def.ordinal_id);
+        }
+    } else {
+        expr::for_each_expression<expr::column_value>(_condition, [&] (const expr::column_value& col) {
+            _columns_of_cas_result_set.set(col.col->ordinal_id);
+        });
+    }
+    columns.reserve(columns.size() + all_columns.size());
+    // We must filter conditions using the _columns_of_cas_result_set, since
+    // the same column can be used twice in the condition list:
+    // if a > 0 and a < 3.
+    for (const auto& def : all_columns) {
+        if (_columns_of_cas_result_set.test(def.ordinal_id)) {
+            columns.emplace_back(def.column_specification);
+        }
+    }
+    // Ensure we prefetch all of the columns of the result set. This is also
+    // necessary to check conditions.
+    _columns_to_read.union_with(_columns_of_cas_result_set);
+    _cas_result_metadata = seastar::make_shared<cql3::metadata>(std::move(columns));
+}
+
+modification_spec::validate(query_processor&, const service::client_state& state) const {
+    if (has_conditions() && attrs->is_timestamp_set()) {
+        throw exceptions::invalid_request_exception("Cannot provide custom timestamp for conditional updates");
+    }
+
+    if (is_counter() && attrs->is_timestamp_set() && !is_raw_counter_shard_write()) {
+        throw exceptions::invalid_request_exception("Cannot provide custom timestamp for counter updates");
+    }
+
+    if (is_counter() && attrs->is_time_to_live_set()) {
+        throw exceptions::invalid_request_exception("Cannot provide custom TTL for counter updates");
+    }
+
+    if (is_view()) {
+        throw exceptions::invalid_request_exception("Cannot directly modify a materialized view");
+    }
+}
+
+void modification_spec::add_operation(std::unique_ptr<operation> op) {
+    if (op->column.is_static()) {
+        _sets_static_columns = true;
+    } else {
+        _sets_regular_columns = true;
+    }
+    if (op->requires_read()) {
+        _requires_read = true;
+        _columns_to_read.set(op->column.ordinal_id);
+        if (op->column.type->is_collection() ) {
+            auto ctype = static_pointer_cast<const collection_type_impl>(op->column.type);
+            if (!ctype->is_multi_cell()) {
+                throw std::logic_error(format("cannot prefetch frozen collection: {}", op->column.name_as_text()));
+            }
+        }
+    }
+
+    if (op->requires_lwt()) {
+        _requires_lwt = true;
+    }
+
+    if (op->column.is_counter()) {
+        auto is_raw_counter_shard_write = op->is_raw_counter_shard_write();
+        if (_is_raw_counter_shard_write && _is_raw_counter_shard_write != is_raw_counter_shard_write) {
+            throw exceptions::invalid_request_exception("Cannot mix regular and raw counter updates");
+        }
+        _is_raw_counter_shard_write = is_raw_counter_shard_write;
+    }
+
+    _column_operations.push_back(std::move(op));
 }
 
 void modification_spec::reject_in_relations_with_conditions(bool key_is_in_relation, bool clustering_key_has_IN) const {

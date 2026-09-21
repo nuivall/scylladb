@@ -24,6 +24,7 @@ namespace cql3 {
 namespace statements {
 
 class modification_statement;
+class modification_spec;
 
 namespace raw {
 
@@ -51,7 +52,7 @@ protected:
     // Must be called before processing WHERE clause, because to perform sanity checks there
     // we need to know what kinds of conditions (static, regular) the statement has.
     void prepare_conditions(data_dictionary::database db, const schema& schema, prepare_context& ctx,
-            cql3::statements::modification_statement& stmt) const;
+            cql3::statements::modification_spec& spec) const;
 
     virtual audit::statement_category category() const override;
 };

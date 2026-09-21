@@ -32,6 +32,7 @@ class query_processor;
 class query_options;
 class attributes;
 class operation;
+class metadata;
 
 namespace statements {
 
@@ -54,11 +55,29 @@ public:
     const statement_type type;
 private:
     const uint32_t _bound_terms;
+    // If we have operation on list entries, such as adding or
+    // removing an entry, the modification must prefetch
+    // the old values of the list to create an idempotent mutation.
+    // If the statement has conditions, conditional columns must
+    // also be prefetched, to evaluate conditions. If the
+    // statement has IF EXISTS/IF NOT EXISTS, we prefetch all
+    // columns, to match Cassandra behaviour.
+    // This bitset contains a mask of ordinal_id identifiers
+    // of the required columns.
+    column_set _columns_to_read;
+    // A CAS statement returns a result set with the columns
+    // used in condition expression. This is a mask of ordinal_id
+    // identifiers of the required columns. Contains all columns
+    // of a schema if we have IF EXISTS/IF NOT EXISTS. Does *not*
+    // contain LIST columns prefetched to apply updates, unless
+    // these columns are also used in conditions.
+    column_set _columns_of_cas_result_set;
 public:
     const schema_ptr s;
     const std::unique_ptr<attributes> attrs;
 
 protected:
+    std::vector<std::unique_ptr<operation>> _column_operations;
     cql_stats& _stats;
 
     expr::expression _condition = expr::conjunction{{}}; // TRUE
@@ -67,14 +86,31 @@ private:
     // Which of the client's write timeouts applies to this modification. The
     // statement wrapping the spec passes it on to cql_statement.
     const timeout_config_selector _timeout_config_selector;
+    // The result set a conditional modification returns. Built while preparing
+    // the conditions, and handed to the wrapping statement, which is what a
+    // client asks for the result metadata.
+    seastar::shared_ptr<metadata> _cas_result_metadata;
 
     // True if this statement has _if_exists or _if_not_exists or other
     // conditions that apply to static/regular columns, respectively.
     // Pre-computed during statement prepare.
     bool _has_static_column_conditions = false;
     bool _has_regular_column_conditions = false;
+    // True if any of update operations requires a prefetch.
+    // Pre-computed during statement prepare.
+    bool _requires_read = false;
+    // True if any of the update operations requires LWT (an IF condition) for
+    // atomicity, e.g. SET col = col + 1 on a non-counter column.
+    bool _requires_lwt = false;
     bool _if_not_exists = false;
     bool _if_exists = false;
+
+    // True if this statement has column operations that apply to static/regular
+    // columns, respectively.
+    bool _sets_static_columns = false;
+    bool _sets_regular_columns = false;
+
+    std::optional<bool> _is_raw_counter_shard_write;
 
 public:
     modification_spec(
@@ -106,6 +142,9 @@ public:
 
     future<> check_access(query_processor& qp, const service::client_state& state) const;
 
+    // Validate before execute, using client state and current schema
+    void validate(query_processor&, const service::client_state& state) const;
+
     bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const;
 
     bool should_reclassify_control_connection() const;
@@ -113,6 +152,12 @@ public:
     timeout_config_selector get_timeout_config_selector() const { return _timeout_config_selector; }
 
     void inc_cql_stats(bool is_internal) const;
+
+    void add_operation(std::unique_ptr<operation> op);
+
+    bool is_raw_counter_shard_write() const {
+        return _is_raw_counter_shard_write.value_or(false);
+    }
 
     void analyze_condition(expr::expression cond);
 
@@ -148,7 +193,40 @@ public:
      */
     bool applies_to(const selection::selection* selection, const update_parameters::prefetch_data::row* row, const query_options& options) const;
 
+    // CAS statement returns a result set. Prepare result set metadata
+    // so that the wrapping statement returns a meaningful value.
+    void build_cas_result_set_metadata();
+
+    // The result set metadata of a conditional modification, unset when the
+    // modification carries no conditions.
+    const seastar::shared_ptr<metadata>& cas_result_metadata() const { return _cas_result_metadata; }
+
+    // True if any of update operations of this statement requires
+    // a prefetch of the old cell.
+    bool requires_read() const { return _requires_read; }
+    bool has_column_operations() const { return !_column_operations.empty(); }
+
+    // True if any of the update operations requires LWT for atomicity.
+    bool requires_lwt() const { return _requires_lwt; }
+
+    // Columns used in this statement conditions or operations.
+    const column_set& columns_to_read() const { return _columns_to_read; }
+
+    // Columns of the statement result set (only CAS statement
+    // returns a result set).
+    const column_set& columns_of_cas_result_set() const { return _columns_of_cas_result_set; }
+
 protected:
+    // Return true if this statement doesn't update or read any regular rows, only static rows.
+    // Note, it isn't enough to just check !_sets_regular_columns && _regular_conditions.empty(),
+    // because a DELETE statement that deletes whole rows (DELETE FROM ...) technically doesn't
+    // have any column operations and hence doesn't have _sets_regular_columns set. It doesn't
+    // have _sets_static_columns set either so checking the latter flag too here guarantees that
+    // this function works as expected in all cases.
+    bool applies_only_to_static_columns() const {
+        return _sets_static_columns && !_sets_regular_columns && !_has_regular_column_conditions;
+    }
+
     /**
      * If there are conditions on the statement, this is called after the where clause and conditions have been
      * processed to check that they are compatible.  A conditional statement cannot

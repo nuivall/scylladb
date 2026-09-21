@@ -48,9 +48,6 @@ modification_statement::modification_statement(statement_type type_, uint32_t bo
         schema_ptr schema_, std::unique_ptr<attributes> attrs_, cql_stats& stats_)
     : cql_statement(modification_timeout(*schema_))
     , modification_spec(type_, bound_terms, schema_, std::move(attrs_), stats_)
-    , _columns_to_read(schema_->all_columns_count())
-    , _columns_of_cas_result_set(schema_->all_columns_count())
-    , _column_operations{}
 { }
 
 uint32_t modification_statement::get_bound_terms() const {
@@ -67,6 +64,17 @@ bool modification_statement::depends_on(std::string_view ks_name, std::optional<
 
 bool modification_statement::should_reclassify_control_connection() const {
     return spec().should_reclassify_control_connection();
+}
+
+void modification_statement::validate(query_processor& qp, const service::client_state& state) const {
+    spec().validate(qp, state);
+}
+
+seastar::shared_ptr<const metadata> modification_statement::get_result_metadata() const {
+    if (const auto& m = spec().cas_result_metadata()) {
+        return m;
+    }
+    return make_empty_metadata();
 }
 
 modification_statement::~modification_statement() = default;
@@ -370,7 +378,7 @@ modification_statement::execute_with_condition(query_processor& qp, service::que
             {read_timeout, qs.get_permit(), qs.get_client_state(), qs.get_trace_state()},
             std::move(cl_for_paxos).assume_value(), cl_for_learn, statement_timeout, cas_timeout, true, {},
             attrs->is_bypass_large_data_guardrails()).then([this, request = std::move(request), tablet_info = std::move(tablet_info)] (service::storage_proxy::cas_result cas_result) mutable {
-        auto result = request->build_cas_result_set(_metadata, _columns_of_cas_result_set, cas_result.is_applied);
+        auto result = request->build_cas_result_set(spec().cas_result_metadata(), spec().columns_of_cas_result_set(), cas_result.is_applied);
         if (tablet_info) {
             result->add_tablet_info(std::move(*tablet_info));
         }
@@ -381,47 +389,6 @@ modification_statement::execute_with_condition(query_processor& qp, service::que
         }
         return result;
     });
-}
-
-void modification_statement::build_cas_result_set_metadata() {
-
-    std::vector<lw_shared_ptr<column_specification>> columns;
-    // Add the mandatory [applied] column to result set metadata
-    auto applied = make_lw_shared<cql3::column_specification>(s->ks_name(), s->cf_name(),
-            make_shared<cql3::column_identifier>("[applied]", false), boolean_type);
-
-    columns.push_back(applied);
-
-    const auto& all_columns = s->all_columns();
-    if (has_if_exist_condition() || has_if_not_exist_condition()) {
-        // If all our conditions are columns conditions (IF x = ?), then it's enough to query
-        // the columns from the conditions. If we have a IF EXISTS or IF NOT EXISTS however,
-        // we need to query all columns for the row since if the condition fails, we want to
-        // return everything to the user.
-        // XXX Static columns make this a bit more complex, in that if an insert only static
-        // columns, then the existence condition applies only to the static columns themselves, and
-        // so we don't want to include regular columns in that case.
-        for (const auto& def : all_columns) {
-            _columns_of_cas_result_set.set(def.ordinal_id);
-        }
-    } else {
-        expr::for_each_expression<expr::column_value>(_condition, [&] (const expr::column_value& col) {
-            _columns_of_cas_result_set.set(col.col->ordinal_id);
-        });
-    }
-    columns.reserve(columns.size() + all_columns.size());
-    // We must filter conditions using the _columns_of_cas_result_set, since
-    // the same column can be used twice in the condition list:
-    // if a > 0 and a < 3.
-    for (const auto& def : all_columns) {
-        if (_columns_of_cas_result_set.test(def.ordinal_id)) {
-            columns.emplace_back(def.column_specification);
-        }
-    }
-    // Ensure we prefetch all of the columns of the result set. This is also
-    // necessary to check conditions.
-    _columns_to_read.union_with(_columns_of_cas_result_set);
-    _metadata = seastar::make_shared<cql3::metadata>(std::move(columns));
 }
 
 namespace raw {
@@ -552,10 +519,10 @@ column_condition_prepare(const expr::expression& expr, data_dictionary::database
 
 void
 modification_statement::prepare_conditions(data_dictionary::database db, const schema& schema, prepare_context& ctx,
-        cql3::statements::modification_statement& stmt) const
+        cql3::statements::modification_spec& spec) const
 {
     if (_if_not_exists || _if_exists || _conditions) {
-        if (stmt.is_counter()) {
+        if (spec.is_counter()) {
             throw exceptions::invalid_request_exception("Conditional updates are not supported on counter tables");
         }
         if (_attrs->timestamp) {
@@ -567,17 +534,17 @@ modification_statement::prepare_conditions(data_dictionary::database db, const s
             // So far this is enforced by the parser, but let's throwing_assert it for sanity if ever the parse changes.
             throwing_assert(!_conditions);
             throwing_assert(!_if_exists);
-            stmt.set_if_not_exist_condition();
+            spec.set_if_not_exist_condition();
         } else if (_if_exists) {
             throwing_assert(!_conditions);
             throwing_assert(!_if_not_exists);
-            stmt.set_if_exist_condition();
+            spec.set_if_exist_condition();
         } else {
-            stmt._condition = column_condition_prepare(*_conditions, db, keyspace(), schema, ctx.get_dialect());
-            expr::fill_prepare_context(stmt._condition, ctx);
-            stmt.analyze_condition(stmt._condition);
+            spec._condition = column_condition_prepare(*_conditions, db, keyspace(), schema, ctx.get_dialect());
+            expr::fill_prepare_context(spec._condition, ctx);
+            spec.analyze_condition(spec._condition);
         }
-        stmt.build_cas_result_set_metadata();
+        spec.build_cas_result_set_metadata();
     }
 }
 
@@ -588,56 +555,6 @@ audit::statement_category modification_statement::category() const {
 }  // namespace raw
 
 void
-modification_statement::validate(query_processor&, const service::client_state& state) const {
-    if (has_conditions() && attrs->is_timestamp_set()) {
-        throw exceptions::invalid_request_exception("Cannot provide custom timestamp for conditional updates");
-    }
-
-    if (is_counter() && attrs->is_timestamp_set() && !is_raw_counter_shard_write()) {
-        throw exceptions::invalid_request_exception("Cannot provide custom timestamp for counter updates");
-    }
-
-    if (is_counter() && attrs->is_time_to_live_set()) {
-        throw exceptions::invalid_request_exception("Cannot provide custom TTL for counter updates");
-    }
-
-    if (is_view()) {
-        throw exceptions::invalid_request_exception("Cannot directly modify a materialized view");
-    }
-}
-
-void modification_statement::add_operation(std::unique_ptr<operation> op) {
-    if (op->column.is_static()) {
-        _sets_static_columns = true;
-    } else {
-        _sets_regular_columns = true;
-    }
-    if (op->requires_read()) {
-        _requires_read = true;
-        _columns_to_read.set(op->column.ordinal_id);
-        if (op->column.type->is_collection() ) {
-            auto ctype = static_pointer_cast<const collection_type_impl>(op->column.type);
-            if (!ctype->is_multi_cell()) {
-                throw std::logic_error(format("cannot prefetch frozen collection: {}", op->column.name_as_text()));
-            }
-        }
-    }
-
-    if (op->requires_lwt()) {
-        _requires_lwt = true;
-    }
-
-    if (op->column.is_counter()) {
-        auto is_raw_counter_shard_write = op->is_raw_counter_shard_write();
-        if (_is_raw_counter_shard_write && _is_raw_counter_shard_write != is_raw_counter_shard_write) {
-            throw exceptions::invalid_request_exception("Cannot mix regular and raw counter updates");
-        }
-        _is_raw_counter_shard_write = is_raw_counter_shard_write;
-    }
-
-    _column_operations.push_back(std::move(op));
-}
-
 bool modification_statement::is_conditional() const {
     return has_conditions();
 }
