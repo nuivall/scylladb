@@ -32,5 +32,4 @@ topology_operation_during_upgrade_test.py
 twcs_additional_test.py
 update_cluster_layout_tests.py
 upgrade_test.py
-wide_rows_test.py
 workload_prioritization_upgrade_test.py
