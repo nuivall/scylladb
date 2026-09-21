@@ -656,10 +656,11 @@ class ScyllaNode:
         if wait and p.wait(timeout=timeout):
             raise NodetoolError(" ".join(nodetool_cmd), p.returncode, stdout, stderr)
 
-        stderr = "\n".join(
-            line for line in stderr.splitlines()
-            if self.debug(f"checking {line}") or not any(p.fullmatch(line) for p in NODETOOL_STDERR_IGNORED_PATTERNS)
-        )
+        if stderr is not None:
+            stderr = "\n".join(
+                line for line in stderr.splitlines()
+                if self.debug(f"checking {line}") or not any(p.fullmatch(line) for p in NODETOOL_STDERR_IGNORED_PATTERNS)
+            )
 
         return stdout, stderr
 
