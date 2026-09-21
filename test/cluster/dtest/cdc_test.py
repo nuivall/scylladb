@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import bisect
 import itertools
 import logging
@@ -40,7 +41,6 @@ from tools.cdc_utils import (
 )
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import keyspace_has_tablets
-from tools.marks import issue_open
 from tools.misc import ImmutableMapping
 
 TOKENS_PER_NODE = 256
@@ -194,7 +194,6 @@ class CDCInitializeHelper:
 
 
 @pytest.mark.scylla_cdc
-@pytest.mark.dtest_full
 class TestCdc(Tester, CDCInitializeHelper):
     @pytest.fixture(scope="function", autouse=True)
     def fixture_dtest_setup_overrides(self, dtest_config):
@@ -264,7 +263,6 @@ class TestCdc(Tester, CDCInitializeHelper):
     def test_simple_cdc(self, request, cluster_config):
         self.simple_cdc_template(request=request, topology=cluster_config.topology, replication=cluster_config.replication, with_preimage=False)
 
-    @pytest.mark.next_gating
     def test_simple_cdc_with_preimage(self, request, cluster_config):
         self.simple_cdc_template(request=request, topology=cluster_config.topology, replication=cluster_config.replication, with_preimage=True)
 
@@ -322,7 +320,6 @@ class TestCdc(Tester, CDCInitializeHelper):
         logger.debug("Test finished")
 
     @pytest.mark.no_boot_speedups
-    @pytest.mark.next_gating
     # the test is not relevant for tablets - cluster expansion doesn't affect CDC streams of tablets-based keyspaces
     @pytest.mark.required_features("!tablets")
     def test_cluster_expansion_with_cdc(self, request, cluster_config):
@@ -386,9 +383,7 @@ class TestCdc(Tester, CDCInitializeHelper):
 
         logger.debug("Test finished")
 
-    @pytest.mark.next_gating
-    # Test had history of timing out in debug, see: https://github.com/scylladb/scylla-dtest/issues/3275
-    @pytest.mark.scylla_mode("!debug")
+    @pytest.mark.skip_mode(mode="debug", reason="test has a history of timing out in debug mode (scylladb/scylla-dtest#3275)")
     # the test is not relevant for tablets - cluster reduction doesn't affect CDC streams of tablets-based keyspaces
     @pytest.mark.required_features("!tablets")
     def test_cluster_reduction_with_cdc(self, request, cluster_config):
@@ -497,23 +492,18 @@ class TestCdc(Tester, CDCInitializeHelper):
 
         logger.debug("Test finished")
 
-    @pytest.mark.next_gating
-    @pytest.mark.skip_if(issue_open("scylladb/scylladb#14401"))
     def test_change_field_type_with_cdc(self, request, cluster_config):
         self.schema_change_template(request, "ALTER TABLE ks.cf ALTER b TYPE blob", topology=cluster_config.topology, replication=cluster_config.replication)
 
-    @pytest.mark.skip_if(issue_open("scylladb/scylladb#14401"))
     def test_change_field_type_with_cdc_and_preimage(self, request, cluster_config):
         self.schema_change_template(request, "ALTER TABLE ks.cf ALTER b TYPE blob", topology=cluster_config.topology, replication=cluster_config.replication, with_preimage=True)
 
-    @pytest.mark.next_gating
     def test_add_field_with_cdc(self, request, cluster_config):
         self.schema_change_template(request, "ALTER TABLE ks.cf ADD c int", topology=cluster_config.topology, replication=cluster_config.replication)
 
     def test_add_field_with_cdc_and_preimage(self, request, cluster_config):
         self.schema_change_template(request, "ALTER TABLE ks.cf ADD c int", topology=cluster_config.topology, replication=cluster_config.replication, with_preimage=True)
 
-    @pytest.mark.next_gating
     def test_remove_field_with_cdc(self, request, cluster_config):
         self.schema_change_template(request, "ALTER TABLE ks.cf DROP c", topology=cluster_config.topology, replication=cluster_config.replication, additional_fields=["c int"])
 
@@ -859,7 +849,6 @@ def generate_test_id(param):
 
 
 @pytest.mark.scylla_cdc
-@pytest.mark.dtest_full
 class TestCdcWithCompactStorage(Tester, CDCInitializeHelper):
     expected_fields = ["cdc_stream_id", "cdc_time", "cdc_batch_seq_no", "cdc_end_of_batch", "cdc_operation", "cdc_ttl", "pk", "ck", "reg_column", "cdc_deleted_reg_column"]
     use_reg_column = False
