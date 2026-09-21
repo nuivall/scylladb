@@ -32,12 +32,14 @@ namespace statements {
 
 class modification_spec;
 
-/**
+/*
  * A <code>BATCH</code> statement parsed from a CQL query.
  *
+ * Holds the modifications the batch applies together, and answers everything a
+ * cql_statement is asked about them. A sub-class adds only execution: how the
+ * mutations they produce are committed.
  */
 class batch_statement : public cql_statement {
-    static logging::logger _logger;
 public:
     using type = raw::batch_statement::type;
 
@@ -57,7 +59,7 @@ public:
             , needs_authorization(na)
         {}
     };
-private:
+protected:
     int _bound_terms;
     type _type;
     std::vector<single_statement> _statements;
@@ -118,44 +120,8 @@ public:
     virtual void validate(query_processor& qp, const service::client_state& state) const override;
 
     const std::vector<single_statement>& get_statements() const;
-private:
-    future<utils::chunked_vector<mutation>> get_mutations(query_processor& qp, const query_options& options, db::timeout_clock::time_point timeout,
-            bool local, api::timestamp_type now, service::query_state& query_state) const;
-
-public:
-    /**
-     * Checks batch size to ensure threshold is met. If not, a warning is logged.
-     * @param cfs ColumnFamilies that will store the batch's mutations.
-     */
-    void verify_batch_size(query_processor& qp, const utils::chunked_vector<mutation>& mutations) const;
-
-    virtual future<shared_ptr<cql_transport::messages::result_message>> execute(
-            query_processor& qp, service::query_state& state, const query_options& options, std::optional<service::group0_guard> guard) const override;
-
-    virtual future<shared_ptr<cql_transport::messages::result_message>> execute_without_checking_exception_message(
-            query_processor& qp, service::query_state& state, const query_options& options, std::optional<service::group0_guard> guard) const override;
 
     db::timeout_clock::duration get_timeout(const service::client_state& state, const query_options& options) const;
-private:
-    friend class batch_statement_executor;
-    future<shared_ptr<cql_transport::messages::result_message>> do_execute(
-            query_processor& qp,
-            service::query_state& query_state, const query_options& options,
-            bool local, api::timestamp_type now) const;
-
-    future<exceptions::coordinator_result<>> execute_without_conditions(
-            query_processor& qp,
-            utils::chunked_vector<mutation> mutations,
-            db::consistency_level cl,
-            db::timeout_clock::time_point timeout,
-            tracing::trace_state_ptr tr_state,
-            service_permit permit,
-            db::large_data_violation_type* violations) const;
-
-    future<shared_ptr<cql_transport::messages::result_message>> execute_with_conditions(
-            query_processor& qp,
-            const query_options& options,
-            service::query_state& state) const;
 
 public:
     // FIXME: no cql_statement::to_string() yet
