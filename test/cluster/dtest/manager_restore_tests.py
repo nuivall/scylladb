@@ -17,13 +17,12 @@ from dtest_class import Tester
 from dtest_scylla_manager import (
     C1_PREFIX,
     C2_PREFIX,
-    MANAGER_UNAVAILABLE_REASON,
     ScyllaManagerError,
     ScyllaManagerMixin,
     TaskStatus,
 )
 from encryption_at_rest_test import EncryptionAtRestBase, KeyProviderEnum
-from manager_backup_tests import ManagerBackupMixin, fake_gcs_docker, minio_docker
+from manager_backup_tests import ManagerBackupMixin
 from tools.cluster_topology import generate_cluster_topology, generate_cluster_topology_based_rf
 from tools.files import get_list_of_sstables
 
@@ -93,7 +92,6 @@ class TestScyllaMgmtRestoreBase(Tester, ManagerBackupMixin, ScyllaManagerMixin):
 
 
 @pytest.mark.scylla_manager
-@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaMgmtRestore(TestScyllaMgmtRestoreBase):
     def test_basic_restore(self):
         topology_layout = generate_cluster_topology_based_rf(dc_num=1, nodes=2, rf=2)
@@ -227,7 +225,6 @@ class TestScyllaMgmtRestore(TestScyllaMgmtRestoreBase):
         self._add_new_node_and_wait_up_normal(healthy_node=node1, datacenter="dc2", rack="rack3")
         self.restore_and_verify(mgr_cluster, backup_task, node1)
 
-    @pytest.mark.xfail(reason="https://github.com/scylladb/scylla-manager/issues/3896")
     def test_restore_after_remove_dc(self):
         topology_layout = {"dc1": {"rack1": 1, "rack2": 1}, "dc2": {"rack3": 1}}
         node1, _node2, node3 = self.config_and_create_cluster(topology=topology_layout)
@@ -522,7 +519,6 @@ class TestScyllaMgmtRestore(TestScyllaMgmtRestoreBase):
 
 
 @pytest.mark.scylla_manager
-@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestRestoreWithEaR(EncryptionAtRestBase, TestScyllaMgmtRestoreBase):
     def config_and_create_cluster(self, nodes, extra_config_options=None, cluster=None, kss=None, restart=False):
         if cluster is not None:

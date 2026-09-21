@@ -17,7 +17,6 @@ from dtest_class import Tester, WaitTimeoutExpiredError, create_cf, create_ks
 from dtest_scylla_manager import (
     HostHealth,
     HostRestStatus,
-    MANAGER_UNAVAILABLE_REASON,
     NodeStatus,
     RepairTask,
     ScyllaManagerError,
@@ -37,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.scylla_manager
-@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaMgmtRepair(Tester, ScyllaManagerMixin):
     KEYSPACE_NAME = "ks"
 
