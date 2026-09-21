@@ -972,7 +972,11 @@ class TestTTLWithMigrate(Tester):
 
     def _dump_data(self, cluster, node, node_owner, scylla_node=None, keyspace_name="ks", table_name="cf", compaction=True):  # noqa: PLR0913
         if compaction:
-            if node.is_scylla() or node.get_cassandra_version() < "2.2":
+            # A ccm Scylla node has both a system.log and a debug.log; the
+            # in-tree one has a single log, and its shim rejects a filename.
+            if node.is_scylla():
+                log_file = None
+            elif node.get_cassandra_version() < "2.2":
                 log_file = "system.log"
             else:
                 log_file = "debug.log"
