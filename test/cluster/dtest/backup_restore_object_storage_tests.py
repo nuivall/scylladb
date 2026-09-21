@@ -1,3 +1,8 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
 """
 Test cases for ScyllaDB backup and restore operations using the API.
 

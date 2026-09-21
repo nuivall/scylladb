@@ -1,3 +1,8 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
 """Tests for limiting streaming/repair/compaction and other throughput limits"""
 
 import logging
