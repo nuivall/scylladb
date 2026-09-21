@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import random
@@ -19,13 +20,10 @@ from cassandra.cluster import NoHostAvailable
 from dtest_class import Tester, create_cf, create_ks
 from tools.assertions import assert_eventually_raises
 from tools.ldap_docker import LdapDocker
-from tools.marks import unmark
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 @pytest.mark.single_node
 class TestLdap(Tester):
     LDAP_USER = "scylla-qa"
@@ -296,7 +294,6 @@ class TestLdap(Tester):
             self.check_user_permissions(permission_dict=permission_dict)
             logger.info(f"Finished with {k}")
 
-    @unmark.next_gating
     @pytest.mark.no_boot_speedups
     def test_hard_restart_scylla(self):
         self.prepare()
@@ -357,7 +354,6 @@ class TestLdap(Tester):
         permission["permissions"] = actions_list[:]
         self.check_user_permissions(permission_dict=permission)
 
-    @unmark.next_gating
     def test_add_ldap_after_regular_work(self):
         self.prepare(create_role=False, configure_ldap=False)
         cassandra_session = self.patient_cql_connection(node=self.nodes[0], user="cassandra", password="cassandra")
@@ -476,8 +472,6 @@ class TestLdap(Tester):
         self.check_user_permissions(permission_dict=permission)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestLdapSaslAuth(TestLdap):
     use_saslauth = True
 
@@ -570,7 +564,6 @@ class TestLdapSaslAuth(TestLdap):
         ret = self.test_ldap_docker.delete_ldap_object(f"uid={username},ou=Person,dc=scylladb,dc=com")
         assert ret["description"] == expected_descritpion
 
-    @pytest.mark.require("scylladb/scylladb#25571")
     def test_drop_cassandra_role(self):
         self.prepare()
         su_name, su_pasword = self._create_new_superuser()
@@ -581,7 +574,6 @@ class TestLdapSaslAuth(TestLdap):
                 session2 = self.patient_cql_connection(self.nodes[0], user="cassandra", password="cassandra")
             session.execute(f"DROP ROLE 'cassandra'")
 
-    @pytest.mark.require("scylladb/scylladb#25571")
     def test_drop_role_from_ldap_twice(self):
         self.prepare()
         with self.patient_cql_connection(self.nodes[0], user="cassandra", password="cassandra") as session:
@@ -591,7 +583,6 @@ class TestLdapSaslAuth(TestLdap):
             self._remove_user_from_ldap(test_user)
             self._remove_user_from_ldap(test_user, expected_descritpion="noSuchObject")
 
-    @pytest.mark.require("scylladb/scylladb#25571")
     def test_recreate_role_after_drop(self):
         self.prepare()
         with self.patient_cql_connection(self.nodes[0], user="cassandra", password="cassandra") as session:
@@ -605,7 +596,6 @@ class TestLdapSaslAuth(TestLdap):
             session.execute(f"CREATE ROLE 'no_ldap_user'")
             session.execute(f"DROP ROLE 'no_ldap_user'")
 
-    @pytest.mark.require("scylladb/scylladb#25571")
     def test_block_current_role_drop(self):
         self.prepare()
         su_name, su_pasword = self._create_new_superuser()
@@ -613,14 +603,12 @@ class TestLdapSaslAuth(TestLdap):
             with pytest.raises(InvalidRequest, match=r"Cannot DROP primary role for current login"):
                 session.execute(f"DROP ROLE '{su_name}'")
 
-    @pytest.mark.require("scylladb/scylladb#25571")
     def test_block_not_existing_drop(self):
         self.prepare()
         with self.patient_cql_connection(self.nodes[0], user="cassandra", password="cassandra") as session:
             with pytest.raises(InvalidRequest, match=r"Role not_existing_role doesn't exist."):
                 session.execute(f"DROP ROLE 'not_existing_role'")
 
-    @pytest.mark.require("scylladb/scylladb#25571")
     def test_existing_session_after_drop(self):
         self.prepare()
         with self.patient_cql_connection(self.nodes[0], user="cassandra", password="cassandra") as session:
