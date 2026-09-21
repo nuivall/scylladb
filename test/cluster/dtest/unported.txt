@@ -1,10 +1,8 @@
 backup_restore_object_storage_tests.py
-cdc_types_test.py
 compaction_additional_test.py
 consistency_test.py
 cql_additional_tests.py
 cql_cast_test.py
-cql_tests.py
 cql_tracing_addition_test.py
 cql_tracing_test.py
 cqlsh_tests/cqlsh_copy_tests.py

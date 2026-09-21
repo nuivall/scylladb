@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import string
 import struct
@@ -33,10 +34,8 @@ from tools.session import wait_reconnection
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
-@pytest.mark.dtest_full
 class CQLTester(Tester):
     def prepare(self, create_keyspace=True, use_cache=False, nodes=1, rf=1, protocol_version=None, user=None, password=None, configuration_options=None, **kwargs):  # noqa: PLR0913
         cluster = self.cluster
@@ -66,7 +65,6 @@ class CQLTester(Tester):
         return session
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestStorageProxyCQL(CQLTester):
     """
@@ -194,8 +192,6 @@ class TestStorageProxyCQL(CQLTester):
 
         session.execute("DROP USER user1")
 
-    @pytest.mark.dtest_smoke
-    @pytest.mark.dtest_debug
     def test_statements(self):
         """
         INSERT, UPDATE, SELECT, SELECT COUNT, DELETE statements
@@ -266,7 +262,6 @@ class TestStorageProxyCQL(CQLTester):
         session.execute(query)
 
 
-@pytest.mark.dtest_full
 class TestMiscellaneousCQL(CQLTester):
     """
     CQL tests that cannot be performed as Java unit tests, see CASSANDRA-9160. Please consider
@@ -605,7 +600,6 @@ class TestMiscellaneousCQL(CQLTester):
             assert dt <= allowed_timeout, f"Query took too long to timeout: {dt} > {allowed_timeout}"
 
 
-@pytest.mark.dtest_full
 class TestTruncate(CQLTester):
     @staticmethod
     def create_schema(session, rf=1):
@@ -700,7 +694,6 @@ class TestTruncate(CQLTester):
 
         assert len(truncated_time_per_node) <= len(sec_truncated_time_per_node)
 
-    @pytest.mark.dtest_debug
     def test_truncate_after_restart(self):
         session = self.prepare(nodes=1, create_keyspace=False)
 
@@ -817,7 +810,6 @@ class TestTruncate(CQLTester):
         assert len(q4_result) == min(count_above_selected_time, rand_limit), f"The returned rows count doesnt match min(count_above_selected_time,rand_limit) [{min(count_above_selected_time, rand_limit)}]"
 
 
-@pytest.mark.dtest_full
 class TestAbortedQueries(CQLTester):
     """
     @jira_ticket CASSANDRA-7392
