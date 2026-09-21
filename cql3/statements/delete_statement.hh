@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include "cql3/statements/modification_statement.hh"
+#include "cql3/statements/modification_spec.hh"
 #include "cql3/restrictions/statement_restrictions.hh"
 #include "data_dictionary/data_dictionary.hh"
 
@@ -23,7 +23,7 @@ namespace statements {
 /**
 * A <code>DELETE</code> parsed from a CQL query statement.
 */
-class delete_statement : public modification_statement {
+class delete_statement : public modification_spec {
     shared_ptr<const restrictions::delete_restrictions> _restrictions;
 public:
     delete_statement(audit::audit_info_ptr&& audit_info, statement_type type, uint32_t bound_terms, schema_ptr s, std::unique_ptr<attributes> attrs, cql_stats& stats);

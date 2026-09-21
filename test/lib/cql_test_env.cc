@@ -1320,11 +1320,12 @@ public:
         std::vector<batch_statement::single_statement> modifications;
         std::ranges::transform(queries, back_inserter(modifications), [this](const auto& query) {
             auto stmt = local_qp().get_statement(query, _core_local.local().client_state, test_dialect());
-            if (!dynamic_cast<modification_statement*>(stmt->statement.get())) {
+            auto modif_stmt = dynamic_pointer_cast<modification_statement>(stmt->statement);
+            if (!modif_stmt) {
                 throw exceptions::invalid_request_exception(
                     "Invalid statement in batch: only UPDATE, INSERT and DELETE statements are allowed.");
             }
-            return batch_statement::single_statement(static_pointer_cast<modification_statement>(stmt->statement));
+            return batch_statement::single_statement(modif_stmt->shared_spec());
         });
         auto batch = ::make_shared<batch_statement>(
             batch_type,

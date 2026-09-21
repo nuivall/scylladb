@@ -211,7 +211,7 @@ future<size_t> raft_sys_table_storage::do_store_log_entries_one_batch(const std:
             break;
         }
         size += data_tmp_buf.size_bytes();
-        batch_stmts.emplace_back(cql3::statements::batch_statement::single_statement(_store_entry_stmt, false));
+        batch_stmts.emplace_back(cql3::statements::batch_statement::single_statement(_store_entry_stmt->shared_spec(), false));
 
         // don't include serialized "data" here since it will require to linearize the stream
         std::vector<cql3::raw_value> single_stmt_values;

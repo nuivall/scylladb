@@ -29,7 +29,7 @@ namespace cql3 {
 
 namespace statements {
 
-timeout_config_selector
+static timeout_config_selector
 modification_timeout(const schema& s) {
     if (s.is_counter()) {
         return &timeout_config::counter_write_timeout;

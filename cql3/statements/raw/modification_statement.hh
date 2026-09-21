@@ -23,7 +23,6 @@ namespace cql3 {
 
 namespace statements {
 
-class modification_statement;
 class modification_spec;
 
 namespace raw {
@@ -41,11 +40,11 @@ protected:
 
 public:
     virtual std::unique_ptr<prepared_statement> prepare(data_dictionary::database db, cql_stats& stats, const cql_config& cfg) override;
-    ::shared_ptr<cql3::statements::modification_statement> prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats) const;
+    ::shared_ptr<cql3::statements::modification_spec> prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats) const;
     void add_raw(sstring&& raw) { _raw_cql = std::move(raw); }
     const sstring& get_raw_cql() const { return _raw_cql; }
 protected:
-    virtual ::shared_ptr<cql3::statements::modification_statement> prepare_internal(data_dictionary::database db, schema_ptr schema,
+    virtual ::shared_ptr<cql3::statements::modification_spec> prepare_internal(data_dictionary::database db, schema_ptr schema,
         prepare_context& ctx, std::unique_ptr<attributes> attrs, cql_stats& stats) const = 0;
 
     // Helper function used by child classes to prepare conditions for a prepared statement.

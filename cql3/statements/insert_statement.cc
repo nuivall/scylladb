@@ -87,7 +87,7 @@ insert_statement::insert_statement(
         schema_ptr s,
         std::unique_ptr<attributes> attrs,
         cql_stats& stats)
-    : modification_statement{std::move(audit_info), statement_type::INSERT, bound_terms, std::move(s), std::move(attrs), stats}
+    : modification_spec{std::move(audit_info), statement_type::INSERT, bound_terms, std::move(s), std::move(attrs), stats}
 { }
 
 void insert_statement::add_key_value(const column_definition& def, expr::expression value) {
@@ -214,7 +214,7 @@ utils::chunked_vector<mutation> insert_statement::apply_updates(
     return mutations;
 }
 
-modification_statement::json_cache_opt insert_prepared_json_statement::maybe_prepare_json_cache(const query_options& options) const {
+modification_spec::json_cache_opt insert_prepared_json_statement::maybe_prepare_json_cache(const query_options& options) const {
     cql3::raw_value c = expr::evaluate(_value, options);
     sstring json_string = utf8_type->to_string(to_bytes(c.view()));
     return json_helpers::parse(std::move(json_string), s->all_columns());
@@ -332,7 +332,7 @@ insert_statement::insert_statement(cf_name name,
     , _column_values{std::move(column_values)}
 { }
 
-::shared_ptr<cql3::statements::modification_statement>
+::shared_ptr<cql3::statements::modification_spec>
 insert_statement::prepare_internal(data_dictionary::database db, schema_ptr schema,
     prepare_context& ctx, std::unique_ptr<attributes> attrs, cql_stats& stats) const
 {
@@ -406,7 +406,7 @@ insert_json_statement::insert_json_statement(cf_name name,
     , _if_not_exists(if_not_exists)
     , _default_unset(default_unset) { }
 
-::shared_ptr<cql3::statements::modification_statement>
+::shared_ptr<cql3::statements::modification_spec>
 insert_json_statement::prepare_internal(data_dictionary::database db, schema_ptr schema,
     prepare_context& ctx, std::unique_ptr<attributes> attrs, cql_stats& stats) const
 {

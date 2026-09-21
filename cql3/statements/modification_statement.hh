@@ -16,80 +16,72 @@
 
 #include <seastar/core/shared_ptr.hh>
 
-#include <memory>
-#include <optional>
-
 namespace db {
 enum class large_data_violation_type : uint8_t;
 }
 
 namespace cql3 {
 
-class query_processor;
-
 namespace statements {
 
-namespace raw { class modification_statement; }
-
 /*
- * Abstract parent class of individual modifications, i.e. INSERT, UPDATE and DELETE,
- * as the CQL server executes them: through storage_proxy, or through Paxos when the
- * modification carries IF conditions.
+ * A single modification - an INSERT, an UPDATE or a DELETE - as the CQL server
+ * executes it.
  *
- * Inheriting the modification rather than holding it is scaffolding: it keeps the
- * commits that move parse state into modification_spec pure moves. A later commit in
- * this series turns the base into a member.
+ * The statement holds the modification_spec that parsing produced and adds
+ * nothing to it but execution: committing the spec's mutation through
+ * storage_proxy, or through Paxos when it carries IF conditions. Everything
+ * else a cql_statement is asked - access control, validation, the bound terms -
+ * the spec answers.
  */
-class modification_statement : public cql_statement, public modification_spec {
+class modification_statement : public cql_statement {
+    const ::shared_ptr<modification_spec> _spec;
+
 public:
-    modification_statement(
-            audit::audit_info_ptr&& audit_info,
-            statement_type type_,
-            uint32_t bound_terms,
-            schema_ptr schema_,
-            std::unique_ptr<attributes> attrs_,
-            cql_stats& stats_);
+    explicit modification_statement(::shared_ptr<modification_spec> spec);
 
-    ~modification_statement();
+    virtual ~modification_statement() override;
 
-    // Both bases declare it; the statement's own is the one callers mean.
-    using cql_statement::get_timeout_config_selector;
+    // What this statement executes. Borrowed, so only valid while it lives.
+    const modification_spec& spec() const { return *_spec; }
 
-    // The modification this statement executes.
-    const modification_spec& spec() const { return *this; }
+    // The same, for a caller which has to keep the spec alive on its own, e.g.
+    // a batch collecting the modifications it commits together.
+    const ::shared_ptr<modification_spec>& shared_spec() const { return _spec; }
 
     uint32_t get_bound_terms() const override;
 
     future<> check_access(query_processor& qp, const service::client_state& state) const override;
 
+    void validate(query_processor& qp, const service::client_state& state) const override;
+
     bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const override;
 
     bool should_reclassify_control_connection() const override;
 
-    void validate(query_processor& qp, const service::client_state& state) const override;
+    bool is_conditional() const override;
 
     seastar::shared_ptr<const metadata> get_result_metadata() const override;
 
-    bool is_conditional() const override;
-
-    virtual future<::shared_ptr<cql_transport::messages::result_message>>
+    future<::shared_ptr<cql_transport::messages::result_message>>
     execute(query_processor& qp, service::query_state& qs, const query_options& options, std::optional<service::group0_guard> guard) const override;
 
-    virtual future<::shared_ptr<cql_transport::messages::result_message>>
+    future<::shared_ptr<cql_transport::messages::result_message>>
     execute_without_checking_exception_message(query_processor& qp, service::query_state& qs, const query_options& options, std::optional<service::group0_guard> guard) const override;
 
 private:
     future<::shared_ptr<cql_transport::messages::result_message>>
     do_execute(query_processor& qp, service::query_state& qs, const query_options& options) const;
-    friend class modification_statement_executor;
 
     future<exceptions::coordinator_result<>>
-    execute_without_condition(query_processor& qp, service::query_state& qs, const query_options& options, json_cache_opt& json_cache, std::vector<dht::partition_range> keys, db::large_data_violation_type* violations) const;
+    execute_without_condition(query_processor& qp, service::query_state& qs, const query_options& options,
+            modification_spec::json_cache_opt& json_cache, std::vector<dht::partition_range> keys,
+            db::large_data_violation_type* violations) const;
 
     future<::shared_ptr<cql_transport::messages::result_message>>
     execute_with_condition(query_processor& qp, service::query_state& qs, const query_options& options) const;
 
-    friend class raw::modification_statement;
+    friend class modification_statement_executor;
 };
 
 /**

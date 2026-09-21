@@ -8,82 +8,85 @@
  * SPDX-License-Identifier: (LicenseRef-ScyllaDB-Source-Available-1.1 and Apache-2.0)
  */
 
-#include "transport/cql_protocol_extension.hh"
-#include "utils/assert.hh"
-#include "cql3/cql_statement.hh"
 #include "cql3/statements/modification_statement.hh"
-#include "cql3/attributes.hh"
 #include "cql3/statements/raw/modification_statement.hh"
 #include "cql3/statements/prepared_statement.hh"
-#include "cql3/expr/expr-utils.hh"
-#include "cql3/expr/evaluate.hh"
-#include "cql3/util.hh"
-#include "validation.hh"
-#include "db/consistency_level_validations.hh"
-#include <optional>
-#include <seastar/core/shared_ptr.hh>
-#include "transport/messages/result_message.hh"
-#include "data_dictionary/data_dictionary.hh"
-#include "replica/database.hh"
-#include <seastar/core/execution_stage.hh>
-#include "cas_request.hh"
-#include "cql3/query_processor.hh"
-#include "service/storage_proxy.hh"
-#include "db/large_data_handler.hh"
 #include "cql3/statements/strong_consistency/modification_statement.hh"
 #include "cql3/statements/strong_consistency/statement_helpers.hh"
+#include "cql3/attributes.hh"
+#include "db/consistency_level_validations.hh"
+#include "cql3/statements/cas_request.hh"
+#include "db/large_data_handler.hh"
+#include "replica/database.hh"
+#include "service/storage_proxy.hh"
+#include "transport/cql_protocol_extension.hh"
+#include "transport/messages/result_message.hh"
+#include "utils/error_injection.hh"
+
+#include <seastar/core/execution_stage.hh>
 
 #include <boost/lexical_cast.hpp>
+#include "cql3/expr/evaluate.hh"
+#include "cql3/expr/expr-utils.hh"
+#include "cql3/result_set.hh"
+#include "cql3/util.hh"
+#include "data_dictionary/data_dictionary.hh"
+#include "utils/assert.hh"
+#include "validation.hh"
 
 template<typename T = void>
 using coordinator_result = exceptions::coordinator_result<T>;
-
-bool is_internal_keyspace(std::string_view name);
 
 namespace cql3 {
 
 namespace statements {
 
-modification_statement::modification_statement(audit::audit_info_ptr&& audit_info, statement_type type_,
-        uint32_t bound_terms, schema_ptr schema_, std::unique_ptr<attributes> attrs_, cql_stats& stats_)
-    : cql_statement(modification_timeout(*schema_))
-    , modification_spec(std::move(audit_info), type_, bound_terms, schema_, std::move(attrs_), stats_)
+modification_statement::modification_statement(::shared_ptr<modification_spec> spec)
+    : cql_statement(spec->get_timeout_config_selector())
+    , _spec(std::move(spec))
 {
-    // The modification carries the audit info it was prepared with, and a batch
-    // reads it from there. A statement is audited as itself, so take a copy.
-    if (const auto* ai = modification_spec::audit_info()) {
+    // The modification carries the audit info its statement kind was prepared
+    // with, and a batch reads it from there. A statement is audited as itself,
+    // so take a copy.
+    if (const auto* ai = _spec->audit_info()) {
         set_audit_info(std::make_unique<audit::audit_info>(*ai));
     }
 }
 
+modification_statement::~modification_statement() = default;
+
 uint32_t modification_statement::get_bound_terms() const {
-    return spec().get_bound_terms();
+    return _spec->get_bound_terms();
 }
 
 future<> modification_statement::check_access(query_processor& qp, const service::client_state& state) const {
-    return spec().check_access(state);
-}
-
-bool modification_statement::depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const {
-    return spec().depends_on(ks_name, cf_name);
-}
-
-bool modification_statement::should_reclassify_control_connection() const {
-    return spec().should_reclassify_control_connection();
+    return _spec->check_access(state);
 }
 
 void modification_statement::validate(query_processor& qp, const service::client_state& state) const {
-    spec().validate(state);
+    _spec->validate(state);
+}
+
+bool modification_statement::depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const {
+    return _spec->depends_on(ks_name, cf_name);
+}
+
+bool modification_statement::should_reclassify_control_connection() const {
+    return _spec->should_reclassify_control_connection();
+}
+
+bool modification_statement::is_conditional() const {
+    return _spec->has_conditions();
 }
 
 seastar::shared_ptr<const metadata> modification_statement::get_result_metadata() const {
-    if (const auto& m = spec().cas_result_metadata()) {
+    if (const auto& m = _spec->cas_result_metadata()) {
         return m;
     }
     return make_empty_metadata();
 }
 
-modification_statement::~modification_statement() = default;
+using result_message = cql_transport::messages::result_message;
 
 static lw_shared_ptr<query::read_command>
 read_command(const modification_spec& spec, query_processor& qp, query::clustering_row_ranges ranges, db::consistency_level cl) {
@@ -133,35 +136,37 @@ struct modification_statement_executor {
     static auto get() { return &modification_statement::do_execute; }
 };
 static thread_local inheriting_concrete_execution_stage<
-        future<::shared_ptr<cql_transport::messages::result_message>>,
+        future<::shared_ptr<result_message>>,
         const modification_statement*,
         query_processor&,
         service::query_state&,
         const query_options&> modify_stage{"cql3_modification", modification_statement_executor::get()};
 
-future<::shared_ptr<cql_transport::messages::result_message>>
+future<::shared_ptr<result_message>>
 modification_statement::execute(query_processor& qp, service::query_state& qs, const query_options& options, std::optional<service::group0_guard> guard) const {
     return execute_without_checking_exception_message(qp, qs, options, std::move(guard))
-            .then(cql_transport::messages::propagate_exception_as_future<shared_ptr<cql_transport::messages::result_message>>);
+            .then(cql_transport::messages::propagate_exception_as_future<shared_ptr<result_message>>);
 }
 
-future<::shared_ptr<cql_transport::messages::result_message>>
+future<::shared_ptr<result_message>>
 modification_statement::execute_without_checking_exception_message(query_processor& qp, service::query_state& qs, const query_options& options, std::optional<service::group0_guard> guard) const {
-    cql3::util::validate_timestamp(qp.get_cql_config(), options, attrs);
+    cql3::util::validate_timestamp(qp.get_cql_config(), options, spec().attrs);
     return modify_stage(this, seastar::ref(qp), seastar::ref(qs), seastar::cref(options));
 }
 
-future<::shared_ptr<cql_transport::messages::result_message>>
+future<::shared_ptr<result_message>>
 modification_statement::do_execute(query_processor& qp, service::query_state& qs, const query_options& options) const {
-    if (!qp.db().try_find_table(s->id())) {
+    const modification_spec& spec = this->spec();
+
+    if (!qp.db().try_find_table(spec.s->id())) {
         co_return coroutine::exception(
                 std::make_exception_ptr(exceptions::invalid_request_exception(
-                        format("unconfigured table {}", column_family()))));
+                        format("unconfigured table {}", spec.column_family()))));
     }
 
-    tracing::add_table_name(qs.get_trace_state(), keyspace(), column_family());
+    tracing::add_table_name(qs.get_trace_state(), spec.keyspace(), spec.column_family());
 
-    inc_cql_stats(qs.get_client_state().is_internal());
+    spec.inc_cql_stats(qs.get_client_state().is_internal());
 
     const auto cl = options.get_consistency();
     const query_processor::write_consistency_guardrail_state guardrail_state = qp.check_write_consistency_levels_guardrail(cl);
@@ -174,9 +179,9 @@ modification_statement::do_execute(query_processor& qp, service::query_state& qs
                                "set in the configuration.", cl, cl))));
     }
 
-    validate_primary_key(options);
+    spec.validate_primary_key(options);
 
-    if (has_conditions()) {
+    if (spec.has_conditions()) {
         auto result = co_await execute_with_condition(qp, qs, options);
         if (guardrail_state == query_processor::write_consistency_guardrail_state::WARN) {
             result->add_warning(format("Using write consistency level {} listed on the "
@@ -185,8 +190,8 @@ modification_statement::do_execute(query_processor& qp, service::query_state& qs
         co_return result;
     }
 
-    json_cache_opt json_cache = maybe_prepare_json_cache(options);
-    std::vector<dht::partition_range> keys = build_partition_keys(options, json_cache);
+    modification_spec::json_cache_opt json_cache = spec.maybe_prepare_json_cache(options);
+    std::vector<dht::partition_range> keys = spec.build_partition_keys(options, json_cache);
 
     bool keys_size_one = keys.size() == 1;
     auto token = dht::token();
@@ -198,10 +203,10 @@ modification_statement::do_execute(query_processor& qp, service::query_state& qs
     auto res = co_await execute_without_condition(qp, qs, options, json_cache, std::move(keys), &violations);
     
     if (!res) {
-        co_return seastar::make_shared<cql_transport::messages::result_message::exception>(std::move(res).assume_error());
+        co_return seastar::make_shared<result_message::exception>(std::move(res).assume_error());
     }
 
-    auto result = seastar::make_shared<cql_transport::messages::result_message::void_message>();
+    auto result = seastar::make_shared<result_message::void_message>();
     if (guardrail_state == query_processor::write_consistency_guardrail_state::WARN) {
         result->add_warning(format("Using write consistency level {} listed on the "
                                    "write_consistency_levels_warned is not recommended.", cl));
@@ -212,9 +217,9 @@ modification_statement::do_execute(query_processor& qp, service::query_state& qs
         result->add_warning(std::move(warning));
     }
 
-    auto&& table = s->table();
+    auto&& table = spec.s->table();
 
-    if (keys_size_one && _may_use_token_aware_routing && table.uses_tablets()) {
+    if (keys_size_one && spec._may_use_token_aware_routing && table.uses_tablets()) {
         auto erm = table.get_effective_replication_map();
         if (qs.get_client_state().is_protocol_extension_set(cql_transport::cql_protocol_extension::TABLETS_ROUTING_V2_EXPERIMENTAL)) {
             // We only return routing information for EXECUTE requests.
@@ -238,17 +243,19 @@ modification_statement::do_execute(query_processor& qp, service::query_state& qs
 }
 
 future<coordinator_result<>>
-modification_statement::execute_without_condition(query_processor& qp, service::query_state& qs, const query_options& options, json_cache_opt& json_cache, std::vector<dht::partition_range> keys, db::large_data_violation_type* violations) const {
+modification_statement::execute_without_condition(query_processor& qp, service::query_state& qs, const query_options& options,
+        modification_spec::json_cache_opt& json_cache, std::vector<dht::partition_range> keys,
+        db::large_data_violation_type* violations) const {
     auto cl = options.get_consistency();
-    auto timeout = db::timeout_clock::now() + get_timeout(qs.get_client_state(), options);
-    return get_mutations(*this, qp, options, timeout, false, options.get_timestamp(qs), qs, json_cache, std::move(keys)).then([this, cl, timeout, &qp, &qs, &options, violations] (auto mutations) {
+    auto timeout = db::timeout_clock::now() + spec().get_timeout(qs.get_client_state(), options);
+    return get_mutations(spec(), qp, options, timeout, false, options.get_timestamp(qs), qs, json_cache, std::move(keys)).then([this, cl, timeout, &qp, &qs, &options, violations] (auto mutations) {
         if (mutations.empty()) {
             return make_ready_future<coordinator_result<>>(bo::success());
         }
 
-        return qp.proxy().mutate_with_triggers(std::move(mutations), cl, timeout, false, qs.get_trace_state(), qs.get_permit(), db::allow_per_partition_rate_limit::yes, this->is_raw_counter_shard_write(), {
+        return qp.proxy().mutate_with_triggers(std::move(mutations), cl, timeout, false, qs.get_trace_state(), qs.get_permit(), db::allow_per_partition_rate_limit::yes, spec().is_raw_counter_shard_write(), {
             .node_local_only = options.get_specific_options().node_local_only,
-            .bypass_large_data_guardrails = this->attrs->is_bypass_large_data_guardrails(),
+            .bypass_large_data_guardrails = spec().attrs->is_bypass_large_data_guardrails(),
             .violations_out = violations
         });
     });
@@ -256,7 +263,7 @@ modification_statement::execute_without_condition(query_processor& qp, service::
 
 namespace {
 
-future<::shared_ptr<cql_transport::messages::result_message>>
+future<::shared_ptr<result_message>>
 process_forced_rebounce(unsigned shard, query_processor& qp, const query_options& options) {
     static int64_t counter = {0};
     static logging::logger logger("modification_statement");
@@ -303,19 +310,20 @@ process_forced_rebounce(unsigned shard, query_processor& qp, const query_options
     }
 
     logger.info("Applying forced_bounce_to_shard_counter, re-bouncing to shard {}.", shard);
-    co_return co_await make_ready_future<shared_ptr<cql_transport::messages::result_message>>(
+    co_return co_await make_ready_future<shared_ptr<result_message>>(
         qp.bounce_to_shard(shard, std::move(const_cast<cql3::query_options&>(options).take_cached_pk_function_calls())));
 }
 
 } // namespace
 
-future<::shared_ptr<cql_transport::messages::result_message>>
+future<::shared_ptr<result_message>>
 modification_statement::execute_with_condition(query_processor& qp, service::query_state& qs, const query_options& options) const {
+    const modification_spec& spec = this->spec();
 
     auto cl_for_learn = options.get_consistency();
     utils::result_with_exception_ptr<db::consistency_level> cl_for_paxos = options.check_serial_consistency();
     if (!cl_for_paxos) [[unlikely]] {
-        return make_exception_future<shared_ptr<cql_transport::messages::result_message>>(std::move(cl_for_paxos).assume_error());
+        return make_exception_future<shared_ptr<result_message>>(std::move(cl_for_paxos).assume_error());
     }
     db::timeout_clock::time_point now = db::timeout_clock::now();
     const timeout_config& cfg = qs.get_client_state().get_timeout_config();
@@ -324,50 +332,50 @@ modification_statement::execute_with_condition(query_processor& qp, service::que
     auto cas_timeout = now + cfg.cas_timeout;         // When to give up due to contention.
     auto read_timeout = now + cfg.read_timeout;       // When to give up on query.
 
-    json_cache_opt json_cache = maybe_prepare_json_cache(options);
-    std::vector<dht::partition_range> keys = build_partition_keys(options, json_cache);
-    std::vector<query::clustering_range> ranges = create_clustering_ranges(options, json_cache);
+    modification_spec::json_cache_opt json_cache = spec.maybe_prepare_json_cache(options);
+    std::vector<dht::partition_range> keys = spec.build_partition_keys(options, json_cache);
+    std::vector<query::clustering_range> ranges = spec.create_clustering_ranges(options, json_cache);
 
     if (keys.empty()) {
         throw exceptions::invalid_request_exception(format("Unrestricted partition key in a conditional {}",
-                    type.is_update() ? "update" : "deletion"));
+                    spec.type.is_update() ? "update" : "deletion"));
     }
     if (ranges.empty()) {
         throw exceptions::invalid_request_exception(format("Unrestricted clustering key in a conditional {}",
-                    type.is_update() ? "update" : "deletion"));
+                    spec.type.is_update() ? "update" : "deletion"));
     }
 
-    auto request = std::make_unique<cas_request>(s, std::move(keys));
+    auto request = std::make_unique<cas_request>(spec.s, std::move(keys));
     auto* request_ptr = request.get();
     // cas_request can be used for batches as well single statements; Here we have just a single
     // modification in the list of CAS commands, since we're handling single-statement execution.
-    request->add_row_update(spec(), std::move(ranges), std::move(json_cache), options);
+    request->add_row_update(spec, std::move(ranges), std::move(json_cache), options);
 
     auto token = request->key()[0].start()->value().as_decorated_key().token();
 
-    auto cas_shard = service::cas_shard(*s, token);
+    auto cas_shard = service::cas_shard(*spec.s, token);
 
     if (utils::get_local_injector().is_enabled("forced_bounce_to_shard_counter")) {
         return process_forced_rebounce(cas_shard.shard(), qp, options);
     }
     if (!cas_shard.this_shard()) {
-        return make_ready_future<shared_ptr<cql_transport::messages::result_message>>(
+        return make_ready_future<shared_ptr<result_message>>(
                 qp.bounce_to_shard(cas_shard.shard(), std::move(const_cast<cql3::query_options&>(options).take_cached_pk_function_calls()))
             );
     }
 
     std::optional<locator::tablet_routing_info> tablet_info;
 
-    auto&& table = s->table();
-    if (_may_use_token_aware_routing && table.uses_tablets() && qs.get_client_state().is_protocol_extension_set(cql_transport::cql_protocol_extension::TABLETS_ROUTING_V1)) {
+    auto&& table = spec.s->table();
+    if (spec._may_use_token_aware_routing && table.uses_tablets() && qs.get_client_state().is_protocol_extension_set(cql_transport::cql_protocol_extension::TABLETS_ROUTING_V1)) {
         auto erm = table.get_effective_replication_map();
         tablet_info = erm->check_locality(token, qs.get_client_state().get_original_shard());
     }
 
-    return qp.proxy().cas(s, std::move(cas_shard), *request_ptr, request->read_command(qp), request->key(),
+    return qp.proxy().cas(spec.s, std::move(cas_shard), *request_ptr, request->read_command(qp), request->key(),
             {read_timeout, qs.get_permit(), qs.get_client_state(), qs.get_trace_state()},
             std::move(cl_for_paxos).assume_value(), cl_for_learn, statement_timeout, cas_timeout, true, {},
-            attrs->is_bypass_large_data_guardrails()).then([this, request = std::move(request), tablet_info = std::move(tablet_info)] (service::storage_proxy::cas_result cas_result) mutable {
+            spec.attrs->is_bypass_large_data_guardrails()).then([this, request = std::move(request), tablet_info = std::move(tablet_info)] (service::storage_proxy::cas_result cas_result) mutable {
         auto result = request->build_cas_result_set(spec().cas_result_metadata(), spec().columns_of_cas_result_set(), cas_result.is_applied);
         if (tablet_info) {
             result->add_tablet_info(std::move(*tablet_info));
@@ -381,6 +389,11 @@ modification_statement::execute_with_condition(query_processor& qp, service::que
     });
 }
 
+const statement_type statement_type::INSERT = statement_type(statement_type::type::insert);
+const statement_type statement_type::UPDATE = statement_type(statement_type::type::update);
+const statement_type statement_type::DELETE = statement_type(statement_type::type::del);
+const statement_type statement_type::SELECT = statement_type(statement_type::type::select);
+
 namespace raw {
 
 std::unique_ptr<prepared_statement>
@@ -388,14 +401,13 @@ modification_statement::prepare(data_dictionary::database db, cql_stats& stats, 
     schema_ptr schema = validation::validate_column_family(db, keyspace(), column_family());
     auto meta = get_prepare_context();
 
+    auto spec = prepare(db, meta, stats);
+
     auto statement = std::invoke([&] -> shared_ptr<cql_statement> {
-        auto result = prepare(db, meta, stats);
-
         if (strong_consistency::is_strongly_consistent(db, schema->ks_name())) {
-            return ::make_shared<strong_consistency::modification_statement>(std::move(result));
+            return ::make_shared<strong_consistency::modification_statement>(std::move(spec));
         }
-
-        return result;
+        return ::make_shared<modification_statement>(std::move(spec));
     });
 
     auto partition_key_bind_indices = meta.get_partition_key_bind_indexes(*schema);
@@ -403,19 +415,19 @@ modification_statement::prepare(data_dictionary::database db, cql_stats& stats, 
         std::move(partition_key_bind_indices));
 }
 
-::shared_ptr<cql3::statements::modification_statement>
+::shared_ptr<cql3::statements::modification_spec>
 modification_statement::prepare(data_dictionary::database db, prepare_context& ctx, cql_stats& stats) const {
     schema_ptr schema = validation::validate_column_family(db, keyspace(), column_family());
 
     auto prepared_attributes = _attrs->prepare(db, keyspace(), column_family());
     prepared_attributes->fill_prepare_context(ctx);
 
-    auto prepared_stmt = prepare_internal(db, schema, ctx, std::move(prepared_attributes), stats);
+    auto prepared_spec = prepare_internal(db, schema, ctx, std::move(prepared_attributes), stats);
     if (strong_consistency::is_strongly_consistent(db, schema->ks_name())) {
-        if (prepared_stmt->requires_read()) {
+        if (prepared_spec->requires_read()) {
             throw exceptions::invalid_request_exception("Strongly consistent updates don't support data prefetch");
         }
-        if (prepared_stmt->is_timestamp_set()) {
+        if (prepared_spec->is_timestamp_set()) {
             throw exceptions::invalid_request_exception("Strongly consistent queries don't support user-provided timestamps");
         }
         // The raw IF clauses, not has_conditions(): INSERT JSON ... IF NOT
@@ -425,8 +437,8 @@ modification_statement::prepare(data_dictionary::database db, prepare_context& c
         }
         // logstor needs a row marker or partition tombstone on every mutation.
         // Cell-only changes have neither and fail inside raft apply, which aborts the node.
-        if (schema->logstor_enabled() && !prepared_stmt->type.is_insert() && prepared_stmt->has_column_operations()) {
-            throw exceptions::invalid_request_exception(prepared_stmt->type.is_update()
+        if (schema->logstor_enabled() && !prepared_spec->type.is_insert() && prepared_spec->has_column_operations()) {
+            throw exceptions::invalid_request_exception(prepared_spec->type.is_update()
                     ? "UPDATE is not supported on logstor tables in strongly consistent keyspaces"
                     : "Deleting individual columns is not supported on logstor tables in strongly consistent keyspaces");
         }
@@ -452,11 +464,11 @@ modification_statement::prepare(data_dictionary::database db, prepare_context& c
     // Since this cache is only meaningful for LWT queries, just clear the ids
     // if it's not a conditional statement so that the AST nodes don't
     // participate in the caching mechanism later.
-    if (!prepared_stmt->has_conditions()) {
+    if (!prepared_spec->has_conditions()) {
         ctx.clear_pk_function_calls_cache();
     }
-    prepared_stmt->_may_use_token_aware_routing = ctx.get_partition_key_bind_indexes(*schema).size() != 0;
-    return prepared_stmt;
+    prepared_spec->_may_use_token_aware_routing = ctx.get_partition_key_bind_indexes(*schema).size() != 0;
+    return prepared_spec;
 }
 
 static
@@ -542,20 +554,6 @@ audit::statement_category modification_statement::category() const {
     return audit::statement_category::DML;
 }
 
-}  // namespace raw
-
-void
-bool modification_statement::is_conditional() const {
-    return has_conditions();
-}
-
-const statement_type statement_type::INSERT = statement_type(statement_type::type::insert);
-const statement_type statement_type::UPDATE = statement_type(statement_type::type::update);
-const statement_type statement_type::DELETE = statement_type(statement_type::type::del);
-const statement_type statement_type::SELECT = statement_type(statement_type::type::select);
-
-namespace raw {
-
 modification_statement::modification_statement(cf_name name, std::unique_ptr<attributes::raw> attrs, std::optional<expr::expression> conditions, bool if_not_exists, bool if_exists)
     : cf_statement{std::move(name)}
     , _attrs{std::move(attrs)}
@@ -564,7 +562,7 @@ modification_statement::modification_statement(cf_name name, std::unique_ptr<att
     , _if_exists{if_exists}
 { }
 
-}
+}  // namespace raw
 
 }
 

@@ -38,9 +38,6 @@ namespace statements {
 
 namespace raw { class modification_statement; }
 
-// Which of the client's write timeouts applies to a modification of this table.
-timeout_config_selector modification_timeout(const schema& s);
-
 /*
  * Everything a single modification - an INSERT, an UPDATE or a DELETE - knows
  * about itself after it has been parsed: the table it addresses, the attributes

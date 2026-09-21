@@ -398,7 +398,7 @@ future<> trace_keyspace_helper::apply_events_mutation(cql3::query_processor& qp,
     return _events.cache_table_info(qp, mm, _dummy_query_state).then([this, &qp, records, &events_records] {
         tlogger.trace("{}: storing {} events records: parent_id {} span_id {}", records->session_id, events_records.size(), records->parent_id, records->my_span_id);
 
-        std::vector<cql3::statements::batch_statement::single_statement> modifications(events_records.size(), cql3::statements::batch_statement::single_statement(_events.insert_stmt(), false));
+        std::vector<cql3::statements::batch_statement::single_statement> modifications(events_records.size(), cql3::statements::batch_statement::single_statement(_events.insert_stmt()->shared_spec(), false));
         std::vector<cql3::raw_value_vector_with_unset> values;
 
         values.reserve(events_records.size());

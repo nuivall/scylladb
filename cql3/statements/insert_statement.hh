@@ -22,7 +22,7 @@ namespace statements {
  * An INSERT has no WHERE clause: it names the row it creates by naming its
  * primary key columns, and computes both keys from their values.
  */
-class insert_statement : public modification_statement {
+class insert_statement : public modification_spec {
     // The primary key columns the statement names, with their prepared values.
     std::vector<std::pair<const column_definition*, expr::expression>> _key_values;
 public:

@@ -2054,7 +2054,7 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
             modifications.emplace_back(sc_statement->shared_spec(), needs_authorization);
             ++sc_batch_size;
         } else {
-            modifications.emplace_back(std::move(modif_statement_ptr), needs_authorization);
+            modifications.emplace_back(modif_statement_ptr->shared_spec(), needs_authorization);
         }
         ++batch_size;
 

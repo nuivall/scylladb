@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include "cql3/statements/modification_statement.hh"
+#include "cql3/statements/modification_spec.hh"
 #include "cql3/restrictions/statement_restrictions.hh"
 #include "cql3/attributes.hh"
 
@@ -40,7 +40,7 @@ void apply_column_operations(const std::vector<std::unique_ptr<operation>>& ops,
 /**
  * An <code>UPDATE</code> statement parsed from a CQL query statement.
  */
-class update_statement : public modification_statement {
+class update_statement : public modification_spec {
     shared_ptr<const restrictions::update_restrictions> _restrictions;
 public:
 #if 0

@@ -44,7 +44,7 @@ update_statement::update_statement(
         schema_ptr s,
         std::unique_ptr<attributes> attrs,
         cql_stats& stats)
-    : modification_statement{std::move(audit_info), type, bound_terms, std::move(s), std::move(attrs), stats}
+    : modification_spec{std::move(audit_info), type, bound_terms, std::move(s), std::move(attrs), stats}
 { }
 
 clustering_key_prefix row_key(const query::clustering_range& range) {
@@ -181,7 +181,7 @@ update_statement::update_statement(cf_name name,
     , _where_clause(std::move(where_clause))
 { }
 
-::shared_ptr<cql3::statements::modification_statement>
+::shared_ptr<cql3::statements::modification_spec>
 update_statement::prepare_internal(data_dictionary::database db, schema_ptr schema,
     prepare_context& ctx, std::unique_ptr<attributes> attrs, cql_stats& stats) const
 {

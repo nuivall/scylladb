@@ -23,7 +23,7 @@ namespace cql3 {
 namespace statements {
 
 delete_statement::delete_statement(audit::audit_info_ptr&& audit_info, statement_type type, uint32_t bound_terms, schema_ptr s, std::unique_ptr<attributes> attrs, cql_stats& stats)
-        : modification_statement{std::move(audit_info), type, bound_terms, std::move(s), std::move(attrs), stats}
+        : modification_spec{std::move(audit_info), type, bound_terms, std::move(s), std::move(attrs), stats}
 { }
 
 dht::partition_range_vector
@@ -128,7 +128,7 @@ void delete_statement::delete_row_range(mutation& m, const query::clustering_ran
 
 namespace raw {
 
-::shared_ptr<cql3::statements::modification_statement>
+::shared_ptr<cql3::statements::modification_spec>
 delete_statement::prepare_internal(data_dictionary::database db, schema_ptr schema, prepare_context& ctx,
         std::unique_ptr<attributes> attrs, cql_stats& stats) const {
     auto stmt = ::make_shared<cql3::statements::delete_statement>(audit_info(), statement_type::DELETE, ctx.bound_variables_size(), schema, std::move(attrs), stats);
