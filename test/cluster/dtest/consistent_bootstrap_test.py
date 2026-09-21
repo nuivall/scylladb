@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 
 import pytest
@@ -15,10 +16,7 @@ from tools.data import create_c1c2_table, insert_c1c2, query_c1c2
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
 class TestBootstrapConsistency(Tester):
-    @pytest.mark.next_gating
-    @pytest.mark.dtest_debug
     def test_consistent_reads_after_bootstrap(self):
         logger.info("Creating a ring")
         cluster = self.cluster

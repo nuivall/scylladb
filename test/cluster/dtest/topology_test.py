@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import re
 import time
@@ -17,14 +18,11 @@ from dtest_class import Tester, create_cf, create_ks
 from tools.assertions import assert_almost_equal
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import insert_c1c2, query_c1c2
-from tools.marks import unmark
 from tools.status import wait_for_nodes_status
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestTopology(Tester):
     REMOVENODE_REJECT_MSG = r"Rejected removenode operation.*the node being removed is alive, maybe you should use decommission instead"
     REMOVENODE_HOSTID_NOT_IN_CLUSTER = "Host ID not found in the cluster"
@@ -80,7 +78,6 @@ class TestTopology(Tester):
             time.sleep(1)
         assert not node3.is_running()
 
-    @pytest.mark.dtest_debug
     # FIXME: https://github.com/scylladb/scylla-dtest/issues/5310
     @pytest.mark.cluster_options(enable_small_table_optimization_for_rbno=False)
     def test_crash_during_decommission(self):
@@ -146,7 +143,6 @@ class TestTopology(Tester):
         logger.debug(out)
         return out
 
-    @unmark.next_gating
     def test_remove_node_alive(self):
         cluster_topology = generate_cluster_topology(rack_num=3)
         self.prepare_cluster(cluster_topology, rf=3)
