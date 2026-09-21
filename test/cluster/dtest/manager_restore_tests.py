@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import re
@@ -16,6 +17,7 @@ from dtest_class import Tester
 from dtest_scylla_manager import (
     C1_PREFIX,
     C2_PREFIX,
+    MANAGER_UNAVAILABLE_REASON,
     ScyllaManagerError,
     ScyllaManagerMixin,
     TaskStatus,
@@ -91,6 +93,7 @@ class TestScyllaMgmtRestoreBase(Tester, ManagerBackupMixin, ScyllaManagerMixin):
 
 
 @pytest.mark.scylla_manager
+@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaMgmtRestore(TestScyllaMgmtRestoreBase):
     def test_basic_restore(self):
         topology_layout = generate_cluster_topology_based_rf(dc_num=1, nodes=2, rf=2)
@@ -518,8 +521,8 @@ class TestScyllaMgmtRestore(TestScyllaMgmtRestoreBase):
         assert self._template_post_restore_repair_only_restored_table_is_repaired(secondary_cluster, key_range={"ks": {"cf_2": (1, 21)}}), "Restoring the data of one table caused a different table in the same keyspace to be repaired"
 
 
-@pytest.mark.dtest_full
 @pytest.mark.scylla_manager
+@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestRestoreWithEaR(EncryptionAtRestBase, TestScyllaMgmtRestoreBase):
     def config_and_create_cluster(self, nodes, extra_config_options=None, cluster=None, kss=None, restart=False):
         if cluster is not None:
