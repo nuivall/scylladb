@@ -9,4 +9,3 @@ manager_task_tests.py
 migration_test.py
 reversed_queries_test.py
 update_cluster_layout_tests.py
-workload_prioritization_upgrade_test.py
