@@ -6218,9 +6218,16 @@ class TestCQL(Tester):
 
         self.mc_validate_data(session=cassandra_session, table_name=table_name, data_amount=data_amount, dataset=dataset, columns=columns, keys_columns_amount=keys_columns_amount)
 
-    # Cassandra has to be able to read what Scylla wrote: UUID sstable
-    # identifiers and dictionary-compressed blocks are both Scylla-only.
-    @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False, sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"})
+    # Cassandra has to be able to read what Scylla wrote, and three of Scylla's
+    # defaults are its own: the mt sstable format is the trie index Cassandra
+    # has never heard of (me is the Cassandra-compatible one), UUID sstable
+    # identifiers are not in its filename grammar, and it has no
+    # LZ4WithDictsCompressor.
+    @pytest.mark.cluster_options(
+        sstable_format="me",
+        uuid_sstable_identifiers_enabled=False,
+        sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"},
+    )
     def test_mc_sstables_case_sensitive_insert(self, request, compaction_strategy_for_migration):
         """
         Test how the mc SSTAbles files format works when the column names are case sensitive
@@ -6239,9 +6246,16 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    # Cassandra has to be able to read what Scylla wrote: UUID sstable
-    # identifiers and dictionary-compressed blocks are both Scylla-only.
-    @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False, sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"})
+    # Cassandra has to be able to read what Scylla wrote, and three of Scylla's
+    # defaults are its own: the mt sstable format is the trie index Cassandra
+    # has never heard of (me is the Cassandra-compatible one), UUID sstable
+    # identifiers are not in its filename grammar, and it has no
+    # LZ4WithDictsCompressor.
+    @pytest.mark.cluster_options(
+        sstable_format="me",
+        uuid_sstable_identifiers_enabled=False,
+        sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"},
+    )
     def test_mc_sstables_case_sensitive_update_value(self, request, compaction_strategy_for_migration):
         """
         Test how the mc SSTAbles files format works when the column names are case sensitive
@@ -6278,9 +6292,16 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    # Cassandra has to be able to read what Scylla wrote: UUID sstable
-    # identifiers and dictionary-compressed blocks are both Scylla-only.
-    @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False, sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"})
+    # Cassandra has to be able to read what Scylla wrote, and three of Scylla's
+    # defaults are its own: the mt sstable format is the trie index Cassandra
+    # has never heard of (me is the Cassandra-compatible one), UUID sstable
+    # identifiers are not in its filename grammar, and it has no
+    # LZ4WithDictsCompressor.
+    @pytest.mark.cluster_options(
+        sstable_format="me",
+        uuid_sstable_identifiers_enabled=False,
+        sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"},
+    )
     def test_mc_sstables_case_sensitive_delete_value(self, request, compaction_strategy_for_migration):
         """
         Test how the mc SSTAbles files format works when the column names are case sensitive
@@ -6310,9 +6331,16 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    # Cassandra has to be able to read what Scylla wrote: UUID sstable
-    # identifiers and dictionary-compressed blocks are both Scylla-only.
-    @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False, sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"})
+    # Cassandra has to be able to read what Scylla wrote, and three of Scylla's
+    # defaults are its own: the mt sstable format is the trie index Cassandra
+    # has never heard of (me is the Cassandra-compatible one), UUID sstable
+    # identifiers are not in its filename grammar, and it has no
+    # LZ4WithDictsCompressor.
+    @pytest.mark.cluster_options(
+        sstable_format="me",
+        uuid_sstable_identifiers_enabled=False,
+        sstable_compression_user_table_options={"sstable_compression": "LZ4Compressor"},
+    )
     def test_mc_sstables_case_sensitive_add_column(self, request, compaction_strategy_for_migration):
         """
         Test how the mc SSTAbles files format works when the column names are case sensitive
