@@ -11,7 +11,6 @@ cdc_ttl_test.py
 cdc_types_test.py
 cleanup_test.py
 cluster_replacement_test.py
-compact_storage_tests.py
 compaction_additional_test.py
 compaction_test.py
 concurrent_schema_changes_test.py
@@ -65,7 +64,6 @@ snapshot_test.py
 sstable_generation_loading_test.py
 stress_tool_test.py
 system_tables_test.py
-tablets_test.py
 topology_operation_during_upgrade_test.py
 toppartitions_test.py
 ttl_test.py
