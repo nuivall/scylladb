@@ -1432,7 +1432,6 @@ class TestAlternatorBackwardsCompatibility(BaseAlternator, UpgradeTester):
             attrs = [schemas.HASH_KEY_NAME, schemas.RANGE_KEY_NAME]
         item_list.sort(key=lambda item: tuple([item[attr] for attr in attrs]))
 
-    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ccmlib.scylla_repository.setup(), ScyllaCluster.upgrade_cluster()/set_install_dir(), and ScyllaNode.upgrade() are not implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     def test_lsi_gsi_regular_column_upgrades(self, dtest_config):
         """
         Test that a table with a GSI and an LSI created on an older version of

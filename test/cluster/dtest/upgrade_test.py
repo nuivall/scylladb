@@ -32,19 +32,10 @@ from tools.session import get_enabled_features, get_supported_features, wait_rec
 
 logger = logging.getLogger(__name__)
 
-# NOTE ON UPGRADE SUPPORT IN THIS TREE
-#
-# The in-tree ccmlib shim (test/cluster/dtest/ccmlib/) manages exactly one Scylla
-# binary per run via test.pylib.scylla_cluster_manager, and has none of the
-# version-switching machinery this module relies on:
-#   * ccmlib.scylla_repository.setup() (downloads/caches a relocatable package) is
-#     a stub that raises NotImplementedError -- see its docstring.
-#   * ScyllaCluster has no set_install_dir()/upgrade_cluster(), and ScyllaNode has
-#     no upgrade()/node_scylla_version/get_conf_dir()/update_yaml().
-# So every test below that actually drives an upgrade is kept (body untouched) but
-# skip_env'd with that reason. UpgradeTester/BaseTests stay importable -- and their
-# helper methods runnable -- because none of the missing calls happen until a test
-# method actually executes, and skipped tests never reach that point.
+# The versions below are ccm version specs, resolved by the in-tree
+# ccmlib.scylla_repository shim: "release:<major>.<minor>" is a released
+# relocatable package downloaded from ScyllaDB's download server, and the build
+# under test is appended to the path by add_current_version_to_upgrade_path().
 
 upgrade_matrix_full_path = ["release:2025.1", "release:2025.3", "release:2025.4", "release:2026.1"]
 upgrade_matrix_from_last_release_version = ["release:2026.1"]
@@ -375,7 +366,6 @@ class UpgradeTester(Tester):
 class BaseTests(UpgradeTester):
     __test__ = False
 
-    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ccmlib.scylla_repository.setup(), ScyllaCluster.upgrade_cluster()/set_install_dir(), and ScyllaNode.upgrade() are not implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     @pytest.mark.no_boot_speedups
     def test_cluster_upgrade(self, dtest_config):
         """
@@ -419,7 +409,6 @@ class BaseTests(UpgradeTester):
 
         session.cluster.shutdown()
 
-    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ccmlib.scylla_repository.setup(), ScyllaCluster.upgrade_cluster()/set_install_dir(), and ScyllaNode.upgrade() are not implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     def test_one_node_upgrade(self, dtest_config):
         """
         Test upgrade one node.
@@ -455,7 +444,6 @@ class BaseTests(UpgradeTester):
 
         session.cluster.shutdown()
 
-    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ccmlib.scylla_repository.setup(), ScyllaCluster.upgrade_cluster()/set_install_dir(), and ScyllaNode.upgrade() are not implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     def test_upgrade_cluster_nodes_with_twcs(self, dtest_config):
         """
         Test upgrade all nodes in the cluster sequentially.

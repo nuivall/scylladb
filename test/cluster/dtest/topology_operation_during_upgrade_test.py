@@ -23,10 +23,6 @@ from upgrade_test import upgrade_matrix_from_last_release_version
 
 LOGGER = logging.getLogger(__name__)
 
-_UPGRADE_UNSUPPORTED_REASON = ("needs a genuine multi-version upgrade: ScyllaNode.upgrade() is not implemented by the "
-                                "in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
-
-
 class TopologyOperationWithMixedCLusterTest(RollingUpgradeBase):
     __test__ = True
     _multiprocess_can_split_ = False
@@ -60,7 +56,6 @@ class TopologyOperationWithMixedCLusterTest(RollingUpgradeBase):
         LOGGER.debug("Remove node from cluster node list")
         del self.cluster.nodes[removed_node.name]
 
-    @pytest.mark.skip_env(reason=_UPGRADE_UNSUPPORTED_REASON)
     def test_add_remove_node(self, dtest_config: DTestConfig):
         cluster_topology = generate_cluster_topology(rack_num=3, nodes_per_rack=2)
         session = self.create_cluster(cluster_topology, dtest_config=dtest_config)
@@ -101,7 +96,6 @@ class TopologyOperationWithMixedCLusterTest(RollingUpgradeBase):
             run_rest_api(node, cmd=f"/raft/trigger_snapshot/{group_id}", api_method="POST", params={})
             wait_for(lambda: prev_raft_snapshot_id != get_raft_snapshot_id(exclusive_session), timeout=30)
 
-    @pytest.mark.skip_env(reason=_UPGRADE_UNSUPPORTED_REASON)
     @pytest.mark.skip_if(~with_feature("consistent-topology-changes"))
     def test_trigger_snapshot_transfer(self, dtest_config: DTestConfig):
         cluster_topology = generate_cluster_topology(rack_num=3, nodes_per_rack=2)
