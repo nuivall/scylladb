@@ -28,10 +28,6 @@ logger = logging.getLogger(__name__)
 class RollingUpgradeBase(UpgradeTester):
     __test__ = False
 
-    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ScyllaNode.upgrade()/.upgrader, "
-                                  "SystemServiceClient.get_highest_supported_sstable_version() and friends are not "
-                                  "implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages "
-                                  "a single Scylla binary per run")
     @pytest.mark.skip_mode(mode="debug", reason="test has a history of timing out in debug mode (scylladb/scylla-dtest#3275)")
     @pytest.mark.use_cassandra_stress
     def test_rolling_upgrade(self, dtest_config):

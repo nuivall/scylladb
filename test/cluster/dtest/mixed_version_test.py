@@ -31,8 +31,6 @@ class TestSchemaChanges(UpgradeTester):
     ks = "test_upgrades"
     cf = "cf"
 
-    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ScyllaNode.upgrade() is not implemented by the "
-                                  "in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     def test_schema_and_data_on_mixed_versions_cluster(self, dtest_config):  # noqa: PLR0915
         """Check schema changes on a partly upgraded cluster.
 
