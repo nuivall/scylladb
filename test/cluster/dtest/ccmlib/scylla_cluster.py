@@ -206,6 +206,10 @@ class ScyllaCluster:
     def version() -> str:
         return SCYLLA_VERSION_FILE.read_text().strip()
 
+    def cassandra_version(self) -> str:
+        """ccm's Cluster.cassandra_version(), an alias of version()."""
+        return self.version()
+
     def set_configuration_options(self,
                                   values: dict[str, Any] | None = None,
                                   batch_commitlog: bool | None = None,

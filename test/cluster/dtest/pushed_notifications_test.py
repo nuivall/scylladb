@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import time
 from threading import Event
@@ -98,8 +99,6 @@ class NotificationWaiter:
         self.connection.close()
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestPushedNotifications(Tester):
     """
     Tests for pushed native protocol notification from Cassandra.
@@ -267,14 +266,12 @@ class TestPushedNotifications(Tester):
         assert received_new_node_event, "NEW_NODE event isn't received"
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestVariousNotifications(Tester):
     """
     Tests for various notifications/messages from Cassandra.
     """
 
-    @pytest.mark.skip("Scylla doesn't support `tombstone_failure_threshold', read railure won't be triggered")
+    @pytest.mark.skip_env(reason="Scylla doesn't support tombstone_failure_threshold, read failure won't be triggered")
     def test_tombstone_failure_threshold_message(self):
         """
         Ensure nodes return an error message in case of TombstoneOverwhelmingExceptions rather

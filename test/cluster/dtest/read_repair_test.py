@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 # TODO: check this test compared to upstream casandra-dtest, lot of new test in there.
 import logging
 import time
@@ -19,7 +20,6 @@ from tools.schema import change_schema_safely, describe_rf, get_replication_opti
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.next_gating
 class TestReadRepair(Tester):
     # The length of the argument `racks` corresponds to the number of racks in the cluster.
     # Each element of the list corresponds to the number of nodes in one of the racks.
