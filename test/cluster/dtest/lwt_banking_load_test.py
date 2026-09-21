@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import multiprocessing as mp
 import traceback
@@ -508,10 +509,7 @@ class Process(_mp_fork.Process):
         return self._exception
 
 
-@pytest.mark.dtest_full
-@pytest.mark.dtest_heavy
-@pytest.mark.dtest_debug
-@pytest.mark.scylla_mode("!release")
+@pytest.mark.skip_mode(mode="release", reason="heavy nemesis/consistency load test only meant to run with debug-mode assertions enabled")
 class TestLWTBankingLoad(Tester):
     """Emulate a series of money transfers and perform validation"""
 
