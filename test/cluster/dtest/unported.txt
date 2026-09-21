@@ -28,9 +28,7 @@ reversed_queries_test.py
 rolling_upgrade_test.py
 scyllatop_test.py
 secondary_indexes_test.py
-snapshot_test.py
 stress_tool_test.py
-system_tables_test.py
 topology_operation_during_upgrade_test.py
 twcs_additional_test.py
 update_cluster_layout_tests.py
