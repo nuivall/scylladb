@@ -26,11 +26,9 @@ cql_tracing_test.py
 cqlsh_tests/cqlsh_copy_tests.py
 cqlsh_tests/cqlsh_tests.py
 data_distribution_balance_test.py
-delete_insert_test.py
 deletion_test.py
 distributed_queries_test.py
 encryption_at_rest_test.py
-everywhere_strategy_test.py
 heat_weighted_load_balancing_test.py
 ics_compaction_test.py
 internode_ssl_test.py
@@ -56,14 +54,12 @@ nodetool_additional_test.py
 nodetool_test.py
 paging_additional_test.py
 paging_test.py
-per_partition_rate_limiting_test.py
 persistence_test.py
 read_amplification_test.py
 repair_additional_test.py
 repair_based_node_operations_test.py
 repair_test.py
 replace_address_test.py
-replication_test.py
 resharding_test.py
 rest_api_tests.py
 reversed_queries_test.py
@@ -79,7 +75,6 @@ sstable_generation_loading_test.py
 stress_tool_test.py
 system_tables_test.py
 tablets_test.py
-throughput_limits_test.py
 topology_operation_during_upgrade_test.py
 toppartitions_test.py
 ttl_test.py
