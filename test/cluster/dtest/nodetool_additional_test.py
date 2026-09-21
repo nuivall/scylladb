@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import functools
 import logging
 import os
@@ -39,8 +40,8 @@ from tools.data import (
     rows_to_list,
 )
 from tools.files import copy_files_to, get_node_cf_dir
-from tools.marks import unmark, with_feature
-from tools.misc import ImmutableMapping, retry_till_success
+from tools.marks import with_feature
+from tools.misc import ImmutableMapping, num_tokens_per_node, retry_till_success
 from tools.session import get_supported_features
 from tools.status import nodetool_gossipinfo, nodetool_status
 from tools.stress import assert_cs_success, enable_cs_debug
@@ -53,8 +54,6 @@ def randbytes(n):
         yield random.getrandbits(8)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestNodetool(Tester):
     @pytest.fixture(scope="function", autouse=True)
     def fixture_dtest_setup_overrides(self, dtest_config):
@@ -867,6 +866,10 @@ class TestNodetool(Tester):
         Check that the correct parameters in the keyspace
         """
         cluster_topology = {"dc1": {"rack1": 2, "rack2": 1}}
+        # verify_token_ranges_distribution_is_even() allows each node 10% off its
+        # share of the ranges, which holds with upstream's 256 random vnodes per
+        # node but not with this suite's default of 16.
+        self.cluster.num_tokens = dtest_config.num_tokens
         self.cluster.populate(nodes=cluster_topology, use_vnodes=True).start(wait_for_binary_proto=True)
         node = self.cluster.nodelist()[0]
         ks, cf = "keyspace1", None
@@ -900,7 +903,7 @@ class TestNodetool(Tester):
         def verify_token_ranges(nodes_count, rf):
             token_ranges_distribution = self.get_token_ranges_distribution(ks_name, cf_name)
             self.verify_token_ranges_are_distributed_among_all_nodes(nodes_count=nodes_count, token_ranges_distribution=token_ranges_distribution)
-            self.verify_token_ranges_distribution_is_even(token_ranges_distribution, rf=rf)
+            self.verify_token_ranges_distribution_is_even(token_ranges_distribution, tokens_per_node=num_tokens_per_node(session), rf=rf)
 
         verify_token_ranges(nodes_count=3, rf=2)
 
@@ -939,14 +942,16 @@ class TestNodetool(Tester):
             endpoints += re.search(patt, line).groups()[0].split(", ")
         return {endpoint: int(endpoints.count(endpoint)) for endpoint in set(endpoints)}
 
-    def verify_token_ranges_distribution_is_even(self, token_ranges_distribution, rf=3):
+    def verify_token_ranges_distribution_is_even(self, token_ranges_distribution, tokens_per_node, rf=3):
         """Verifies if vnode count for each node is in 10% range from set vnodes count value in scylla.yaml
 
-        By default, vnodes count is 256"""
+        scylla-dtest hard-coded 256 here; this tree starts its nodes with a
+        different vnode count (see tools.misc.num_tokens_per_node), so the
+        caller passes in what the cluster actually has."""
         logger.debug(f"token ranges distribution: {token_ranges_distribution}")
         values = token_ranges_distribution.values()
         for v in values:
-            assert v == pytest.approx(256 * rf, (256 * rf) * 0.1), f"token ranges are not evenly distributed in cluster. Ranges counts for each node: {token_ranges_distribution}"
+            assert v == pytest.approx(tokens_per_node * rf, (tokens_per_node * rf) * 0.1), f"token ranges are not evenly distributed in cluster. Ranges counts for each node: {token_ranges_distribution}"
 
     def verify_token_ranges_are_distributed_among_all_nodes(self, nodes_count, token_ranges_distribution):
         assert len(token_ranges_distribution.keys()) == nodes_count, f"not all the nodes have assigned token ranges: {token_ranges_distribution}"
@@ -963,7 +968,9 @@ class TestNodetool(Tester):
     def check_ring(self, keyspace="", table=""):
         self.run_cluster()
         node = self.cluster.nodelist()[0]
-        expected_tokens_num = 512
+        # scylla-dtest expected 512: two nodes of 256 vnodes each.
+        with self.patient_cql_connection(node) as session:
+            expected_tokens_num = len(self.cluster.nodelist()) * num_tokens_per_node(session)
         if "tablets" in self.scylla_features:
             expected_tokens_num = 4
             with self.patient_cql_connection(node) as session:
@@ -973,7 +980,9 @@ class TestNodetool(Tester):
 
         self.stress_write(node, times=100)
         ring = self.nodetool_ring(node, keyspace, table)
-        self.assert_map_equal(ring, "datacenter", "datacenter1", "Wrong datacenter")
+        # A node placed in no datacenter (populate(N) under ccm parity, as with ccm) is in
+        # Scylla's datacenter1; test.py's placement puts it in dc1.
+        self.assert_map_equal(ring, "datacenter", node.data_center or "datacenter1", "Wrong datacenter")
         tokens_num = len(ring["tokens"])
         if "tablets" in self.scylla_features:
             # tablets initial number is expected_tokens_num (4) and might grow a bit, following stress writes.
@@ -991,7 +1000,7 @@ class TestNodetool(Tester):
     def test_general_ring(self):
         self.check_ring()
 
-    @pytest.mark.skip("#1057")
+    @pytest.mark.skip_env(reason="issue #1057")
     @pytest.mark.use_cassandra_stress
     def test_keyspace_ring(self):
         self.check_ring("keyspace1")
@@ -1182,10 +1191,13 @@ class TestNodetool(Tester):
         cluster = self.cluster
         cluster.populate(3).start(wait_for_binary_proto=True)
         node = cluster.nodelist()[0]
+        # ccm named every cluster "test"; test.py names it after a uuid.  Read from the
+        # node's scylla.yaml, not over CQL: the test only runs nodetool against the cluster.
+        cluster_name = node.get_configuration_options()["cluster_name"]
         res = self.describecluster(node)
         assert "Cluster Information" in res
         cluster = res["Cluster Information"]
-        self.assert_map_equal(cluster, "Name", "test")
+        self.assert_map_equal(cluster, "Name", cluster_name)
         self.assert_map_equal(cluster, "Partitioner", "org.apache.cassandra.dht.Murmur3Partitioner")
         assert "Snitch" in cluster
         assert cluster["Snitch"].startswith("org.apache.cassandra.locator."), "invalid snitch name:" + cluster["Snitch"]
@@ -1193,7 +1205,7 @@ class TestNodetool(Tester):
         schema = cluster["Schema versions"]
         for k in schema:
             assert 3 == len(schema[k]), "wrong schema version for " + k + " " + str(schema[k])
-        self.assert_map_equal(cluster, "Name", "test")
+        self.assert_map_equal(cluster, "Name", cluster_name)
 
     @staticmethod
     def create_table(session, obj):
@@ -1249,8 +1261,9 @@ class TestNodetool(Tester):
         session = self.patient_cql_connection(node)
         self.create_table(session, {"ks1": {"tables": {"tbl1": {"col1": "int", "col2": "text", "key": "col1"}}}})
         self.populate_data(session, {"ks1": {"tbl1": [{"col1": 4, "col2": "abc"}]}})
-        endpoint = self.getendpoints(node, "ks1", "tbl1", "4")
-        assert endpoint.startswith("127.0."), "Invalid endpoint returned '" + endpoint + "'"
+        endpoint = self.getendpoints(node, "ks1", "tbl1", "4").strip()
+        # ccm's nodes lived in 127.0.0.0/24; test.py's get addresses from anywhere in 127/8.
+        assert endpoint in [n.address() for n in cluster.nodelist()], "Invalid endpoint returned '" + endpoint + "'"
 
     def test_gossipinfo(self):
         cluster = self.cluster
@@ -1292,7 +1305,6 @@ class TestNodetool(Tester):
         assert response.status_code == 200, response.text
 
     @pytest.mark.parametrize("strategy", ["TimeWindowCompactionStrategy", "SizeTieredCompactionStrategy"])
-    @unmark.next_gating  # https://github.com/scylladb/scylladb/issues/14710
     def test_resetlocalschema_api_issue_7811(self, strategy):
         cluster = self.cluster
         cluster.populate(nodes=generate_cluster_topology(rack_num=2)).start(wait_for_binary_proto=True)
@@ -1330,9 +1342,14 @@ class TestNodetool(Tester):
 
         self._verify_nodes_schema_versions(node1, 1)
 
-    def verify_info(self, node=None, dc="datacenter1", rac="rack1"):
+    def verify_info(self, node=None, dc=None, rac=None):
         if not node:
             node = self.cluster.nodelist()[0]
+        # A node placed in no datacenter (populate(N) under ccm parity, as with ccm) is in
+        # Scylla's datacenter1/rack1; test.py's placement spreads nodes over dc1/rack1..rackN,
+        # so expect wherever the node actually is.
+        dc = dc or node.data_center or "datacenter1"
+        rac = rac or node.rack or "rack1"
         ni = self.nodetool_info(node)
         assert "ID" in ni, "ID is missing"
         self.assert_map_equal(ni, "Gossip active", "true")
@@ -1413,7 +1430,8 @@ class TestNodetool(Tester):
             keyspace, table = execution_params.split(".")
             status = nodetool_status(node, keyspace, table)
             assert len(status["nodes"]) == 2, f"expecting 2 nodes got {len(status['nodes'])!s}"
-            self.assert_map_equal(status, "Datacenter", "datacenter1")
+            # A node placed in no datacenter (ccm parity) is in Scylla's datacenter1.
+            self.assert_map_equal(status, "Datacenter", node.data_center or "datacenter1")
             self.verify_status_node(status["nodes"], **verification_params)
 
     def verify_netstats(self, node=None):
@@ -1508,7 +1526,7 @@ class TestNodetool(Tester):
             res["streams"].append(stream)
         return res
 
-    @pytest.mark.skip("bootstrap using streaming")
+    @pytest.mark.skip_env(reason="bootstrap using streaming")
     @pytest.mark.use_cassandra_stress
     def test_netstats(self):
         """Testwing the `nodetool netstats` command
@@ -1651,7 +1669,7 @@ class TestNodetool(Tester):
         node.nodetool("refresh -- ks cf")
         node.watch_log_for(f"Loading new SSTables for keyspace=ks, table=cf, load_and_stream={load_and_stream}, primary_replica_only=false", timeout=10)
 
-    @pytest.mark.skip("scylla-tools-java:#282")
+    @pytest.mark.skip_env(reason="scylla-tools-java issue #282")
     @pytest.mark.single_node
     def test_nodetool_refresh_with_load_and_stream_with_primary_replica_only(self):
         """
@@ -1948,12 +1966,12 @@ class TestNodetool(Tester):
     # corruption, but that is not implemented yet.
     # TODO: re-enable and refactor this test once the above is implemented.
     # See https://github.com/scylladb/scylladb/issues/15693
-    @pytest.mark.skip
+    @pytest.mark.skip_env(reason="scrub can't recover arbitrary corruptions yet (scylladb/scylladb#15693)")
     def test_scrub_with_one_node_expect_data_loss(self):
         self._scrub_with_one_node_expect_data_loss(mode="SEGREGATE")
 
     # See test_scrub_with_one_node_expect_data_loss.
-    @pytest.mark.skip
+    @pytest.mark.skip_env(reason="scrub can't recover arbitrary corruptions yet (scylladb/scylladb#15693)")
     def test_scrub_with_multi_nodes_expect_data_rebuild(self):
         cluster = self.run_cluster(nodes=3)
         node = cluster[0]
@@ -2030,7 +2048,7 @@ class TestNodetool(Tester):
 
         logger.debug("Copying the sstables with invalid fragment to table and restart node ...")
         cf_dir = get_node_cf_dir(node, ks_name=ks, cf_name=cf)
-        copy_files_to(f"test-sstables/sstable_with_invalid_fragment/ks/cf-test/", cf_dir)
+        copy_files_to(os.path.join(os.path.dirname(__file__), "test-sstables/sstable_with_invalid_fragment/ks/cf-test/"), cf_dir)
         node.start()
 
         expected_errs = [r"\[.* compaction ks.cf\] (Invalid|out-of-order) (clustering row|partition)", r"\[.* compaction ks.cf\]  mismatching index/data"]
@@ -2081,7 +2099,6 @@ class TestNodetool(Tester):
         self._scrub_sstable_with_invalid_fragment(mode="SEGREGATE", scrub_keyspace=True)
 
     @pytest.mark.single_node
-    @unmark.next_gating
     @pytest.mark.cluster_options(abort_on_malformed_sstable_error=False)
     def test_validate_with_one_node_expect_data_loss(self):
         self._scrub_with_one_node_expect_data_loss(mode="VALIDATE")
@@ -2230,7 +2247,6 @@ class TestNodetool(Tester):
         assert tbl in out
 
     # remove test from next_gating due to https://github.com/scylladb/scylladb/issues/16219
-    @unmark.next_gating
     @pytest.mark.use_cassandra_stress
     def test_disablebinary_and_disablegossip(self, tmp_path):
         def run_stress(node, num_keys, mode, consistency, limited_rows_per_second=None):
@@ -2301,8 +2317,6 @@ def set_node_probability(node, value: float):
     return set_result
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestGetTraceProbability(Tester):
     """
     Check gettraceprobablility command returned value after settraceprobablility operations:

@@ -20,7 +20,6 @@ manager_task_tests.py
 materialized_views_test.py
 migration_test.py
 mixed_version_test.py
-nodetool_additional_test.py
 repair_additional_test.py
 reversed_queries_test.py
 rolling_upgrade_test.py
