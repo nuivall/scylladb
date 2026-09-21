@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import math
 import re
@@ -34,9 +35,7 @@ from tools.toppartitions import (
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
-@pytest.mark.next_gating
 class TestTopPartitions(Tester):
     """Class to test new functioanality of nodetool command toppartitions
 
