@@ -10,7 +10,6 @@ import random
 import re
 import shutil
 import time
-import uuid
 from datetime import UTC, datetime, timedelta
 from glob import glob
 from pathlib import Path
@@ -30,11 +29,12 @@ from google.auth.credentials import AnonymousCredentials
 from google.cloud import storage
 from mypy_boto3_s3 import S3Client
 
+from test.pylib.object_storage import Storage, StorageFactory
+
 from dtest_class import Tester, WaitTimeoutExpiredError, create_cf, create_ks, wait_for
 from dtest_scylla_manager import (
     C1_PREFIX,
     C2_PREFIX,
-    MANAGER_UNAVAILABLE_REASON,
     ScyllaManagerError,
     ScyllaManagerMixin,
     ScyllaManagerTool,
@@ -42,10 +42,7 @@ from dtest_scylla_manager import (
 )
 from encryption_at_rest_test import EncryptionAtRestBase, KeyProviderEnum, all_providers
 from tools.cluster_topology import generate_cluster_topology, generate_cluster_topology_based_rf
-from tools.docker_versions import get_docker_version
-from tools.fake_gcs_server import FakeGCSDocker
 from tools.files import get_sstables_files
-from tools.minio import MinioDocker
 
 CLUSTER_NAME = "cluster1"
 DESTINATION_BUCKET = "backup-bucket"
@@ -54,42 +51,39 @@ FALSE_BUCKET = "nonexistent-bucket"
 logger = logging.getLogger(__name__)
 
 
-@pytest.fixture(scope="class")
-def minio_docker():
-    with MinioDocker(name=f"minio-{str(uuid.uuid4())[:8]}", image=get_docker_version("minio")) as minio:
-        yield minio
-
-
-@pytest.fixture(scope="class")
-def fake_gcs_docker():
-    with FakeGCSDocker(name=f"fake-gcs-{str(uuid.uuid4())[:8]}", image=get_docker_version("fake-gcs-server")) as fake_gcs:
-        yield fake_gcs
-
-
 class ManagerBackupMixin:
     backend: Literal["s3", "gcs"] = None
     method: Literal["native", "rclone"] = None
 
-    @pytest.fixture(scope="class")
-    def boto_client(self, minio_docker: MinioDocker):
-        return boto3.client(service_name="s3", aws_access_key_id=minio_docker.access_key, aws_secret_access_key=minio_docker.secret_key, endpoint_url=minio_docker.endpoint_url)
-
-    @pytest.fixture(scope="class")
-    def google_client(self, fake_gcs_docker: FakeGCSDocker):
-        return storage.Client(
-            credentials=AnonymousCredentials(),
-            project="test",
-            client_options={"api_endpoint": f"http://{fake_gcs_docker.address}:{fake_gcs_docker.port}"},
-        )
-
     @pytest.fixture(scope="function", autouse=True)
-    def append_endpoint(self, boto_client: S3Client, google_client: storage.Client, minio_docker: MinioDocker, fake_gcs_docker: FakeGCSDocker, setup_backend):
+    async def object_storage(self, object_storage_factory: StorageFactory, setup_backend):
+        """The backup target: minio for s3, fake-gcs-server for gcs.
+
+        Both come from test.pylib's object storage, the same way
+        test/cluster/object_store gets them -- minio as a native subprocess,
+        fake-gcs-server through the shared DockerizedServer wrapper. The server
+        and its buckets are torn down after the cluster is gone.
+        """
+
+        server: Storage = await object_storage_factory("s3" if self.backend == "s3" else "gs")
+        self.storage_endpoint_url = server.address
         if self.backend == "s3":
-            self.storage_endpoint_client = boto_client
-            self.storage_endpoint_docker: MinioDocker = minio_docker
-        elif self.backend == "gcs":
-            self.storage_endpoint_client = google_client
-            self.storage_endpoint_docker: FakeGCSDocker = fake_gcs_docker
+            self.storage_endpoint_host = server.ip
+            self.storage_endpoint_port = server.port
+            self.storage_access_key = server.acc_key
+            self.storage_secret_key = server.secret_key
+            self.storage_endpoint_client: S3Client = boto3.client(
+                service_name="s3",
+                aws_access_key_id=server.acc_key,
+                aws_secret_access_key=server.secret_key,
+                endpoint_url=server.address,
+            )
+        else:
+            self.storage_endpoint_client = storage.Client(
+                credentials=AnonymousCredentials(),
+                project="test",
+                client_options={"api_endpoint": server.address},
+            )
         self.endpoint_create_bucket(DESTINATION_BUCKET)
 
     def endpoint_create_bucket(self, bucket: str):
@@ -147,8 +141,8 @@ class ManagerBackupMixin:
 
     def configure_agent(self, node: ScyllaNode):
         agent_config = {
-            "s3": {"endpoint": self.storage_endpoint_docker.endpoint_url, "access_key_id": self.storage_endpoint_docker.access_key, "secret_access_key": self.storage_endpoint_docker.secret_key, "provider": "Minio"},
-            "gcs": {"endpoint": self.storage_endpoint_docker.endpoint_url, "anonymous": "true"},
+            "s3": {"endpoint": self.storage_endpoint_url, "access_key_id": self.storage_access_key, "secret_access_key": self.storage_secret_key, "provider": "Minio"},
+            "gcs": {"endpoint": self.storage_endpoint_url, "anonymous": "true"},
         }
         node.update_agent_config(new_settings={self.backend: agent_config[self.backend]}, restart_agent_after_change=True)
 
@@ -156,12 +150,12 @@ class ManagerBackupMixin:
         cluster: ScyllaCluster = cluster or self.cluster
         # endpoints are setup differently based on the backend, see https://github.com/scylladb/scylladb/issues/26570
         endpoint_config = {
-            "s3": {"name": self.storage_endpoint_docker.address, "port": int(self.storage_endpoint_docker.port), "aws_region": "local"},
-            "gcs": {"name": self.storage_endpoint_docker.endpoint_url, "type": "gs", "credentials_file": "none"},
+            "s3": {"name": self.storage_endpoint_host, "port": int(self.storage_endpoint_port), "aws_region": "local"},
+            "gcs": {"name": self.storage_endpoint_url, "type": "gs", "credentials_file": "none"},
         }
         cluster.set_configuration_options(values={"object_storage_endpoints": [endpoint_config[self.backend]]})
         if self.backend == "s3":
-            os.environ["SCYLLA_EXT_ENV"] = ";".join([os.getenv("SCYLLA_EXT_ENV", ""), f"AWS_ACCESS_KEY_ID={self.storage_endpoint_docker.access_key}", f"AWS_SECRET_ACCESS_KEY={self.storage_endpoint_docker.secret_key}"]).lstrip(";")
+            os.environ["SCYLLA_EXT_ENV"] = ";".join([os.getenv("SCYLLA_EXT_ENV", ""), f"AWS_ACCESS_KEY_ID={self.storage_access_key}", f"AWS_SECRET_ACCESS_KEY={self.storage_secret_key}"]).lstrip(";")
 
     def config_and_create_cluster(self, *args, **kwargs):
         self.setup_object_storage(cluster=kwargs.get("cluster"))
@@ -171,13 +165,14 @@ class ManagerBackupMixin:
         return node_list
 
     def _drop_table_and_delete_table_dir(self, keyspace_name: str, table_name: str, up_normal_node: ScyllaNode):
-        # Due to the fact that ccm does not delete the table's directory, to avoid confusion we'll delete it manually
+        # A dropped table can leave its directory behind, which confuses the
+        # checks below, so remove it. Nothing to do when the node already did.
         session = self.patient_cql_connection(node=up_normal_node)
         session.execute(f"drop table {keyspace_name}.{table_name};")
         for node in self.cluster.nodelist():
             keyspace_path = os.path.join(node.get_path(), "data", keyspace_name)
-            table_path = glob(os.path.join(keyspace_path, table_name + "-*"))[0]
-            shutil.rmtree(path=table_path)
+            for table_path in glob(os.path.join(keyspace_path, table_name + "-*")):
+                shutil.rmtree(path=table_path)
 
     @staticmethod
     def _get_node_status(node_address: str, functioning_node: ScyllaNode, tolerate_missing: bool):
@@ -360,7 +355,6 @@ class ManagerBackupMixin:
 
 
 @pytest.mark.scylla_manager
-@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaMgmtBackup(Tester, ManagerBackupMixin, ScyllaManagerMixin):
     @pytest.fixture(params=["native", "rclone"], scope="function", autouse=True)
     def setup_manager_method(self, request):
@@ -1172,7 +1166,6 @@ class TestScyllaMgmtBackup(Tester, ManagerBackupMixin, ScyllaManagerMixin):
     def test_agent_check_location(self, is_issue_open):
         if self.backend == "gcs" and is_issue_open("scylladb/scylla-manager#4626"):
             pytest.skip("With GCS backend, check location never finishes.")
-        correct_config_file_path = os.path.join(self.cluster.get_path(), "node1/conf/scylla-manager-agent.yaml")
         wrong_config_file_location = os.path.join(self.cluster._scylla_manager._get_path(), "TEMP_CONFIG.yaml")
         wrong_config_dict = {
             "s3": {"s3": {"endpoint": "127.0.0.1:1", "provider": "Minio"}},
@@ -1184,6 +1177,7 @@ class TestScyllaMgmtBackup(Tester, ManagerBackupMixin, ScyllaManagerMixin):
         topology_layout = generate_cluster_topology(dc_num=1, rack_num=1, nodes_per_rack=3)
         self.config_and_create_cluster(topology=topology_layout)
         self._create_mgr_cluster(self.cluster.nodelist()[0], name="cluster1")
+        correct_config_file_path = os.path.join(self.cluster.nodelist()[0].get_conf_dir(), "scylla-manager-agent.yaml")
         # Running with the correct config file, expecting success.
         self.cluster._scylla_manager.agent_check_location(location_list=[f"{self.backend}:{DESTINATION_BUCKET}"], extra_config_file_list=[correct_config_file_path])
         # Running with the wrong config file, expecting failure.
@@ -1333,7 +1327,6 @@ def create_cron_list_from_timedelta(minutes=0, hours=0):
 
 
 @pytest.mark.scylla_manager
-@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestBackupWithEaR(EncryptionAtRestBase, ManagerBackupMixin, ScyllaManagerMixin):
     @pytest.fixture(params=["native", "rclone"], scope="function", autouse=True)
     def setup_manager_method(self, request):

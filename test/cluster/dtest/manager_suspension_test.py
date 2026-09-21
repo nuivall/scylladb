@@ -11,7 +11,6 @@ import pytest
 
 from dtest_class import Tester
 from dtest_scylla_manager import (
-    MANAGER_UNAVAILABLE_REASON,
     ScyllaManagerError,
     ScyllaManagerMixin,
     TaskStatus,
@@ -24,7 +23,6 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.scylla_manager
-@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaManagerSuspension(Tester, ScyllaManagerMixin):
     def test_create_task_while_suspended(self):
         topology_layout = generate_cluster_topology(dc_num=1, rack_num=1, nodes_per_rack=2)
