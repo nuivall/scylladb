@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import collections
 import logging
 import random
@@ -21,7 +22,7 @@ from threading import Event
 
 import pytest
 import requests
-from cassandra import ConsistencyLevel, InvalidRequest, OperationTimedOut, Unavailable, WriteTimeout
+from cassandra import ConsistencyLevel, OperationTimedOut, Unavailable, WriteTimeout
 from cassandra.cluster import ExecutionProfile, NoHostAvailable
 from cassandra.policies import ConstantSpeculativeExecutionPolicy, FallthroughRetryPolicy
 from cassandra.query import SimpleStatement
@@ -42,7 +43,7 @@ from dtest_class import (
     wait_for,
 )
 from tools.assertions import assert_invalid, assert_row_count
-from tools.cluster import minimum_scylla_version, new_node, run_rest_api
+from tools.cluster import new_node, run_rest_api
 from tools.cluster_topology import generate_cluster_topology
 from tools.data import (
     create_c1c2_table,
@@ -56,7 +57,7 @@ from tools.docker_utils import running_in_podman
 from tools.files import wipe_node_data_directories
 from tools.group0_and_token_ring import find_and_clean_garbage_from_group0, verify_group0_and_token_ring_members, wait_for_token_ring_and_group0_consistency
 from tools.iptables import IPTable, IPTableRule
-from tools.marks import issue_open, with_feature
+from tools.marks import with_feature
 from tools.rackdc import update_properties
 from tools.schema import change_schema_safely, describe_rf, get_replication_options
 from tools.status import (
@@ -67,6 +68,14 @@ from tools.status import (
 )
 
 logger = logging.getLogger(__name__)
+
+_IP_CHANGE_UNSUPPORTED_REASON = ("changing a running node's IP in place (mutating ScyllaNode.network_interfaces "
+                                  "and restarting) is not supported by the Manager-backed in-tree ccmlib shim, "
+                                  "which owns each server's address via test.pylib.scylla_cluster_manager; real ccm "
+                                  "nodes own their own loopback-alias IP so this works there. "
+                                  "ManagerClient.server_change_ip()/server_change_rpc_address() exist upstream and "
+                                  "could be wired into ScyllaNode as a real fix; ScyllaCluster also has no "
+                                  "get_ipprefix()")
 
 
 def generate_test_name(val):
@@ -85,8 +94,6 @@ def template_file(src_file, /, **kwds):
         yield output_file.name
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_full
 class TestUpdateClusterLayout(Tester):
     @staticmethod
     def default_config_options(hinted_handoff_enabled=False, enable_sstable_key_validation=True):
@@ -141,7 +148,7 @@ class TestUpdateClusterLayout(Tester):
         if restart:
             self.cluster.start_nodes()
 
-    @pytest.mark.parametrize("test_stream_plan_ranges_fraction", [pytest.param(False), pytest.param(True, marks=pytest.mark.skip_if(with_feature("tablets") & issue_open("https://github.com/scylladb/scylladb/issues/23457")))])
+    @pytest.mark.parametrize("test_stream_plan_ranges_fraction", [pytest.param(False), pytest.param(True, marks=pytest.mark.skip_if(with_feature("tablets")))])
     def test_simple_add_node(self, test_stream_plan_ranges_fraction):
         """
         Test bootstrapped node streams all data
@@ -2160,7 +2167,7 @@ class TestUpdateClusterLayout(Tester):
         logger.debug("Check rows on node1")
         self.check_rows_on_node(node1, nr_rows, ks=ks, cf=tbl, timeout=timeout)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_increment_decrement_counters_in_threads_nodes_restarted(self):  # noqa: PLR0915
         """
         increment/decrement 2 counters(2 inc vs 1 dec) * 1000 times * 120 threads
@@ -2580,6 +2587,7 @@ class TestUpdateClusterLayout(Tester):
                     time.sleep(1)
                     continue
 
+    @pytest.mark.skip_env(reason=_IP_CHANGE_UNSUPPORTED_REASON)
     @pytest.mark.parametrize("rf", [2, 3], ids=["rack=rf=2", "rack=rf=3"])
     def test_change_node_ip(self, rf):
         """
@@ -2635,6 +2643,7 @@ class TestUpdateClusterLayout(Tester):
             query_c1c2(session, k, ConsistencyLevel.ONE, ks="ks1")
             query_c1c2(session, k, consistency_level, ks=f"ks{rf}")
 
+    @pytest.mark.skip_env(reason=_IP_CHANGE_UNSUPPORTED_REASON)
     def test_decommission_after_changing_node_ip(self):
         """Changes to cluster topology after node ip changed"""
 
@@ -2676,7 +2685,7 @@ class TestUpdateClusterLayout(Tester):
         node4.start(wait_for_binary_proto=True)
         logger.info("done")
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("https://github.com/scylladb/scylladb/issues/23525"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_decommission_after_decreasing_rf(self, dtest_config):  # noqa: PLR0915
         """
         Test a node decommission after altering a keyspace to a lower replication-factor value.
@@ -2755,6 +2764,7 @@ class TestUpdateClusterLayout(Tester):
                 verify_data(session, consistency_level=ConsistencyLevel.ONE)
             cluster.start_nodes(other_nodes, wait_other_notice=True)
 
+    @pytest.mark.skip_env(reason=_IP_CHANGE_UNSUPPORTED_REASON)
     def test_replace_after_changing_node_ip(self):
         """Changes to cluster topology after node ip changed"""
 
@@ -2796,6 +2806,7 @@ class TestUpdateClusterLayout(Tester):
         node4 = new_node(cluster, bootstrap=True, token=None, remote_debug_port="0", data_center=node3.data_center, rack=node3.rack)
         node4.start(wait_for_binary_proto=True, replace_node_host_id=node3_host_id)
 
+    @pytest.mark.skip_env(reason=_IP_CHANGE_UNSUPPORTED_REASON)
     def test_change_node_ip_full_cluster_down(self):
         """
         Start 3 nodes
@@ -2882,7 +2893,6 @@ class TestUpdateClusterLayout(Tester):
 
         return iptables_obj
 
-    @pytest.mark.require("jira:SCYLLADB-608")
     @pytest.mark.skipif(condition=running_in_podman(), reason="can't use iptables within podman")
     def test_decommission_node_while_gossip_partly_blocked(self, ip_tables):
         """reproducer scylladb/scylla-operator#982 and scylladb/scylladb#11302
@@ -2953,8 +2963,6 @@ class TestUpdateClusterLayout(Tester):
         node4.start(wait_for_binary_proto=True)
         logger.info("done")
 
-    @pytest.mark.require("jira:SCYLLADB-608")
-    @pytest.mark.require("scylladb/scylladb#12892")
     @pytest.mark.skipif(condition=running_in_podman(), reason="can't use iptables within podman")
     def test_removenode_while_gossip_partly_blocked(self, ip_tables):
         """
@@ -3116,7 +3124,6 @@ class TestUpdateClusterLayout(Tester):
         verify_group0_and_token_ring_members(node1, expected_num_of_members=3)
 
 
-@pytest.mark.dtest_full
 class TestStopNodeEarly(Tester):
     @pytest.mark.parametrize("gently,wait_other_notice", [(False, False), (False, True), (True, False), (True, True)])
     def test_stop_node_while_restarting(self, gently, wait_other_notice):
@@ -3171,12 +3178,8 @@ class TestStopNodeEarly(Tester):
         assert len(result) == 1000
 
 
-@pytest.mark.dtest_full
-@pytest.mark.dtest_long
-@pytest.mark.dtest_heavy
 class TestLargeScaleCluster(Tester):
     @pytest.mark.timeout(4200)
-    @pytest.mark.require("#22244")
     def test_add_many_nodes_under_load(self):  # noqa: PLR0915
         """
         Test large scale cluster (40 nodes cluster, or 12 in debug mode).
@@ -3300,7 +3303,6 @@ from tools.raft_topology import TopologyCoordinatorFinder
 
 
 @pytest.mark.required_features("consistent-topology-changes")
-@pytest.mark.dtest_full
 @pytest.mark.parametrize(
     "num_of_racks",
     [pytest.param(3, id="3_racks"), pytest.param(5, id="5_racks")],
