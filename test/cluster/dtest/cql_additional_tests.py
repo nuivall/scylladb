@@ -6209,13 +6209,12 @@ class TestCQL(Tester):
     ):
         if columns is None:
             columns = ['"ID"', '"Ck1"', '"cK2"', '"Columnfamily_for_mc_sstables_column1"']
-        cc = CassandraCluster(cassandra_version="3.11.16", request=request, test_instance=self)
-        cassandra_node1 = cc.run_migration(scylla_cluster=self.cluster, scylla_test_path=self.test_path, keyspace_names_list=[keyspace_name])
+        cc = CassandraCluster(cassandra_version="3.11", request=request, test_instance=self)
+        cassandra_node1 = cc.run_migration(scylla_cluster=self.cluster, keyspace_names_list=[keyspace_name])
         cassandra_session = self.patient_cql_connection(cassandra_node1, keyspace=keyspace_name.replace('"', ""))
 
         self.mc_validate_data(session=cassandra_session, table_name=table_name, data_amount=data_amount, dataset=dataset, columns=columns, keys_columns_amount=keys_columns_amount)
 
-    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for mc-sstable migration; no Cassandra test harness in this tree")
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_mc_sstables_case_sensitive_insert(self, request, compaction_strategy_for_migration):
         """
@@ -6235,7 +6234,6 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for mc-sstable migration; no Cassandra test harness in this tree")
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_mc_sstables_case_sensitive_update_value(self, request, compaction_strategy_for_migration):
         """
@@ -6273,7 +6271,6 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for mc-sstable migration; no Cassandra test harness in this tree")
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_mc_sstables_case_sensitive_delete_value(self, request, compaction_strategy_for_migration):
         """
@@ -6304,7 +6301,6 @@ class TestCQL(Tester):
         # Create Cassandra cluster, migrate the Scylla data and validate the migrated data
         self.mc_migrate_scylla_to_cassandra(keyspace_name=keyspace_name, table_name=table_name, dataset=dataset, data_amount=data_amount, request=request)
 
-    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for mc-sstable migration; no Cassandra test harness in this tree")
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_mc_sstables_case_sensitive_add_column(self, request, compaction_strategy_for_migration):
         """
