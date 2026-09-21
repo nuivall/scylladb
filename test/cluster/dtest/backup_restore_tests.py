@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import random
@@ -26,8 +27,6 @@ from tools.marks import with_feature
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_full
 class TestBackupRestore(Tester):
     SNAPSHOT_NAME = "test-snapshot"
 
@@ -92,11 +91,11 @@ class TestBackupRestore(Tester):
         logger.info("Draining the cluster...")
         node1.nodetool("drain")
 
-        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME)
+        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME, node=node1)
         assert snapshot_dir is not None, f"Can't find a snapshot directory for {self.SNAPSHOT_NAME}"
         logger.info(f"Snapshot dir is {snapshot_dir}")
 
-        ks_dir = os.path.join(self.test_path, "test", "node1", "data", "ks")
+        ks_dir = os.path.join(node1.get_path(), "data", "ks")
 
         #
         # As a result of 'DROP KEYSPACE' and the following 'CF CREATE' there
@@ -121,7 +120,7 @@ class TestBackupRestore(Tester):
         self.start_nodetool_and_kill_node(node1, "refresh -- ks cf", message)
 
         logger.info("Delete commitlogs...")
-        commitlog_dir = os.path.join(self.test_path, "test", "node1", "commitlogs")
+        commitlog_dir = os.path.join(node1.get_path(), "commitlogs")
         commitlog.cleanup(commitlog_dir)
 
         logger.info("Restart the node...")
@@ -154,7 +153,7 @@ class TestBackupRestore(Tester):
         logger.debug("Creating a snapshot...")
         node1.nodetool(f"snapshot -t {self.SNAPSHOT_NAME} -cf cf -- ks")
 
-        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME)
+        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME, node=node1)
         assert snapshot_dir is not None, f"Can't find a snapshot directory for {self.SNAPSHOT_NAME}"
         logger.debug(f"Snapshot dir is {snapshot_dir}")
 
@@ -168,7 +167,7 @@ class TestBackupRestore(Tester):
         logger.debug("Flushing a keyspace...")
         node1.nodetool("flush -- ks")
 
-        ks_dir = os.path.join(self.test_path, "test", "node1", "data", "ks")
+        ks_dir = os.path.join(node1.get_path(), "data", "ks")
         cf_dir = self.get_non_snapshot_cf_dir(ks_dir, self.SNAPSHOT_NAME)
         logger.debug(f"Column family directory is {cf_dir}")
 
@@ -211,7 +210,7 @@ class TestBackupRestore(Tester):
         logger.debug("Creating a snapshot...")
         node1.nodetool(f"snapshot -t {self.SNAPSHOT_NAME} -cf cf -- ks")
 
-        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME)
+        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME, node=node1)
         assert snapshot_dir is not None, f"Can't find a snapshot directory for {self.SNAPSHOT_NAME}"
         logger.debug(f"Snapshot dir is {snapshot_dir}")
 
@@ -234,7 +233,7 @@ class TestBackupRestore(Tester):
         logger.debug("Flushing a keyspace...")
         node1.nodetool("flush -- ks")
 
-        ks_dir = os.path.join(self.test_path, "test", "node1", "data", "ks")
+        ks_dir = os.path.join(node1.get_path(), "data", "ks")
         cf_dir = self.get_non_snapshot_cf_dir(ks_dir, self.SNAPSHOT_NAME)
         logger.debug(f"Column family directory is {cf_dir}")
 
@@ -252,7 +251,6 @@ class TestBackupRestore(Tester):
         self.check_rows_on_node(node1, len(keys), found=keys, c1_values=c1_values, c2_values=c2_values)
 
     @pytest.mark.skip_if(with_feature("tablets"))
-    @pytest.mark.dtest_debug
     def test_restore_snapshot_using_old_token_ownership(self):
         """
         Check that we can restore snapshot files that use a non updated token ownership
@@ -272,7 +270,7 @@ class TestBackupRestore(Tester):
         logger.debug("Creating a snapshot...")
         node1.nodetool(f"snapshot -t {self.SNAPSHOT_NAME} -cf cf -- ks")
 
-        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME)
+        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME, node=node1)
         assert snapshot_dir is not None, f"Can't find a snapshot directory for {self.SNAPSHOT_NAME}"
         logger.debug(f"Snapshot dir is {snapshot_dir}")
 
@@ -290,7 +288,7 @@ class TestBackupRestore(Tester):
         logger.debug("Flushing a keyspace...")
         node1.nodetool("flush -- ks")
 
-        ks_dir = os.path.join(self.test_path, "test", "node1", "data", "ks")
+        ks_dir = os.path.join(node1.get_path(), "data", "ks")
         cf_dir = self.get_non_snapshot_cf_dir(ks_dir, self.SNAPSHOT_NAME)
         logger.debug(f"Column family directory is {cf_dir}")
 
@@ -307,7 +305,6 @@ class TestBackupRestore(Tester):
         logger.debug("Check that we may query ks.cf on node1...")
         session.execute(SimpleStatement("SELECT COUNT(*) FROM ks.cf"))
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_incremental_backup(self):
         """
@@ -355,7 +352,6 @@ class TestBackupRestore(Tester):
         # should not change after a compaction
         assert backups1_files == backups2_files, "backup contents changed after a compaction"
 
-    @pytest.mark.dtest_debug
     @pytest.mark.single_node
     def test_restore_snapshot_from_cassandra(self):
         """
@@ -447,7 +443,7 @@ class TestBackupRestore(Tester):
 
         ks_dir = [None, None]
         for i in range(2):
-            ks_dir[i] = os.path.join(self.test_path, "test", "node1", "data", f"ks{i}")
+            ks_dir[i] = os.path.join(node1.get_path(), "data", f"ks{i}")
 
         ks_snapshot_dir = [[None, None, None], [None, None, None]]
 
@@ -508,10 +504,10 @@ class TestBackupRestore(Tester):
         node1.nodetool("clearsnapshot")
         for i in range(3):
             logger.debug(f"Check that snapshot{i} doesn't exist any more...")
-            test_dir = self.get_snapshot_dir(f"snapshot{i}")
+            test_dir = self.get_snapshot_dir(f"snapshot{i}", node=node1)
             assert test_dir is None, f"'snapshot{i}' has not been deleted!"
 
-    @pytest.mark.skip("#7022")
+    @pytest.mark.skip_env(reason="issue #7022")
     @pytest.mark.use_cassandra_stress
     @pytest.mark.single_node
     # nodetool refresh does not examine the main directory since
@@ -529,7 +525,7 @@ class TestBackupRestore(Tester):
 
         logger.debug("Creating a snapshot for test table")
         node1.nodetool(f"snapshot -t {self.SNAPSHOT_NAME} -cf standard1 -- keyspace1")
-        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME)
+        snapshot_dir = self.get_snapshot_dir(self.SNAPSHOT_NAME, node=node1)
         cf_dir = get_node_cf_dir(node1, "keyspace1", "standard1")
 
         # Adding more data to test table
@@ -718,7 +714,7 @@ class TestBackupRestore(Tester):
 
         if delete_commitlogs:
             logger.debug("Delete commitlogs ...")
-            commitlog_dir = os.path.join(self.test_path, "test", "node1", "commitlogs")
+            commitlog_dir = os.path.join(node.get_path(), "commitlogs")
             commitlog.cleanup(commitlog_dir)
         if restart_node:
             logger.debug("Restart the node ...")
@@ -748,10 +744,10 @@ class TestBackupRestore(Tester):
             if os.path.isfile(full_name):
                 os.remove(full_name)
 
-    def get_snapshot_dir(self, snapshotname, ks_dir=None):
+    def get_snapshot_dir(self, snapshotname, ks_dir=None, node=None):
         search_base_dir = None
         if ks_dir is None:
-            search_base_dir = self.test_path
+            search_base_dir = node.get_path()
         else:
             search_base_dir = ks_dir
 
