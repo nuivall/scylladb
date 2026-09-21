@@ -140,8 +140,6 @@ class TestWorkloadPrioritizationUpgrade(UpgradeTester):
                     text=f"Waiting for a query of {role} to run under {sg} scheduling group",
                 )
 
-    @pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ScyllaNode.upgrade() is not implemented by the "
-                                  "in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
     def test_workload_prioritization_after_upgrade(self, dtest_config):
         self.clone_upgrade_path(dtest_config)
         config = {
