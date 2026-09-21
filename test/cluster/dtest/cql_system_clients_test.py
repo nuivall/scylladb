@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import hashlib
 import logging
 import os
@@ -139,8 +140,6 @@ class CQLSession:
         return int.from_bytes(hashlib.md5(str(self).encode("utf8")).digest(), "little")
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestSystemClients(Tester):
     _test_users = [
         {"user": "user1", "password": "password1"},
@@ -461,13 +460,11 @@ class TestSystemClients(Tester):
         fields = ["address", "port", "client_type", "connection_stage", "protocol_version", "shard_id", "username", "driver_name", "driver_version"]
         self._system_client_content(fields)
 
-    @pytest.mark.require("#9216")
     @pytest.mark.single_node
     def test_system_client_hostname(self):
         fields = ["hostname"]
         self._system_client_content(fields)
 
-    @pytest.mark.require("#9216")
     @pytest.mark.single_node
     def test_system_client_ssl(self):
         fields = ["ssl_cipher_suite", "ssl_enabled", "ssl_protocol"]
@@ -478,7 +475,6 @@ class TestSystemClients(Tester):
         fields = ["address", "port", "client_type", "connection_stage", "protocol_version", "shard_id", "username", "driver_name", "driver_version"]
         self._system_client_content(fields, ssl_optional=False, ssl_enabled=False)
 
-    @pytest.mark.require("#9216")
     @pytest.mark.single_node
     def test_system_client_hostname_non_ssl(self):
         fields = ["hostname"]
