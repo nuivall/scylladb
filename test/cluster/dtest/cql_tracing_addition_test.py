@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import re
 from random import choice, randint
@@ -220,8 +221,6 @@ class TracingReadAccessHelper:
         self._verify_tracing_info(output, node, table_name, "key")
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestTracingReadAccess(Tester, TracingReadAccessHelper):
     keyspace = "ks"
     table = "cf"

@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 #
 # This test is based on a Cassandra's test with the same name.
 #
@@ -32,8 +33,6 @@ from tools.stress import assert_cs_success
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
-
 
 class PrepareClusterHelper(Tester):
     @pytest.fixture(autouse=True)
@@ -57,9 +56,6 @@ class PrepareClusterHelper(Tester):
         return session
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_debug
-@pytest.mark.dtest_full
 class TestCqlTracing(PrepareClusterHelper):
     """
     Test that the default implementation for tracing works.
@@ -157,6 +153,12 @@ class TestCqlTracing(PrepareClusterHelper):
         logger.debug(f"Populating a table with {num_keys} keys...")
         insert_c1c2_no_prepared(session, keys=range(num_keys), consistency=ConsistencyLevel.ONE)
         node1.nodetool("flush")
+
+        # Tracing writes its pending sessions every 2 seconds (tracing::write_period) and once more when it is
+        # shut down, but Scylla shuts tracing down after messaging_service, so that last batch reaches only
+        # node1's own replica and a read from node2 misses it.  Let the periodic write push every session to
+        # both replicas first: with ccm the JVM nodetool flush above took longer than that, the REST call does not.
+        time.sleep(3)
 
         logger.debug("Stopping node1...")
         node1.stop(wait_other_notice=True)
@@ -279,7 +281,6 @@ class TestCqlTracing(PrepareClusterHelper):
         return 0
 
 
-@pytest.mark.dtest_full
 class TestSlowQueryTracing(PrepareClusterHelper):
     """
     This class represents tests for Slow Query Logging tracing type.

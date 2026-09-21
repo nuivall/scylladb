@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import csv
 import datetime
 import random
