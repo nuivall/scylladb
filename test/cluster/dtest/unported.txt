@@ -9,7 +9,6 @@ cqlsh_tests/cqlsh_tests.py
 encryption_at_rest_test.py
 internode_ssl_test.py
 ldap_test.py
-like_operator_test.py
 lwt_random_test.py
 manager_backup_tests.py
 manager_general_tests.py
@@ -26,7 +25,6 @@ repair_additional_test.py
 reversed_queries_test.py
 rolling_upgrade_test.py
 scyllatop_test.py
-secondary_indexes_test.py
 stress_tool_test.py
 topology_operation_during_upgrade_test.py
 twcs_additional_test.py
