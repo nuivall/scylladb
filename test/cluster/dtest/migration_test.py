@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import datetime
 import json
 import logging
@@ -12,7 +13,6 @@ import re
 import shutil
 import string
 import subprocess
-import tempfile
 import time
 import uuid
 
@@ -36,19 +36,21 @@ from tools.data import (
     query_c1c2,
     rows_to_list,
 )
-from tools.files import (
-    copy_files_to,
-    get_node_cf_dir,
-    get_sstables_files,
-    safe_mkdtemp,
-)
-from tools.marks import issue_open, with_feature
+from tools.files import copy_files_to, get_node_cf_dir
+from tools.marks import with_feature
 from tools.misc import ImmutableMapping
 from tools.retrying import retrying
 from tools.stress import create_stress_compatible_table
 from tools.tables_view_manager import wait_for_view
 
 logger = logging.getLogger(__name__)
+
+_NO_MIGRATION_FIXTURES_REASON = ("requires pre-generated legacy-format Cassandra sstables under "
+                                  "cassandra-sstables/migration/<version>/... (upstream scylla-dtest fixture data), "
+                                  "which is not present in this tree")
+_NO_LOAD_AND_STREAM_FIXTURES_REASON = ("requires pre-generated sstables under "
+                                        "cassandra-sstables/load-and-stream/3_0_md/from-cluster-4-nodes/... "
+                                        "(upstream scylla-dtest fixture data), which is not present in this tree")
 
 
 class BaseHelpers(Tester):
@@ -193,12 +195,10 @@ class BaseHelpers(Tester):
                     assert getattr(result[0], k) == row_content[k], error_string
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class MigrationTestBase(BaseHelpers):
     __test__ = False
 
-    @pytest.mark.dtest_debug
     def test_migrate_sstable_without_compression(self):
         # Content generated with:
         # INSERT INTO ks.cf (key, c2) VALUES ('abc', 'cde');
@@ -569,7 +569,7 @@ class MigrationTestBase(BaseHelpers):
         expected_message = "Direct loading non-Scylla SSTables containing counters is not supported."
         self.load_migrated_tables_expect_fail(node1, "with_counter", message=expected_message)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_migrate_sstable_with_counter(self):
         """
         https://github.com/scylladb/scylla/issues/2119
@@ -670,8 +670,8 @@ class MigrationTestBase(BaseHelpers):
 #
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
+@pytest.mark.skip_env(reason=_NO_MIGRATION_FIXTURES_REASON)
 class TestMigration(MigrationTestBase):
     __test__ = True
 
@@ -705,8 +705,7 @@ class TestMigration(MigrationTestBase):
             if message:
                 assert message in str(error), error
 
-    @pytest.mark.dtest_debug
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_migrate_sstable_with_counter(self):
         super().test_migrate_sstable_with_counter()
 
@@ -717,8 +716,8 @@ class TestMigration(MigrationTestBase):
         return "uses org.apache.cassandra.dht.RandomPartitioner" + " partitioner which is different than" + " org.apache.cassandra.dht.Murmur3Partitioner" + " partitioner used by the database"
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
+@pytest.mark.skip_env(reason=_NO_MIGRATION_FIXTURES_REASON)
 class TestMigrationUpgradeSSTables(TestMigration):
     __test__ = True
 
@@ -726,17 +725,17 @@ class TestMigrationUpgradeSSTables(TestMigration):
     def select_version(self, request):
         self.version = request.param
 
-    @pytest.mark.skip("test isn't relevant when using nodetool upgradesstables")
+    @pytest.mark.skip_env(reason="test isn't relevant when using nodetool upgradesstables")
     def test_migrate_sstable_with_row_tombstone(self):
         # since the row tombstone data doesn't create files on disk
         pass
 
-    @pytest.mark.skip("test isn't relevant when using nodetool upgradesstables")
+    @pytest.mark.skip_env(reason="test isn't relevant when using nodetool upgradesstables")
     def test_migrate_sstable_to_check_consistency(self):
         # since this test load multiple versions, that conflicts with version created upgradesstables
         pass
 
-    @pytest.mark.skip("test isn't relevant when using nodetool upgradesstables")
+    @pytest.mark.skip_env(reason="test isn't relevant when using nodetool upgradesstables")
     def test_migrate_sstable_with_expired_ttl(self):
         # since expired ttl data doens't create files on disk
         pass
@@ -764,7 +763,6 @@ class TestMigrationUpgradeSSTables(TestMigration):
 
 # @skip('not run every build')
 # @attr('long','compare-cassandra')
-@pytest.mark.dtest_full
 class TestTTLWithMigrate(Tester):
     """Test Time To Live Feature with Migration"""
 
@@ -806,8 +804,9 @@ class TestTTLWithMigrate(Tester):
     # @pytest.mark.next_gating      # Removing from gating for now, till it passes consistently
     # timeuuid based identifier was introduced in Cassandra 4.1. so we cannot test it with
     # Cassandra 3.x. see @jira_ticket CASSANDRA-17048
+    @pytest.mark.skip_env(reason="requires a real Apache Cassandra 3.11 cluster for the Scylla-to-Cassandra migration; no Cassandra test harness in this tree")
     @pytest.mark.skipif(condition=not java_version_exist(8), reason="test depends on cassandra 3.x, and needs java 8 to run")
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("jira:DTEST-58"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     @pytest.mark.cluster_options(uuid_sstable_identifiers_enabled=False)
     def test_big_table_with_ttls(self, request):  # noqa: PLR0915
         """
@@ -1021,7 +1020,7 @@ class TestTTLWithMigrate(Tester):
         return json.loads(res.stdout)["sstables"]["anonymous"]
 
 
-@pytest.mark.dtest_full
+@pytest.mark.skip_env(reason=_NO_LOAD_AND_STREAM_FIXTURES_REASON)
 class TestLoadAndStream(BaseHelpers):
     KEYSPACE_NAME = "keyspace1"
     TABLE_NAME = "standard1"
