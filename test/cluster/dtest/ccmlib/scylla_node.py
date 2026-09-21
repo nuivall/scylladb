@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import argparse
 import glob
+import json
 import locale
 import logging
 import os
 import re
+import shutil
 import subprocess
 import time
+import uuid
 from collections import namedtuple
 from enum import Enum
 from functools import cached_property
@@ -21,7 +24,10 @@ from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import yaml
+
 from test import TOP_SRC_DIR
+from test.cluster.dtest.ccmlib import scylla_repository
 from test.cluster.dtest.ccmlib.common import ArgumentError, wait_for, BIN_DIR
 from test.pylib.internal_types import ServerUpState
 
@@ -42,6 +48,13 @@ NODETOOL_STDERR_IGNORED_PATTERNS = (
     ),
 )
 
+# An sstable file name, as ccm's ccmlib.node parses it, used to map a data file
+# back to the sstable it belongs to.
+_sstable_regexp = re.compile(
+    r"((?P<keyspace>[^\s-]+)-(?P<cf>[^\s-]+)-)?(?P<tmp>tmp(link)?-)?(?P<version>[^\s-]+)"
+    r"-(?P<identifier>[^-]+)-(?P<big>big-)?(?P<suffix>[a-zA-Z]+)\.[a-zA-Z0-9]+$"
+)
+
 CASSANDRA_OPTIONS_MAPPING = {
     "-Dcassandra.replace_address_first_boot": "--replace-address-first-boot",
 }
@@ -54,6 +67,32 @@ DEFAULT_SCYLLA_LOG_LEVEL = "info"
 # tools/cqlsh/bin/cqlsh.py). Used by ScyllaNode.run_cqlsh() below.
 CQLSH_BIN = TOP_SRC_DIR / BIN_DIR / "cqlsh"
 
+# scylla.yaml options that belong to one node rather than to the cluster: the
+# cluster manager derives them from the node's address and work directory, so
+# update_yaml() must not take them from another node's copy of the file.
+NODE_SPECIFIC_CONFIG_OPTIONS = frozenset({
+    "workdir",
+    "maintenance_socket",
+    "api_doc_dir",
+    "cluster_name",
+    "listen_address",
+    "rpc_address",
+    "api_address",
+    "prometheus_address",
+    "alternator_address",
+    "broadcast_address",
+    "broadcast_rpc_address",
+    "seed_provider",
+    "data_file_directories",
+    "commitlog_directory",
+    "hints_directory",
+    "view_hints_directory",
+    "saved_caches_directory",
+    "replace_address_first_boot",
+    "replace_node_first_boot",
+    "ignore_dead_nodes_for_replace",
+})
+
 KNOWN_LOG_LEVELS = {
     "TRACE": "trace",
     "DEBUG": "debug",
@@ -64,10 +103,24 @@ KNOWN_LOG_LEVELS = {
 }
 
 
+class Status:
+    """ccm's ccmlib.node.Status.  Kept here, next to the node, because
+    ccmlib.node imports from this module and cannot be imported back."""
+
+    UNINITIALIZED = "UNINITIALIZED"
+    UP = "UP"
+    DOWN = "DOWN"
+    DECOMMISSIONED = "DECOMMISSIONED"
+
+
 class NodeError(Exception):
     def __init__(self, msg: str, process: int | None = None):
         super().__init__(msg)
         self.process = process
+
+
+class NodeUpgradeError(Exception):
+    ...
 
 
 class ToolError(Exception):
@@ -168,6 +221,18 @@ class ScyllaNode:
         self.__classes_log_level = {}
 
         self.bootstrap = True
+
+        self._hostid = None
+
+        # Scylla's REST API port; every node in this tree uses the default.
+        self.api_port = 10000
+
+        # Version switching.  `_node_scylla_version` caches what `scylla
+        # --version` said about the executable this node currently runs; the
+        # upgrader clears it when it points the node at another one.
+        self._node_scylla_version = None
+        self.upgraded = False
+        self.upgrader = NodeUpgrader(node=self)
 
     def set_configuration_options(self,
                                   values: dict | None = None,
@@ -308,7 +373,7 @@ class ScyllaNode:
             nodes = [nodes]
 
         self.watch_log_for(
-            [f"({node.address()}|{node.hostid()}).* now (dead|DOWN)" for node in nodes],
+            [f"({_node_id_alternatives(node)}).* now (dead|DOWN)" for node in nodes],
             from_mark=from_mark,
             timeout=timeout,
         )
@@ -328,7 +393,7 @@ class ScyllaNode:
             nodes = [nodes]
 
         self.watch_log_for(
-            [f"({node.address()}|{node.hostid()}).* now UP" for node in nodes],
+            [f"({_node_id_alternatives(node)}).* now UP" for node in nodes],
             from_mark=from_mark,
             timeout=timeout,
         )
@@ -534,6 +599,11 @@ class ScyllaNode:
              marks: list[int] | None = None) -> bool:
         if not self.is_running():
             return False
+
+        if wait_other_notice:
+            # Scylla names the node by host id in its "is now DOWN" line, and the
+            # host id can only be read from a running node, so read it now.
+            self.hostid()
 
         if marks is None:
             marks = [
@@ -911,14 +981,171 @@ class ScyllaNode:
 
         return ret
 
+    def dump_sstables(self,
+                      keyspace: str,
+                      column_family: str,
+                      datafiles: list[str] | None = None) -> list[dict[str, Any]]:
+        """The partitions in this table, via `scylla sstable dump-data`.
+
+        Same as ccm's ScyllaNode.dump_sstables(): the sstables are merged into
+        one dump, so the result is the list of partitions the node holds.
+        """
+        sstable_dumps = self.run_scylla_sstable(
+            "dump-data",
+            ["--merge"],
+            keyspace=keyspace,
+            column_families=[column_family],
+            datafiles=datafiles,
+            batch=True,
+        )
+        assert "" in sstable_dumps
+        stdout, _ = sstable_dumps[""]
+        return json.loads(stdout)["sstables"]["anonymous"]
+
+    @property
+    def status(self) -> str:
+        """ccm's Node.status, as far as this shim tracks it.
+
+        The manager knows whether the process is up; it does not keep ccm's
+        DECOMMISSIONED/UNINITIALIZED distinction, so a node that is not running
+        reads as DOWN.
+        """
+        return Status.UP if self.is_running() else Status.DOWN
+
+    def clear(self, clear_all: bool = False, only_data: bool = False, saved_caches: bool = False) -> None:
+        """Delete this node's on-disk state, as ccm's Node.clear() does.
+
+        `only_data` keeps the system keyspaces and empties every other table's
+        directory, which is how a test makes a node forget its user data without
+        making it forget it is a member of the cluster.
+
+        The directory names are the ones Scylla derives from the workdir the
+        cluster manager gives it (`commitlog`, where ccm has `commitlogs`), and a
+        directory the node has not created yet is skipped.
+        """
+        path = Path(self.get_path())
+
+        if only_data:
+            data_dir = path / "data"
+            for keyspace_dir in sorted(data_dir.iterdir()) if data_dir.is_dir() else []:
+                if not keyspace_dir.is_dir() or keyspace_dir.name.startswith("system"):
+                    continue
+                for table_dir in sorted(keyspace_dir.iterdir()):
+                    if table_dir.is_dir():
+                        shutil.rmtree(table_dir)
+                        table_dir.mkdir()
+            return
+
+        dirs = ["data", "commitlog"]
+        if clear_all:
+            dirs.append("logs")
+            if saved_caches:
+                dirs.append("saved_caches")
+        elif saved_caches:
+            dirs.append("saved_caches")
+        for name in dirs:
+            full_dir = path / name
+            if full_dir.is_dir():
+                self.rmtree(full_dir)
+
+    def get_configuration_options(self) -> dict:
+        """This node's scylla.yaml, as a dict."""
+        return self.cluster.manager.server_get_config(server_id=self.server_id)
+
+    def get_conf_dir(self) -> str:
+        """The directory holding this node's scylla.yaml."""
+        return os.path.join(self.get_path(), "conf")
+
+    def update_yaml(self) -> None:
+        """Re-apply this node's own settings to its scylla.yaml on disk.
+
+        ccm's Node.update_yaml() rewrites the file from the cluster's options plus
+        the node's own (addresses, ports, work directories).  Here the manager owns
+        the node-specific half, so this reads back whatever is in the file, keeps
+        only the cluster-wide part of it, and hands that to the manager, which
+        merges it into the config it maintains and rewrites the file.  That is what
+        a test wants after copying another node's scylla.yaml over this one's: the
+        cluster-wide options come across, the addresses stay this node's.
+        """
+        conf_file = os.path.join(self.get_conf_dir(), "scylla.yaml")
+        with open(conf_file) as f:
+            on_disk = yaml.safe_load(f) or {}
+        cluster_wide = {k: v for k, v in on_disk.items() if k not in NODE_SPECIFIC_CONFIG_OPTIONS}
+        self.cluster.manager.server_update_config(server_id=self.server_id, config_options=cluster_wide)
+
+    def get_node_scylla_version(self, scylla_exec_path: str | None = None) -> str:
+        """`scylla --version` for this node's executable, or for the given one."""
+        exe = scylla_exec_path or self.cluster.manager.server_get_exe(server_id=self.server_id)
+        run_output = subprocess.run([str(exe), "--version"], capture_output=True, text=True, check=False)
+        if run_output.returncode:
+            raise NodeError(f"Failed to run {exe} --version. Error:\n{run_output.stderr}")
+        return run_output.stdout.strip()
+
+    @property
+    def node_scylla_version(self) -> str:
+        if not self._node_scylla_version:
+            self._node_scylla_version = self.get_node_scylla_version()
+        return self._node_scylla_version
+
+    @node_scylla_version.setter
+    def node_scylla_version(self, scylla_exec_path: str | None) -> None:
+        self._node_scylla_version = self.get_node_scylla_version(scylla_exec_path)
+
+    def upgrade(self, upgrade_to_version: str) -> None:
+        """Restart this node on another Scylla version."""
+        self.upgrader.upgrade(upgrade_version=upgrade_to_version)
+
+    def rollback(self, upgrade_to_version: str) -> None:
+        """Restart this node on an older Scylla version, restoring system tables."""
+        self.upgrader.upgrade(upgrade_version=upgrade_to_version, recover_system_tables=True)
+
+    def removenode(self, hid: str) -> None:
+        """Remove the node with this host id from the cluster, from this node."""
+        servers_by_host_id = self.cluster.manager.all_servers_by_host_id()
+        if removed := servers_by_host_id.get(hid):
+            self.cluster.manager.remove_node(initiator_id=self.server_id, server_id=removed.server_id)
+        else:
+            # A host id the manager does not know (e.g. one already forgotten by
+            # the cluster object); fall back to plain nodetool, as ccm does.
+            self.nodetool(f"removenode {hid}")
+
+    def upgradesstables_if_command_available(self) -> bool:
+        stdout, _ = self.nodetool("help")
+        return "upgradesstables" in stdout
+
+    def get_node_supported_sstable_versions(self) -> list[str]:
+        match = self.grep_log(r"Feature (.*)_SSTABLE_FORMAT is enabled")
+        return [m[1].group(1).lower() for m in match] if match else []
+
+    def check_node_sstables_format(self, timeout: int = 10) -> set[str]:
+        """The set of sstable format versions this node's system tables are in."""
+        node_system_folder = os.path.join(self.get_path(), "data", "system")
+        find_cmd = f"find {node_system_folder} -type f ! -path *snapshots* -printf %f\\n".split()
+        result = subprocess.run(find_cmd, capture_output=True, timeout=timeout, text=True, check=False)
+        assert not result.stderr, result.stderr
+        assert result.stdout, f"Empty output from '{find_cmd}'"
+
+        sstable_version_regex = re.compile(r"(\w+)-[^-]+-(.+)\.(db|txt|sha1|crc32)")
+        return {
+            match.group(1)
+            for f in result.stdout.splitlines()
+            if (match := sstable_version_regex.search(f))
+        }
+
     def hostid(self, timeout: float | None = None, force_refresh: bool | None = None) -> str | None:
         assert timeout is None, "argument `timeout` is not supported"  # not used in scylla-dtest
         assert force_refresh is None, "argument `force_refresh` is not supported"  # not used in scylla-dtest
 
-        try:
-            return self.cluster.manager.get_host_id(server_id=self.server_id)
-        except Exception as exc:
-            self.error(f"Failed to get hostid: {exc}")
+        # Cached, as ccm's Node.hostid() is: a host id belongs to the node for
+        # its whole life, and it can only be read over the REST API while the
+        # node is up -- which is exactly when a stopped node's callers
+        # (watch_log_for_death(), removenode()) cannot ask for it any more.
+        if self._hostid is None:
+            try:
+                self._hostid = self.cluster.manager.get_host_id(server_id=self.server_id)
+            except Exception as exc:
+                self.error(f"Failed to get hostid: {exc}")
+        return self._hostid
 
     def rmtree(self, path: str | Path) -> None:
         """Delete a directory content without removing the directory.
@@ -948,6 +1175,11 @@ class ScyllaNode:
 
     def __repr__(self) -> str:
         return f"<ScyllaNode name={self.server_id} dc={self.data_center} rack={self.rack}>"
+
+
+def _node_id_alternatives(node: ScyllaNode) -> str:
+    """A regex alternation of the names Scylla's log may call this node by."""
+    return "|".join(re.escape(str(i)) for i in (node.address(), node.hostid()) if i)
 
 
 def _parse_scylla_args(args: list[str]) -> dict[str, list[str]]:
@@ -985,3 +1217,102 @@ def _parse_size(s: str) -> int:
     except ValueError:
         return int(s)
     return int(s[:-1]) * factor
+
+
+class NodeUpgrader:
+    """Restart a node on a different Scylla version.
+
+    ccm's NodeUpgrader replaces the executables under the node's own install dir.
+    Here the cluster manager owns the executable path, so the same three steps --
+    stop the node, point it at the other binary, start it again -- go through
+    `server_switch_executable()`, the primitive the manager's own
+    `server_change_version()` is built out of.  Driving the node's `stop()`/
+    `start()` rather than calling `server_change_version()` keeps the per-node
+    command line this shim assembles (smp, memory, log levels) across the upgrade.
+
+    The direction does not matter: "upgrading" to an older version is a rollback,
+    and `recover_system_tables` then restores the system tables from the snapshot
+    taken just before the switch (scylladb/scylla-enterprise#1950).
+    """
+
+    def __init__(self, node: ScyllaNode):
+        self.node = node
+        self._scylla_version_for_upgrade = None
+        self.install_dir_for_upgrade = None
+
+    @property
+    def scylla_version_for_upgrade(self) -> str | None:
+        return self._scylla_version_for_upgrade
+
+    @scylla_version_for_upgrade.setter
+    def scylla_version_for_upgrade(self, scylla_version_for_upgrade: str) -> None:
+        self._scylla_version_for_upgrade = scylla_version_for_upgrade
+
+    def _recover_system_tables(self) -> None:
+        """Restore the system tables from the snapshot taken before the switch."""
+        node_data_directory = Path(self.node.get_path()) / "data"
+        if not node_data_directory.exists():
+            raise NodeError(f"Data directory {node_data_directory} is not found")
+
+        snapshot_folder_name = None
+        for system_folder in ("system", "system_schema"):
+            node_system_ks_directory = node_data_directory / system_folder
+            if not snapshot_folder_name:
+                # Some tables may not exist in the older version; "peers" is in
+                # all of them, so use its snapshot directory to name the others.
+                system_peers = [p for p in node_system_ks_directory.iterdir() if p.name.startswith("peers-")]
+                snapshots = sorted((system_peers[0] / "snapshots").iterdir(), key=os.path.getmtime)
+                if not snapshots:
+                    raise NodeError(f"Unable to recover {system_folder} sstables: snapshot is not found")
+                snapshot_folder_name = snapshots[0].name
+
+            for recover_table in node_system_ks_directory.iterdir():
+                if not recover_table.is_dir():
+                    continue
+                recover_keyspace_snapshot = recover_table / "snapshots" / snapshot_folder_name
+                if not recover_keyspace_snapshot.exists():
+                    continue
+                for the_file in recover_table.iterdir():
+                    if the_file.is_file():
+                        the_file.unlink()
+                for the_file in recover_keyspace_snapshot.iterdir():
+                    if the_file.is_file():
+                        shutil.copy2(the_file, recover_table / the_file.name)
+
+    def upgrade(self, upgrade_version: str, recover_system_tables: bool = False) -> None:
+        node = self.node
+        install = scylla_repository.install(upgrade_version)
+        exe = node.cluster.exe_for(install)
+
+        self.scylla_version_for_upgrade = upgrade_version
+        version_before = node.node_scylla_version
+        version_after = node.get_node_scylla_version(exe)
+        node.info(f"Upgrading from Scylla {version_before} to {version_after} ({upgrade_version})")
+
+        if node.is_running():
+            # ccm snapshots before every switch so that a later rollback has
+            # system tables to restore from.
+            node.nodetool("snapshot")
+            node.stop(wait_other_notice=True)
+            if node.is_running():
+                raise NodeUpgradeError(f"Node {node.name} failed to stop before upgrade")
+
+        node.cluster.manager.server_switch_executable(server_id=node.server_id, path=exe)
+        node._node_scylla_version = None  # noqa: SLF001  -- the executable changed under it
+
+        if recover_system_tables:
+            self._recover_system_tables()
+
+        try:
+            node.start(wait_other_notice=True, wait_for_binary_proto=True)
+        except Exception as exc:
+            raise NodeUpgradeError(f"Node {node.name} failed to start after upgrade. Error: {exc}") from exc
+
+        self.install_dir_for_upgrade = str(install.install_dir)
+        if node.node_scylla_version != version_after:
+            raise NodeUpgradeError(
+                f"Node {node.name} hasn't been upgraded. Expected version after upgrade:"
+                f" {version_after}, got: {node.node_scylla_version}"
+            )
+        node.info(f"Upgraded from Scylla {version_before} to {node.node_scylla_version}")
+        node.upgraded = True
