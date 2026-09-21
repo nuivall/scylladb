@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import random
 import time
@@ -19,15 +20,13 @@ from alternator_utils import (
     StreamsTable,
 )
 from tools.cluster import new_node
-from tools.marks import issue_open, unmark, with_feature
+from tools.marks import with_feature
 from tools.retrying import retrying
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
-@pytest.mark.skip_if(with_feature("tablets") & issue_open("#23838"))
+@pytest.mark.skip_if(with_feature("tablets"))
 class TestAlternatorStreams(BaseAlternatorStream):
     def test_verify_all_nodes_have_same_stream(self):
         num_of_items = NUM_OF_ITEMS
@@ -114,7 +113,6 @@ class TestAlternatorStreams(BaseAlternatorStream):
         self.cluster.remove(node4, wait_other_notice=True)
         _verify_items(_node=node5, _expected_table_data=expected_table_data, _num_of_requests=len(expected_table_data), event_names=frozenset(("INSERT",)))
 
-    @pytest.mark.next_gating
     def test_list_streams_limit_parameter(self):
         """
         Test the list_streams command limit parameter.
@@ -147,7 +145,6 @@ class TestAlternatorStreams(BaseAlternatorStream):
         empty_streams_list = dynamodb_api.stream.list_streams(ExclusiveStartStreamArn=last_evaluated_stream_arn)["Streams"]
         assert len(empty_streams_list) == 0, f"Got unexpected list of Streams after the last evaluated Stream: {empty_streams_list}"
 
-    @unmark.next_gating  # https://github.com/scylladb/scylladb/issues/15260
     def test_updated_shards_during_add_decommission_node(self):
         """
         Verify how open Streams shards react while the same node is repeatedly
@@ -229,8 +226,6 @@ class TestAlternatorStreams(BaseAlternatorStream):
             wait_for_open_shards_diff()
         decommission_thread.join()
 
-    @unmark.next_gating  # https://github.com/scylladb/scylladb/issues/15260
-    @pytest.mark.skip_if(issue_open("jira:DTEST-200") | (with_feature("tablets") & issue_open("scylladb/scylla-dtest#7189")))
     def test_sequence_numbers_during_add_decommission_node(self):
         """
         Verify shards sequence numbers on topology changes.
@@ -266,11 +261,19 @@ class TestAlternatorStreams(BaseAlternatorStream):
             self.put_table_items(table_name=TABLE_NAME, node=node1, num_of_items=times)
             wait_for_running_decommission(node=node1, log_marks=decommission_log_marks)
             self.put_table_items(table_name=TABLE_NAME, node=node1, num_of_items=times)
-            streams_table.update_shards()
+
+            # wait_for_running_add_node() returns as soon as the bootstrap is accepted, but the new
+            # CDC generation (hence the new shards) is committed only later in the bootstrap, and a
+            # decommission creates no generation at all, so poll for the new shards.
+            @retrying(num_attempts=60, sleep_time=1, allowed_exceptions=AssertionError, message="waiting for new stream shards")
+            def wait_for_new_start_sequence_numbers():
+                streams_table.update_shards()
+                assert streams_table.start_sequence_numbers_set - original_start_sequence_numbers_set, "Start-sequence-numbers are not changed after topology changes!"
+
+            wait_for_new_start_sequence_numbers()
 
             # Get updated shards metadata
             new_start_sequence_numbers = [seq_num for seq_num in streams_table.start_sequence_numbers_list if seq_num not in original_start_sequence_numbers]
-            assert streams_table.start_sequence_numbers_set - original_start_sequence_numbers_set, "Start-sequence-numbers are not changed after topology changes!"
 
             # Verify new CDC/Streams Generation attribute of monotonic increasing sequence numbers.
             if new_start_sequence_numbers:
@@ -284,7 +287,6 @@ class TestAlternatorStreams(BaseAlternatorStream):
 
         decommission_thread.join()
 
-    @unmark.next_gating  # https://github.com/scylladb/scylladb/issues/15260
     def test_added_node_gets_closed_shards(self):
         """
         test scenario:
