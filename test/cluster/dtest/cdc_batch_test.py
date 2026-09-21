@@ -3,8 +3,12 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import re
+import time
+from datetime import datetime, timedelta
+from enum import IntEnum
 from itertools import groupby
 from operator import attrgetter
 
@@ -14,11 +18,92 @@ from cassandra.cluster import BatchStatement, Session, SimpleStatement
 from cassandra.query import BatchType
 from ccmlib.scylla_node import ScyllaNode
 
-from cdc_test import CDCInitializeHelper, CdcLogOperations
-from dtest_class import Tester, create_ks
-from tools.cdc_utils import get_next_timestamp, mkident
+from dtest_class import Tester, create_ks, wait_for
+from tools.cdc_utils import CDC_TIMESTAMPS_TABLE, consistency_for_cdc_streams_query, get_next_timestamp, mkident
 
 logger = logging.getLogger(__name__)
+
+
+class CdcLogOperations(IntEnum):
+    # Inlined from unported/cdc_test.py::CdcLogOperations, so this module does not
+    # depend on the not-yet-ported cdc_test module. Revisit once cdc_test.py itself
+    # is ported.
+    PREIMAGE = 0
+    UPDATE = 1
+    INSERT = 2
+    ROW_DELETE = 3
+    PARTITION_DELETE = 4
+    RANGE_DELETE_START_INCLUSIVE = 5
+    RANGE_DELETE_START_EXCLUSIVE = 6
+    RANGE_DELETE_END_INCLUSIVE = 7
+    RANGE_DELETE_END_EXCLUSIVE = 8
+    POSTIMAGE = 9
+
+
+class CDCInitializeHelper:
+    """
+    Inlined from unported/cdc_test.py::CDCInitializeHelper, trimmed to just the
+    methods TestCDCBatchesSimple uses (populate_sequentially, wait_for_metadata_update
+    and wait_for_last_generation_to_be_active with their transitive helpers), so this
+    module does not depend on the not-yet-ported cdc_test module. Revisit once
+    cdc_test.py itself is ported.
+    """
+
+    def populate_sequentially(self, nodes_per_dc: list | int, wait_other_notice: bool = True, custom_args: list[str] | None = None, topo: dict | None = None, rack_per_node: bool = True):
+        if custom_args is None:
+            custom_args = []
+        cluster = self.cluster
+        jvm_args = ["--blocked-reactor-notify-ms", "100" if cluster.scylla_mode != "debug" else "1000000"]
+        jvm_args += custom_args
+        nodes_per_dc = [nodes_per_dc] if isinstance(nodes_per_dc, int) else nodes_per_dc
+        if topo is not None:
+            topology = topo
+        elif rack_per_node:
+            topology = {f"dc{i + 1}": {f"rack{j + 1}": 1 for j in range(node_count)} for i, node_count in enumerate(nodes_per_dc)}
+        else:
+            topology = {f"dc{i + 1}": {"rack1": node_count} for i, node_count in enumerate(nodes_per_dc)}
+        cluster.populate(topology)
+        nodes = cluster.nodelist()
+        logger.debug(f"Starting node {nodes[0].name}")
+        nodes[0].start(wait_for_binary_proto=True, wait_other_notice=wait_other_notice, jvm_args=jvm_args)
+        for node in nodes[1:]:
+            logger.debug(f"Starting node {node.name}")
+            node.start(wait_for_binary_proto=True, wait_other_notice=wait_other_notice)
+
+    def get_cdc_generation_timestamps(self, session):
+        cl = consistency_for_cdc_streams_query(len(self.cluster.nodes))
+        query = SimpleStatement(f"SELECT time FROM {CDC_TIMESTAMPS_TABLE} WHERE key = 'timestamps'", consistency_level=cl)
+        return session.execute(query)
+
+    def get_last_generation_timestamp(self, session):
+        timestamps = list(self.get_cdc_generation_timestamps(session))
+        assert len(timestamps) > 0, "No CDC generations"
+        return max(row.time for row in timestamps)
+
+    def sleep_until(self, timestamp):
+        secs = (timestamp - datetime.utcnow()).total_seconds()
+        if secs > 0:
+            logger.debug(f"Sleeping for {secs} seconds")
+            time.sleep(secs)
+
+    def wait_for_last_generation_to_be_active(self, session):
+        last_timestamp = self.get_last_generation_timestamp(session)
+        # Add one second to account for clock differences
+        self.sleep_until(last_timestamp + timedelta(seconds=1))
+        logger.debug(f"Current generation timestamp: {last_timestamp}")
+        return last_timestamp
+
+    def get_vnode_ring(self, session):
+        return list(session.cluster.metadata.token_map.ring)
+
+    def wait_for_metadata_update(self, session, cluster_size):
+        # Cluster metadata is updated asynchronously, so we need to wait
+        def check_metadata():
+            ring = self.get_vnode_ring(session)
+            logger.debug(f"Token ring length: {len(ring)}")
+            return len(ring) == cluster_size * 256
+
+        wait_for(check_metadata, timeout=60, text="Waiting until metadata is updated")
 
 
 class Column:
@@ -209,9 +294,7 @@ def get_generator(data_type):
 checking_types = ["int", "bigint", "text", "varchar", "frozen<set<int>>", "frozen<set<text>>", "frozen<list<int>>", "list<int>", "set<int>", "map<int,int>", "map<text,blob>"]
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
-@pytest.mark.next_gating
 class TestCDCBatchesSimple(Tester, CDCInitializeHelper):
     keyspace = "ks"
     table = "cf"
