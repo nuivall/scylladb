@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import math
 import multiprocessing
@@ -31,8 +32,6 @@ SCAN_READ = "scan"
 KBYTE = 1024
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestReadAmplification(Tester):
     @staticmethod
     def get_metrics(metric_names, node_ips=None):
@@ -258,8 +257,6 @@ class TestReadAmplification(Tester):
         self.read_amplification(SCAN_READ, KBYTE * KBYTE * 20)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestMultiShardReader(Tester):
     """
     This class holds the test that covers the issue that cause to read amplification
