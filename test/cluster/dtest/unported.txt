@@ -16,7 +16,6 @@ manager_repair_tests.py
 manager_restore_tests.py
 manager_suspension_test.py
 manager_task_tests.py
-materialized_views_test.py
 migration_test.py
 mixed_version_test.py
 reversed_queries_test.py
