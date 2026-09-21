@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import itertools
 import logging
 import random
@@ -52,9 +53,7 @@ class SLATester(Tester):
         return entity
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
-@pytest.mark.next_gating
 class TestSLA(SLATester):
     @staticmethod
     def _validate_sla(service_level: ServiceLevel):
@@ -183,7 +182,6 @@ class TestSLA(SLATester):
         node1.stress(cmd.format(user=user, password=password).split())
         node1.stress(cmd.format(user=entity.name, password=entity.password).split())
 
-    @pytest.mark.require("scylladb/scylla-enterprise#2163")
     def test_sla_no_shares(self):
         """
         1. Create SL without specifying the number of shares.
@@ -233,7 +231,6 @@ class TestSLA(SLATester):
         self.validate_sl_list(session=session, expected_service_levels=sls)
         self.validate_attached_slas_list(session=session, entity=entity, expected_service_levels=[sl_300])
 
-    @pytest.mark.require("scylladb/scylla-enterprise#2163")
     @pytest.mark.parametrize(argnames=["entity_class", "entity_name"], argvalues=[[Role, "test_role"], [User, "test_user"]], ids=["with_role", "with_user"])
     def test_update_assigned_sla_service_shares(self, entity_class, entity_name: str):
         """
@@ -398,8 +395,6 @@ class TestSLA(SLATester):
         self.validate_attached_slas_list(session=session, entity=entity, expected_service_levels=[sl200])
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestSLANegativeTests(SLATester):
     def test_update_not_existing_sla(self):
         """
@@ -442,7 +437,6 @@ class TestSLANegativeTests(SLATester):
             ServiceLevel(session=session, name="sla1", shares=shares).create()
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestSLATimeouts(SLATester):
     KEY_NUM = 1000
@@ -479,7 +473,6 @@ class TestSLATimeouts(SLATester):
 
         assert query_result
 
-    @pytest.mark.require("scylladb/scylladb#10285")
     @pytest.mark.parametrize(
         argnames=("scylla_yaml_timeout", "sl_timeout", "query_timeout"),
         argvalues=[
@@ -553,7 +546,6 @@ class TestSLATimeouts(SLATester):
             logger.debug("Read result: %s", len(read_result.all()))
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestSLTimeoutsNegative(SLATester):
     @pytest.mark.parametrize(
@@ -580,7 +572,6 @@ class TestSLTimeoutsNegative(SLATester):
         assert exc.match(f".*{expected_exception_msg}.*")
 
 
-@pytest.mark.dtest_full
 class TestSLAConfig(SLATester):
     @staticmethod
     def connection_in_scheduling_group(role_session, node, role_name, sg_name):

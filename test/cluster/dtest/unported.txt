@@ -11,7 +11,6 @@ cql_tracing_addition_test.py
 cql_tracing_test.py
 cqlsh_tests/cqlsh_copy_tests.py
 cqlsh_tests/cqlsh_tests.py
-deletion_test.py
 encryption_at_rest_test.py
 internode_ssl_test.py
 ldap_test.py
@@ -34,7 +33,6 @@ reversed_queries_test.py
 rolling_upgrade_test.py
 scyllatop_test.py
 secondary_indexes_test.py
-sla_per_user_test.py
 snapshot_test.py
 stress_tool_test.py
 system_tables_test.py
