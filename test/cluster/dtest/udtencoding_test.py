@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import time
 
 import pytest
@@ -11,10 +12,8 @@ from dtest_class import Tester, create_ks
 from tools.assertions import assert_invalid
 from tools.cluster_topology import generate_cluster_topology
 
-pytestmark = pytest.mark.next_gating
 
 
-@pytest.mark.dtest_full
 class TestUDTEncoding(Tester):
     @pytest.fixture(scope="function")
     def node1_session(self):

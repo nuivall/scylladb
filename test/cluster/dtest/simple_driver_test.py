@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import time
 
 import pytest
@@ -11,9 +12,6 @@ from ccmlib.scylla_cluster import ScyllaCluster
 from dtest_class import Tester, create_ks
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_debug
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestSimpleDriver(Tester):
     @pytest.fixture(params=(["--smp", "1"], ["--smp", "2"]), ids=["SMP=1", "SMP=2"], autouse=True)
