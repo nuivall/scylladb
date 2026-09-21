@@ -6,7 +6,6 @@ import tempfile
 
 import pytest
 
-from tools.cassandra_docker import CassandraDockerCluster
 from tools.files import copy_files_to, get_cf_dir
 
 logger = logging.getLogger(__name__)
@@ -39,6 +38,11 @@ class CassandraCluster:
         # Stop Scylla cluster before create new Cassandra cluster because of it's impossible to run two clusters simultaneously
         if self.scylla_cluster:
             self.scylla_cluster.stop(wait_other_notice=True)
+        # Imported here, not at module scope: this module is imported by every
+        # migration test, and only the handful that need a real Cassandra
+        # should have to have the docker stack installed.
+        from tools.cassandra_docker import CassandraDockerCluster
+
         # Set up Cassandra cluster
         self.cluster = CassandraDockerCluster(version=self.cassandra_version, workdir=self.test_path)
         self.request.addfinalizer(self.tear_down)
