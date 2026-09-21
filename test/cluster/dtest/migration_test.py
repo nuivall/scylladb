@@ -45,13 +45,6 @@ from tools.tables_view_manager import wait_for_view
 
 logger = logging.getLogger(__name__)
 
-_NO_MIGRATION_FIXTURES_REASON = ("requires pre-generated legacy-format Cassandra sstables under "
-                                  "cassandra-sstables/migration/<version>/... (upstream scylla-dtest fixture data), "
-                                  "which is not present in this tree")
-_NO_LOAD_AND_STREAM_FIXTURES_REASON = ("requires pre-generated sstables under "
-                                        "cassandra-sstables/load-and-stream/3_0_md/from-cluster-4-nodes/... "
-                                        "(upstream scylla-dtest fixture data), which is not present in this tree")
-
 
 class BaseHelpers(Tester):
     @staticmethod
@@ -671,7 +664,6 @@ class MigrationTestBase(BaseHelpers):
 
 
 @pytest.mark.single_node
-@pytest.mark.skip_env(reason=_NO_MIGRATION_FIXTURES_REASON)
 class TestMigration(MigrationTestBase):
     __test__ = True
 
@@ -717,7 +709,6 @@ class TestMigration(MigrationTestBase):
 
 
 @pytest.mark.single_node
-@pytest.mark.skip_env(reason=_NO_MIGRATION_FIXTURES_REASON)
 class TestMigrationUpgradeSSTables(TestMigration):
     __test__ = True
 
@@ -1020,7 +1011,6 @@ class TestTTLWithMigrate(Tester):
         return json.loads(res.stdout)["sstables"]["anonymous"]
 
 
-@pytest.mark.skip_env(reason=_NO_LOAD_AND_STREAM_FIXTURES_REASON)
 class TestLoadAndStream(BaseHelpers):
     KEYSPACE_NAME = "keyspace1"
     TABLE_NAME = "standard1"
