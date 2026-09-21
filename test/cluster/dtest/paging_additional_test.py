@@ -10,28 +10,15 @@ from random import randint
 
 import pytest
 from cassandra import ConsistencyLevel
-from cassandra.query import SimpleStatement, dict_factory
+from cassandra.query import SimpleStatement
 
-from dtest_class import Tester, create_ks, get_ip_from_node
-from tools.cluster_topology import generate_cluster_topology
+from dtest_class import create_ks, get_ip_from_node
 from tools.datahelp import create_rows
 from tools.metrics import get_node_metrics
 from tools.paging import PageAssertionMixin, PageFetcher
+from paging_test import BasePagingTester
 
 logger = logging.getLogger(__name__)
-
-
-class BasePagingTester(Tester):
-    # Inlined from unported/paging_test.py::BasePagingTester, so this module does not
-    # depend on the not-yet-ported paging_test module (a separate, much larger porting
-    # batch). Revisit once paging_test.py itself is ported.
-    def prepare(self, row_factory=dict_factory, consistency_level=ConsistencyLevel.QUORUM):
-        cluster_topology = generate_cluster_topology(dc_num=1, rack_num=3, nodes_per_rack=1)
-        cluster = self.cluster
-        cluster.populate(cluster_topology).start(wait_for_binary_proto=True, wait_other_notice=True)
-        node1 = cluster.nodelist()[0]
-        session = self.patient_cql_connection(node1, row_factory=row_factory, consistency_level=consistency_level)
-        return session
 
 
 class TestAggregatePaging(BasePagingTester, PageAssertionMixin):
