@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 """Tests for limiting streaming/repair/compaction and other throughput limits"""
 
 import logging
@@ -16,14 +17,12 @@ from ccmlib.scylla_node import ScyllaNode
 from dtest_class import Tester
 from dtest_setup_overrides import DTestSetupOverrides
 from tools.cluster import new_node
-from tools.marks import issue_open, with_feature
 from tools.metrics import get_node_metrics
 from tools.misc import ImmutableMapping
 from tools.rate_limit import rate_limit_expected_errors
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -43,7 +42,6 @@ class TestPerPartitionRateLimiter(Tester):
     Feature introduced in Scylla 5.1:
     https://github.com/scylladb/scylla/commit/dab56b82fae5e36f7aa2ca6700d8cfa5baa2b515"""
 
-    @pytest.mark.dtest_full
     def test_per_partition_rate_limit(self):
         # Create 2 node cluster to verify that it works also with non-shard aware driver
         # when half of requests go to coordinator node instead of replica node.

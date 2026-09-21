@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 from collections import OrderedDict
 
@@ -16,10 +17,8 @@ from tools.data import rows_to_list
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
-@pytest.mark.dtest_full
 class TestRFAutoExpand(Tester):
     """
     Test for #4210 (or CASSANDRA-14303).
@@ -100,7 +99,6 @@ def mk_replication(dcs):
     return OrderedDict([("class", "org.apache.cassandra.locator.NetworkTopologyStrategy")] + [(str(k), str(v)) for k, v in dcs.items()])
 
 
-@pytest.mark.dtest_full
 class TestRestrictionReplicationSimpleStrategy(Tester):
     test_keyspace_ss = "test_ks_ss"
     test_keyspace_nts = "test_ks_nts"
