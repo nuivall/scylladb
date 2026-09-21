@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import re
 from datetime import datetime
@@ -17,8 +18,6 @@ from tools.metrics import prometheus_get
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestScyllaARestApi(Tester):
     def config_and_create_cluster(self, nodes):
         self.cluster.populate(nodes).start(wait_for_binary_proto=True, wait_other_notice=True)

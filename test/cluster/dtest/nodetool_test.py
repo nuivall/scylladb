@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import time
@@ -15,15 +16,12 @@ from ccmlib.node import NodetoolError
 
 from dtest_class import Tester, wait_for
 from tools.data import rows_to_list
-from tools.marks import unmark
 from tools.rackdc import update_properties
 from tools.stress import assert_cs_success, format_cs_output
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_full
 class TestNodetool(Tester):
     @staticmethod
     def filter_asan_warning(output):
@@ -147,7 +145,6 @@ class TestNodetool(Tester):
 
     @pytest.mark.parametrize("method", ["decommission", "kill"])
     @pytest.mark.use_cassandra_stress
-    @unmark.next_gating  # https://github.com/scylladb/scylla-dtest/issues/3372
     def test_seed(self, method):
         """
         Test if cassandra-stress works well when seed node is  "decommission" or "killed".

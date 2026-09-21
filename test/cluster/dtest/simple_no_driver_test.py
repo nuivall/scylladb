@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 
 import pytest
@@ -13,10 +14,8 @@ from dtest_setup_overrides import DTestSetupOverrides
 from tools.misc import ImmutableMapping
 
 logger = logging.getLogger(__name__)
-pytestmark = pytest.mark.next_gating
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 @pytest.mark.use_cassandra_stress
 @pytest.mark.parametrize("smp_options", [["--smp", "1"], ["--smp", "2"]], ids=["SMP=1", "SMP=2"])
