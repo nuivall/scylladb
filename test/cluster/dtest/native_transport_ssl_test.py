@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import shutil
@@ -17,7 +18,6 @@ from ccmlib import common
 from dtest_class import Tester, create_cf, create_ks, get_ip_from_node, wait_for
 from tools.data import putget
 from tools.files import safe_mkdtemp
-from tools.marks import issue_open, unmark
 from tools.misc import generate_ssl_stores, is_port_used, revoke_certificate
 from tools.sslkeygen import wait_for_cert_reload
 
@@ -29,10 +29,10 @@ class BaseSslTester(Tester):
         ssl_context, ssl_options = None, {}
         if use_ssl:
             ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            ssl_context.load_cert_chain(certfile=os.path.join(self.test_path, "ccm_node.pem"), keyfile=os.path.join(self.test_path, "ccm_node.key"))
+            ssl_context.load_cert_chain(certfile=os.path.join(self.cluster.get_path(), "ccm_node.pem"), keyfile=os.path.join(self.cluster.get_path(), "ccm_node.key"))
             ssl_context.check_hostname = ca_certs_required
             ssl_context.verify_mode = ssl.CERT_REQUIRED if ca_certs_required else ssl.CERT_NONE
-            ssl_context.load_verify_locations(cafile=os.path.join(self.test_path, "ccm_node.cer"))
+            ssl_context.load_verify_locations(cafile=os.path.join(self.cluster.get_path(), "ccm_node.cer"))
         cluster_connection = Cluster([get_ip_from_node(node_to_connect)], port=port, connect_timeout=90, control_connection_timeout=60, protocol_version=4, ssl_context=ssl_context, ssl_options=ssl_options)
         return cluster_connection.connect()
 
@@ -50,7 +50,7 @@ class BaseSslTester(Tester):
 
         if enable_ssl:
             ip_addresses = [f"{cluster.get_ipprefix()}{i}" for i in range(1, nodes_num + 1)]
-            generate_ssl_stores(self.test_path, ip_addresses=ip_addresses)
+            generate_ssl_stores(self.cluster.get_path(), ip_addresses=ip_addresses)
             is_scylla = common.isScylla(cluster.get_install_dir())
             # C* versions before 3.0 (CASSANDRA-10559) do not know about
             # 'client_encryption_options.optional' - so we must not add that parameter
@@ -59,25 +59,25 @@ class BaseSslTester(Tester):
             if ssl_optional:
                 options["optional"] = ssl_optional
             if is_scylla:
-                options.update({"certificate": os.path.join(self.test_path, "ccm_node.pem"), "keyfile": os.path.join(self.test_path, "ccm_node.key")})
+                options.update({"certificate": os.path.join(self.cluster.get_path(), "ccm_node.pem"), "keyfile": os.path.join(self.cluster.get_path(), "ccm_node.key")})
                 if require_auth:
-                    options.update({"truststore": os.path.join(self.test_path, "ccm_node.cer"), "require_client_auth": True})
+                    options.update({"truststore": os.path.join(self.cluster.get_path(), "ccm_node.cer"), "require_client_auth": True})
                 if use_revocation:
                     options.update(
                         {
-                            "certficate_revocation_list": os.path.join(self.test_path, "ccm_node.crl"),
+                            "certficate_revocation_list": os.path.join(self.cluster.get_path(), "ccm_node.crl"),
                         }
                     )
 
             else:
                 options.update(
                     {
-                        "keystore": os.path.join(self.test_path, "keystore.jks"),
+                        "keystore": os.path.join(self.cluster.get_path(), "keystore.jks"),
                         "keystore_password": "cassandra",
                     }
                 )
                 if require_auth:
-                    options.update({"truststore": os.path.join(self.test_path, "truststore.jks"), "truststore_password": "cassandra", "require_client_auth": True})
+                    options.update({"truststore": os.path.join(self.cluster.get_path(), "truststore.jks"), "truststore_password": "cassandra", "require_client_auth": True})
 
             cluster.set_configuration_options({"client_encryption_options": options})
 
@@ -97,15 +97,12 @@ class BaseSslTester(Tester):
         putget(cluster, session, cl=ConsistencyLevel.ONE)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
-@pytest.mark.next_gating
 class TestNativeTransportSSL(BaseSslTester):
     """
     Native transport integration tests, specifically for ssl and port configurations.
     """
 
-    @pytest.mark.dtest_debug
     def test_connect_to_ssl(self):
         """
         Connecting to SSL enabled native transport port should only be possible using SSL enabled client
@@ -156,7 +153,7 @@ class TestNativeTransportSSL(BaseSslTester):
 
         # verify connection fails after revoking certificate
         mark = node1.mark_log()
-        revoke_certificate(self.test_path)
+        revoke_certificate(self.cluster.get_path())
         wait_for_cert_reload(node1, "cql_server", ["ccm_node.crl"], from_mark=mark)
 
         try:  # hack around assertRaise's lack of msg parameter
@@ -201,7 +198,6 @@ class TestNativeTransportSSL(BaseSslTester):
         with self._create_cluster_session(node1, use_ssl=True, port=9666) as session:
             self._putget(cluster, session, ks="ks2")
 
-    @pytest.mark.dtest_debug
     def test_reload_certificates(self, tmp_path):
         """
         Verify certificate reloading on modified file(s)
@@ -222,7 +218,7 @@ class TestNativeTransportSSL(BaseSslTester):
         mark = node1.mark_log()
 
         # copy new certs to old path
-        shutil.copytree(str(tmp_path), self.test_path, dirs_exist_ok=True)
+        shutil.copytree(str(tmp_path), self.cluster.get_path(), dirs_exist_ok=True)
 
         # now we play the waiting game...
         wait_for_cert_reload(node1, "cql_server", ["ccm_node.pem", "ccm_node.key"], from_mark=mark)
@@ -311,8 +307,6 @@ class TestNativeTransportSSL(BaseSslTester):
             cluster.set_configuration_options(ports_conf)
             restart_and_verify_listen_ports(expected_ports=[v for k, v in ports_conf.items() if v not in [0, None]])
 
-    @pytest.mark.skip_if(issue_open("scylladb/scylladb#7500") | issue_open("scylladb/scylladb#7783"))
-    @unmark.next_gating
     def test_listen_ports_conf_by_zero(self):
         """
         Test native transport ports configuration, and verify the listening native transport ports after start.
@@ -320,14 +314,10 @@ class TestNativeTransportSSL(BaseSslTester):
         """
         self._listen_ports_conf_template(disable_value=0)
 
-    @pytest.mark.skip_if(issue_open("scylladb/scylladb#7500") | issue_open("scylladb/scylladb#7783"))
-    @unmark.next_gating
     def test_listen_ports_conf(self):
         self._listen_ports_conf_template(disable_value=None)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestServerEncryption(BaseSslTester):
     def test_server_encryption_and_restart_node(self):
         """
@@ -336,12 +326,12 @@ class TestServerEncryption(BaseSslTester):
         restart a node configured with server encryption
         """
         ip_addresses = [f"{self.cluster.get_ipprefix()}{i}" for i in range(1, 3)]
-        generate_ssl_stores(self.test_path, ip_addresses=ip_addresses)
+        generate_ssl_stores(self.cluster.get_path(), ip_addresses=ip_addresses)
 
         options = dict(internode_encryption="all")
 
-        options.update({"certificate": os.path.join(self.test_path, "ccm_node.pem"), "keyfile": os.path.join(self.test_path, "ccm_node.key")})
-        options.update({"truststore": os.path.join(self.test_path, "ccm_node.cer"), "require_client_auth": False})
+        options.update({"certificate": os.path.join(self.cluster.get_path(), "ccm_node.pem"), "keyfile": os.path.join(self.cluster.get_path(), "ccm_node.key")})
+        options.update({"truststore": os.path.join(self.cluster.get_path(), "ccm_node.cer"), "require_client_auth": False})
 
         self.cluster.set_configuration_options({"server_encryption_options": options})
 
