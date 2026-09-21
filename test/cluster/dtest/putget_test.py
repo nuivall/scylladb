@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import binascii
 import logging
 import sys
@@ -27,8 +28,6 @@ from tools.misc import retry_till_success
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestPutGet(Tester):
     @pytest.fixture(scope="function", autouse=True)
     def fixture_set_cluster_settings(self, fixture_dtest_setup):
