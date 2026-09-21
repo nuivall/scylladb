@@ -26,10 +26,6 @@ from upgrade_test import UpgradeTester, upgrade_matrix_from_last_release_version
 
 logger = logging.getLogger(__name__)
 
-_UPGRADE_UNSUPPORTED_REASON = ("needs a genuine multi-version upgrade: ScyllaNode.upgrade() is not implemented by the "
-                                "in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
-
-
 class ConcurrentExecutor:
     request: pytest.FixtureRequest = None
 
@@ -596,7 +592,6 @@ class TestReversedQueriesSelectorsDuringUpgrade(UpgradeTester, BaseReversedQuery
     upgrade_path = upgrade_matrix_from_last_release_version
     init_version = upgrade_path[0]
 
-    @pytest.mark.skip_env(reason=_UPGRADE_UNSUPPORTED_REASON)
     def test_queries_during_upgrade(self, dtest_config):
         """
         Test that reverse queries work on a mixed cluster
@@ -658,7 +653,6 @@ class TestReversedQueriesReadRepairDuringUpgrade(UpgradeTester, BaseReversedQuer
     upgrade_path = upgrade_matrix_from_last_release_version
     init_version = upgrade_path[0]
 
-    @pytest.mark.skip_env(reason=_UPGRADE_UNSUPPORTED_REASON)
     def test_queries_during_upgrade(self, dtest_config):
         """
         Test that reconciliation with reverse queries work on a mixed cluster
