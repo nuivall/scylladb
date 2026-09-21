@@ -1,3 +1,8 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from random import randint
