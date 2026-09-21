@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import re
@@ -17,15 +18,13 @@ from ccmlib.scylla_cluster import ScyllaCluster
 from dtest_class import Tester
 from tools.cluster import restart_cluster
 from tools.cluster_topology import generate_cluster_topology_based_rf
-from tools.marks import issue_open, with_feature
+from tools.marks import with_feature
 from tools.misc import is_coverage, set_trace_probability
 from tools.session import wait_reconnection
 
 logger = logging.getLogger(__name__)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 @pytest.mark.use_cassandra_stress
 class TestDistributedAggregations(Tester):
     CS_KEYSPACE = "ks"
@@ -50,7 +49,7 @@ class TestDistributedAggregations(Tester):
 
         return node1, session
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#16709"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_distributed_count_all(self):
         """
         Test the new feature flag for enabling parallelized aggregation
