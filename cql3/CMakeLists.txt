@@ -72,6 +72,7 @@ target_sources(cql3
     statements/schema_altering_statement.cc
     statements/ks_prop_defs.cc
     statements/function_statement.cc
+    statements/modification_spec.cc
     statements/modification_statement.cc
     statements/cas_request.cc
     statements/raw/parsed_statement.cc

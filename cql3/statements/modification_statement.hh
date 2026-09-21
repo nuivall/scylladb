@@ -10,10 +10,8 @@
 
 #pragma once
 
-#include "cql3/stats.hh"
-#include "cql3/update_parameters.hh"
 #include "cql3/cql_statement.hh"
-#include "cql3/statements/statement_type.hh"
+#include "cql3/statements/modification_spec.hh"
 #include "exceptions/coordinator_result.hh"
 
 #include <seastar/core/shared_ptr.hh>
@@ -28,23 +26,24 @@ enum class large_data_violation_type : uint8_t;
 namespace cql3 {
 
 class query_processor;
-class attributes;
-class operation;
 
 namespace statements {
-
 
 namespace raw { class modification_statement; }
 
 /*
- * Abstract parent class of individual modifications, i.e. INSERT, UPDATE and DELETE.
+ * Abstract parent class of individual modifications, i.e. INSERT, UPDATE and DELETE,
+ * as the CQL server executes them: through storage_proxy, or through Paxos when the
+ * modification carries IF conditions.
+ *
+ * Inheriting the modification rather than holding it is scaffolding: it keeps the
+ * commits that move parse state into modification_spec pure moves. A later commit in
+ * this series turns the base into a member.
  */
-class modification_statement : public cql_statement {
+class modification_statement : public cql_statement, public modification_spec {
 public:
-    const statement_type type;
     bool _may_use_token_aware_routing;
 private:
-    const uint32_t _bound_terms;
     // If we have operation on list entries, such as adding or
     // removing an entry, the modification statement must prefetch
     // the old values of the list to create an idempotent mutation.
@@ -62,31 +61,15 @@ private:
     // contain LIST columns prefetched to apply updates, unless
     // these columns are also used in conditions.
     column_set _columns_of_cas_result_set;
-public:
-    const schema_ptr s;
-    const std::unique_ptr<attributes> attrs;
-
 protected:
     std::vector<std::unique_ptr<operation>> _column_operations;
-    cql_stats& _stats;
-
-    expr::expression _condition = expr::conjunction{{}}; // TRUE
 private:
-    const ks_selector _ks_sel;
-
-    // True if this statement has _if_exists or _if_not_exists or other
-    // conditions that apply to static/regular columns, respectively.
-    // Pre-computed during statement prepare.
-    bool _has_static_column_conditions = false;
-    bool _has_regular_column_conditions = false;
     // True if any of update operations requires a prefetch.
     // Pre-computed during statement prepare.
     bool _requires_read = false;
     // True if any of the update operations requires LWT (an IF condition) for
     // atomicity, e.g. SET col = col + 1 on a non-counter column.
     bool _requires_lwt = false;
-    bool _if_not_exists = false;
-    bool _if_exists = false;
 
     // True if this statement has column operations that apply to static/regular
     // columns, respectively.
@@ -105,58 +88,32 @@ public:
             std::unique_ptr<attributes> attrs_,
             cql_stats& stats_);
 
-    virtual ~modification_statement() override;
+    ~modification_statement();
+
+    // Both bases declare it; the statement's own is the one callers mean.
+    using cql_statement::get_timeout_config_selector;
+
+    // The modification this statement executes.
+    const modification_spec& spec() const { return *this; }
 
     uint32_t get_bound_terms() const override;
 
-    const sstring& keyspace() const;
-
-    const sstring& column_family() const;
-
-    bool is_counter() const;
-
-    bool is_view() const;
-
-    int64_t get_timestamp(int64_t now, const query_options& options) const;
-
-    bool is_timestamp_set() const;
-
-    std::optional<gc_clock::duration> get_time_to_live(const query_options& options) const;
-
     future<> check_access(query_processor& qp, const service::client_state& state) const override;
-
-    // Validate before execute, using client state and current schema
-    void validate(query_processor&, const service::client_state& state) const override;
 
     bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const override;
 
     bool should_reclassify_control_connection() const override;
 
+    // Validate before execute, using client state and current schema
+    void validate(query_processor&, const service::client_state& state) const override;
+
     void add_operation(std::unique_ptr<operation> op);
 
-    void inc_cql_stats(bool is_internal) const;
-
     bool is_conditional() const override;
-
-public:
-    void analyze_condition(expr::expression cond);
-
-    void set_if_not_exist_condition();
-
-    bool has_if_not_exist_condition() const;
-
-    void set_if_exist_condition();
-
-    bool has_if_exist_condition() const;
 
     bool is_raw_counter_shard_write() const {
         return _is_raw_counter_shard_write.value_or(false);
     }
-
-    /// Decides whether an IF EXISTS / IF NOT EXISTS condition is about the static
-    /// row or about a clustering row.  Must run before the checks that read
-    /// applies_only_to_static_columns(), which this can change.
-    void classify_exists_condition(bool restricts_clustering_columns);
 
     /// Checks that the primary key the statement names has no null values, throwing
     /// invalid_request_exception otherwise.
@@ -166,7 +123,6 @@ public:
     // so that get_result_metadata() returns a meaningful value.
     void build_cas_result_set_metadata();
 
-public:
     virtual dht::partition_range_vector build_partition_keys(const query_options& options, const json_cache_opt& json_cache) const = 0;
     virtual query::clustering_row_ranges create_clustering_ranges(const query_options& options, const json_cache_opt& json_cache) const = 0;
 
@@ -178,7 +134,7 @@ protected:
     // have _sets_static_columns set either so checking the latter flag too here guarantees that
     // this function works as expected in all cases.
     bool applies_only_to_static_columns() const {
-        return _sets_static_columns && !_sets_regular_columns && !_has_regular_column_conditions;
+        return _sets_static_columns && !_sets_regular_columns && !has_regular_column_conditions();
     }
 public:
     // True if any of update operations of this statement requires
@@ -215,45 +171,12 @@ protected:
     utils::chunked_vector<mutation> make_mutations(const std::vector<dht::partition_range>& keys) const;
 
 public:
-
-    /**
-     * Checks whether the conditions represented by this statement apply provided the current state of the row on
-     * which those conditions are.
-     *
-     * @param row the row with current data corresponding to these conditions. Can be null if there
-     * is no matching row.
-     * @return whether the conditions represented by this statement apply or not.
-     */
-    bool applies_to(const selection::selection* selection, const update_parameters::prefetch_data::row* row, const query_options& options) const;
-
-private:
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    do_execute(query_processor& qp, service::query_state& qs, const query_options& options) const;
-    friend class modification_statement_executor;
-public:
-    // True if the statement has IF conditions. Pre-computed during prepare.
-    bool has_conditions() const { return _has_regular_column_conditions || _has_static_column_conditions; }
-    // True if the statement has IF conditions that apply to static columns.
-    bool has_static_column_conditions() const { return _has_static_column_conditions; }
-    // True if this statement needs to read only static column values to check if it can be applied.
-    bool has_only_static_column_conditions() const { return !_has_regular_column_conditions && _has_static_column_conditions; }
-
-    bool has_regular_column_conditions() const { return _has_regular_column_conditions; }
-
     virtual future<::shared_ptr<cql_transport::messages::result_message>>
     execute(query_processor& qp, service::query_state& qs, const query_options& options, std::optional<service::group0_guard> guard) const override;
 
     virtual future<::shared_ptr<cql_transport::messages::result_message>>
     execute_without_checking_exception_message(query_processor& qp, service::query_state& qs, const query_options& options, std::optional<service::group0_guard> guard) const override;
 
-private:
-    future<exceptions::coordinator_result<>>
-    execute_without_condition(query_processor& qp, service::query_state& qs, const query_options& options, json_cache_opt& json_cache, std::vector<dht::partition_range> keys, db::large_data_violation_type* violations) const;
-
-    future<::shared_ptr<cql_transport::messages::result_message>>
-    execute_with_condition(query_processor& qp, service::query_state& qs, const query_options& options) const;
-
-public:
     /**
      * Convert statement into a list of mutations to apply on the server
      *
@@ -268,16 +191,16 @@ public:
 
     virtual json_cache_opt maybe_prepare_json_cache(const query_options& options) const;
 
-    db::timeout_clock::duration get_timeout(const service::client_state& state, const query_options& options) const;
+private:
+    future<::shared_ptr<cql_transport::messages::result_message>>
+    do_execute(query_processor& qp, service::query_state& qs, const query_options& options) const;
+    friend class modification_statement_executor;
 
-protected:
-    /**
-     * If there are conditions on the statement, this is called after the where clause and conditions have been
-     * processed to check that they are compatible.  A conditional statement cannot
-     * use IN on a key column: it addresses one row.
-     * @throws InvalidRequestException
-     */
-    void reject_in_relations_with_conditions(bool key_is_in_relation, bool clustering_key_has_IN) const;
+    future<exceptions::coordinator_result<>>
+    execute_without_condition(query_processor& qp, service::query_state& qs, const query_options& options, json_cache_opt& json_cache, std::vector<dht::partition_range> keys, db::large_data_violation_type* violations) const;
+
+    future<::shared_ptr<cql_transport::messages::result_message>>
+    execute_with_condition(query_processor& qp, service::query_state& qs, const query_options& options) const;
 
     friend class raw::modification_statement;
 };
