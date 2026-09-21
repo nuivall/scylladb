@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import glob
 import logging
 import os
@@ -20,7 +21,6 @@ from dtest_class import Tester, create_ks
 from tools.assertions import assert_row_count_in_select
 from tools.cluster import new_node
 from tools.cluster_topology import generate_cluster_topology
-from tools.marks import unmark
 from tools.retrying import retrying
 from tools.tables_view_manager import index_is_built
 
@@ -34,8 +34,6 @@ def wait(delay=2):
     time.sleep(delay)
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestConcurrentSchemaChanges(Tester):
     @pytest.fixture(scope="function", autouse=True)
     def fixture_set_cluster_settings(self, fixture_dtest_setup):
@@ -271,7 +269,6 @@ class TestConcurrentSchemaChanges(Tester):
                 assert_row_count_in_select(session, f"select * from base_{n} where c1 = {ins}", 1)
                 assert_row_count_in_select(session, f"select * from base_{n} where c2 = {ins}", 1)
 
-    @unmark.next_gating  # https://github.com/scylladb/scylladb/issues/14934
     def test_create_lots_of_mv_concurrently(self):
         """
         create materialized views across multiple threads concurrently
@@ -349,8 +346,6 @@ class TestConcurrentSchemaChanges(Tester):
 
         assert 0 == len(errors), "\n".join(errors)
 
-    # Reason to exclude from next_gating: the test has failed runs in enterprise daily job
-    @unmark.next_gating
     def test_create_lots_of_schema_churn(self):
         """
         create tables, indexes, alters across multiple threads concurrently
@@ -365,8 +360,6 @@ class TestConcurrentSchemaChanges(Tester):
         self._do_lots_of_schema_actions(session)
         self._verify_lots_of_schema_actions(session)
 
-    # Reason to exclude from next_gating: the test has failed runs in enterprise daily jobs
-    @unmark.next_gating  # https://github.com/scylladb/scylla-enterprise/issues/3231
     def test_create_lots_of_schema_churn_with_node_down(self, fixture_dtest_setup):
         """
         create tables, indexes, alters across multiple threads concurrently with a node down
@@ -409,7 +402,6 @@ class TestConcurrentSchemaChanges(Tester):
 
         self.make_schema_changes(session, namespace="ns1")
 
-    @pytest.mark.dtest_debug
     def test_changes_to_different_nodes(self):
         logger.debug("changes_to_different_nodes_test()")
         cluster = self.cluster
@@ -522,7 +514,6 @@ class TestConcurrentSchemaChanges(Tester):
 
         self.validate_schema_consistent(node1)
 
-    @pytest.mark.dtest_debug
     def test_snapshot(self):
         logger.debug("snapshot_test()")
         cluster = self.cluster
