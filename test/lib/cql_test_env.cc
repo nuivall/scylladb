@@ -22,6 +22,7 @@
 #include "cql3/query_options.hh"
 #include "cql3/statements/batch_statement.hh"
 #include "cql3/statements/modification_statement.hh"
+#include "cql3/statements/eventual_consistency/modification_statement.hh"
 #include "cql3/cql_config.hh"
 #include "timeout_config.hh"
 #include <fmt/ranges.h>
@@ -332,7 +333,7 @@ public:
         cql3::statements::modification_spec::json_cache_opt json_cache = spec.maybe_prepare_json_cache(qo);
         std::vector<dht::partition_range> keys = spec.build_partition_keys(qo, json_cache);
 
-        return cql3::statements::get_mutations(spec, local_qp(), qo, timeout, false, qo.get_timestamp(*qs), *qs, json_cache, keys)
+        return cql3::statements::eventual_consistency::get_mutations(spec, local_qp(), qo, timeout, false, qo.get_timestamp(*qs), *qs, json_cache, keys)
             .finally([qs, modif_stmt = std::move(modif_stmt)] {});
     }
 

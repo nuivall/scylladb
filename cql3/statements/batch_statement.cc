@@ -16,6 +16,7 @@
 #include <ranges>
 #include <seastar/core/execution_stage.hh>
 #include "cas_request.hh"
+#include "cql3/statements/eventual_consistency/modification_statement.hh"
 #include "cql3/query_processor.hh"
 #include "service/storage_proxy.hh"
 #include "db/large_data_handler.hh"
@@ -172,7 +173,7 @@ future<utils::chunked_vector<mutation>> batch_statement::get_mutations(query_pro
         auto timestamp = _attrs->get_timestamp(now, statement_options);
         modification_spec::json_cache_opt json_cache = spec->maybe_prepare_json_cache(statement_options);
         std::vector<dht::partition_range> keys = spec->build_partition_keys(statement_options, json_cache);
-        auto more = co_await cql3::statements::get_mutations(*spec, qp, statement_options, timeout, local, timestamp, query_state, json_cache, std::move(keys));
+        auto more = co_await eventual_consistency::get_mutations(*spec, qp, statement_options, timeout, local, timestamp, query_state, json_cache, std::move(keys));
 
         for (auto&& m : more) {
             // We want unordered_set::try_emplace(), but we don't have it

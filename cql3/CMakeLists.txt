@@ -74,6 +74,7 @@ target_sources(cql3
     statements/function_statement.cc
     statements/modification_spec.cc
     statements/modification_statement.cc
+    statements/eventual_consistency/modification_statement.cc
     statements/cas_request.cc
     statements/raw/parsed_statement.cc
     statements/property_definitions.cc
