@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 import boto3
 import pytest
+import requests
 import yaml
 from cassandra import ConsistencyLevel
 from ccmlib.scylla_cluster import ScyllaCluster
@@ -84,12 +85,24 @@ class ManagerBackupMixin:
             )
         else:
             self.storage_access_key = self.storage_secret_key = None
+            self._set_gcs_external_url(server.address)
             self.storage_endpoint_client = storage.Client(
                 credentials=AnonymousCredentials(),
                 project="test",
                 client_options={"api_endpoint": server.address},
             )
         self.endpoint_create_bucket(DESTINATION_BUCKET)
+
+    @staticmethod
+    def _set_gcs_external_url(endpoint: str) -> None:
+        """Make fake-gcs-server hand out URLs that point back at `endpoint`.
+
+        By default it builds them from its public host, which carries no port,
+        and rclone inside the manager agent follows those links and misses.
+        """
+
+        response = requests.put(f"{endpoint}/_internal/config", json={"externalUrl": endpoint}, timeout=30)
+        response.raise_for_status()
 
     def endpoint_create_bucket(self, bucket: str):
         if self.backend == "s3":
