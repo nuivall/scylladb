@@ -1,3 +1,9 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import binascii
 import csv
 import datetime
@@ -5,7 +11,6 @@ import logging
 import os
 import re
 import ssl
-import subprocess
 from decimal import Decimal
 from functools import cached_property
 from pathlib import Path
@@ -31,8 +36,6 @@ from .cqlsh_tools import monkeypatch_driver, unmonkeypatch_driver
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
-
 
 class CqlshVersionMixing(Tester):
     ssl = False
@@ -54,7 +57,6 @@ class CqlshVersionMixing(Tester):
         return opts
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCqlsh(CqlshVersionMixing):
     normalize_numbers_re = re.compile(r"\b(\d+)\.0\b")
@@ -1538,7 +1540,6 @@ Tracing session:""",
         assert rows[0].id == 0
 
 
-@pytest.mark.dtest_full
 class TestCqlshCluster(CqlshVersionMixing):
     def test_refresh_schema_on_timeout_error(self):
         """
@@ -1572,7 +1573,6 @@ class TestCqlshCluster(CqlshVersionMixing):
             assert "check the schema versions of your nodes in system.local and system.peers." in stderr
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCqlshSmoke(Tester):
     """
@@ -1908,7 +1908,6 @@ class TestCqlshSmoke(Tester):
         return [table.name for table in self.session.cluster.metadata.keyspaces[keyspace].tables.values()]
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCqlLogin(CqlshVersionMixing):
     """
@@ -2000,7 +1999,6 @@ class TestCqlLogin(CqlshVersionMixing):
         assert "Username and/or password are incorrect" in cqlsh_stderr
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestCqlshWithSSL(TestCqlsh):
     ssl = True

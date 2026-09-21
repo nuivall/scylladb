@@ -1,4 +1,10 @@
 #
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
+#
 # This test is based on a Cassandra's test with the same name.
 #
 import functools
@@ -27,8 +33,6 @@ from tools.stress import assert_cs_success
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
-
 
 class PrepareClusterHelper(Tester):
     @pytest.fixture(autouse=True)
@@ -52,9 +56,6 @@ class PrepareClusterHelper(Tester):
         return session
 
 
-@pytest.mark.next_gating
-@pytest.mark.dtest_debug
-@pytest.mark.dtest_full
 class TestCqlTracing(PrepareClusterHelper):
     """
     Test that the default implementation for tracing works.
@@ -274,7 +275,6 @@ class TestCqlTracing(PrepareClusterHelper):
         return 0
 
 
-@pytest.mark.dtest_full
 class TestSlowQueryTracing(PrepareClusterHelper):
     """
     This class represents tests for Slow Query Logging tracing type.
