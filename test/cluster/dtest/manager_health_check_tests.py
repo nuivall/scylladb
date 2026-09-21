@@ -19,7 +19,6 @@ from dtest_scylla_manager import (
     CqlStatus,
     HostHealth,
     HostRestStatus,
-    MANAGER_UNAVAILABLE_REASON,
     Memory,
     NodeStatus,
     ScyllaManagerError,
@@ -40,7 +39,6 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.scylla_manager
-@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestManagerHealthCheck(Tester, ScyllaManagerMixin):
     def get_manager_cluster(self):
         logger.debug("Create Manager Tool instance to run scylla-manager operations")

@@ -14,7 +14,6 @@ import requests
 from dtest_class import Tester, wait_for
 from dtest_scylla_manager import (
     HostHealth,
-    MANAGER_UNAVAILABLE_REASON,
     NodeStatus,
     ScyllaManagerError,
     ScyllaManagerMixin,
@@ -27,7 +26,6 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.scylla_manager
-@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaManagerClusterMgmt(Tester, ScyllaManagerMixin):
     def test_adding_cluster_while_its_down(self):
         self.cluster.populate(3).start(wait_for_binary_proto=True, wait_other_notice=True)
