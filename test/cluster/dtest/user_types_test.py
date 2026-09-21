@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import re
 import time
@@ -53,8 +54,6 @@ def assert_udt_type(session, ks: str, udt: str, expected: bool):
     assert found_udt == expected
 
 
-@pytest.mark.dtest_full
-@pytest.mark.next_gating
 class TestUserTypes(Tester):
     cluster_topology_1_node = generate_cluster_topology(dc_num=1, rack_num=1, nodes_per_rack=1)
     cluster_topology_3_nodes = generate_cluster_topology(dc_num=1, rack_num=3, nodes_per_rack=1)
@@ -229,7 +228,6 @@ class TestUserTypes(Tester):
         rows = list(session.execute(stmt))
         assert 0 == len(rows)
 
-    @pytest.mark.dtest_debug
     def test_nested_user_types(self):
         """Tests user types within user types"""
         cluster = self.cluster
@@ -395,7 +393,7 @@ class TestUserTypes(Tester):
         assert first_name == "Nero"
         assert like == "arson"
 
-    @pytest.mark.skip("Secondary indexes not implemented yet")
+    @pytest.mark.skip_env(reason="Secondary indexes not implemented yet")
     def test_type_secondary_indexing(self):  # noqa: PLR0915
         """
         Confirm that user types are secondary-indexable

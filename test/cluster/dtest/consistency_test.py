@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import queue
 import sys
@@ -26,13 +27,12 @@ from tools.data import (
     query_c1c2,
     rows_to_list,
 )
-from tools.marks import issue_open, with_feature
+from tools.marks import with_feature
 from tools.metrics import get_node_metrics
 from tools.paging import PageFetcher
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
 
 
 class TestHelper(Tester):
@@ -212,7 +212,6 @@ class TestHelper(Tester):
         return res[0][0] if res else 0
 
 
-@pytest.mark.dtest_full
 class TestAvailability(TestHelper):
     """
     Test that we can read and write depending on the number of nodes that are alive and the consistency levels.
@@ -299,7 +298,7 @@ class TestAvailability(TestHelper):
         else:
             assert_unavailable(self.query_user, session, end, age, read_cl, check_ret)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#18068"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_simple_strategy(self):
         """
         Test for a single datacenter, using simple replication strategy.
@@ -331,7 +330,9 @@ class TestAvailability(TestHelper):
 
         self._test_simple_strategy(combinations)
 
-    @pytest.mark.require("#1117")
+    @pytest.mark.skip_bug(link="https://github.com/scylladb/scylladb/issues/1117",
+                          reason="scylla rejects EACH_QUORUM for reads: db/consistency_level.cc validate_for_read() raises "
+                                 "'EACH_QUORUM ConsistencyLevel is only supported for writes'")
     def test_simple_strategy_each_quorum(self):
         """
         @jira_ticket CASSANDRA-10584
@@ -350,7 +351,7 @@ class TestAvailability(TestHelper):
 
         self._test_simple_strategy(combinations)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#18068"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_network_topology_strategy(self):
         """
         Test for multiple datacenters, using network topology replication strategy.
@@ -382,7 +383,9 @@ class TestAvailability(TestHelper):
 
         self._test_network_topology_strategy(combinations)
 
-    @pytest.mark.require("#1117")
+    @pytest.mark.skip_bug(link="https://github.com/scylladb/scylladb/issues/1117",
+                          reason="scylla rejects EACH_QUORUM for reads: db/consistency_level.cc validate_for_read() raises "
+                                 "'EACH_QUORUM ConsistencyLevel is only supported for writes'")
     def test_network_topology_strategy_each_quorum(self):
         """
         @jira_ticket CASSANDRA-10584
@@ -402,7 +405,6 @@ class TestAvailability(TestHelper):
         self._test_network_topology_strategy(combinations)
 
 
-@pytest.mark.dtest_full
 class TestAccuracy(TestHelper):
     """
     Test that we can consistently read back what we wrote depending on the write and read consitency levels.
@@ -586,7 +588,7 @@ class TestAccuracy(TestHelper):
                 output += "\n".join(traceback.format_exception(*exc_info))
             pytest.fail(output)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#18068"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_simple_strategy_users(self):
         """
         Test for a single datacenter, users table, only the each quorum reads.
@@ -619,7 +621,6 @@ class TestAccuracy(TestHelper):
         logger.info("Testing single dc, users")
         self._run_test_function_in_parallel(TestAccuracy.Validation.validate_users, [self.nodes], [self.rf_value], combinations)
 
-    @pytest.mark.require("#1117")
     def test_simple_strategy_each_quorum_users(self):
         """
         @jira_ticket CASSANDRA-10584
@@ -636,7 +637,7 @@ class TestAccuracy(TestHelper):
         logger.info("Testing single dc, users, each quorum reads")
         self._run_test_function_in_parallel(TestAccuracy.Validation.validate_users, [self.nodes], [self.rf_value], combinations)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("scylladb/scylladb#18068"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_network_topology_strategy_users(self):
         """
         Test for multiple datacenters, users table.
@@ -672,7 +673,6 @@ class TestAccuracy(TestHelper):
         logger.info("Testing multiple dcs, users")
         self._run_test_function_in_parallel(TestAccuracy.Validation.validate_users, self.nodes, self.rf_value.values(), combinations)
 
-    @pytest.mark.require("#1117")
     def test_network_topology_strategy_each_quorum_users(self):
         """
         @jira_ticket CASSANDRA-10584
@@ -690,8 +690,7 @@ class TestAccuracy(TestHelper):
         logger.info("Testing multiple dcs, users, each quorum reads")
         self._run_test_function_in_parallel(TestAccuracy.Validation.validate_users, self.nodes, self.rf_value.values(), combinations)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
-    @pytest.mark.dtest_debug
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_simple_strategy_counters(self):
         """
         Test for a single datacenter, counters table.
@@ -721,7 +720,6 @@ class TestAccuracy(TestHelper):
         logger.info("Testing single dc, counters")
         self._run_test_function_in_parallel(TestAccuracy.Validation.validate_counters, [self.nodes], [self.rf_value], combinations)
 
-    @pytest.mark.require("#1117")
     def test_simple_strategy_each_quorum_counters(self):
         """
         @jira_ticket CASSANDRA-10584
@@ -739,7 +737,7 @@ class TestAccuracy(TestHelper):
         logger.info("Testing single dc, counters, each quorum reads")
         self._run_test_function_in_parallel(TestAccuracy.Validation.validate_counters, [self.nodes], [self.rf_value], combinations)
 
-    @pytest.mark.skip_if(with_feature("tablets") & issue_open("#18180"))
+    @pytest.mark.skip_if(with_feature("tablets"))
     def test_network_topology_strategy_counters(self):
         """
         Test for multiple datacenters, counters table.
@@ -770,7 +768,6 @@ class TestAccuracy(TestHelper):
         logger.info("Testing multiple dcs, counters")
         self._run_test_function_in_parallel(TestAccuracy.Validation.validate_counters, self.nodes, self.rf_value.values(), combinations)
 
-    @pytest.mark.require("#1117")
     def test_network_topology_strategy_each_quorum_counters(self):
         """
         @jira_ticket CASSANDRA-10584
@@ -789,7 +786,6 @@ class TestAccuracy(TestHelper):
         self._run_test_function_in_parallel(TestAccuracy.Validation.validate_counters, self.nodes, self.rf_value.values(), combinations)
 
 
-@pytest.mark.dtest_full
 class TestConsistency(TestHelper):
     def test_short_read(self):
         """
@@ -916,7 +912,6 @@ class TestConsistency(TestHelper):
         node3.stop(wait_other_notice=True)
         assert_none(session, "SELECT * FROM t WHERE id = 0 LIMIT 1", cl=ConsistencyLevel.QUORUM)
 
-    @pytest.mark.dtest_debug
     def test_readrepair(self):
         cluster = self.cluster
         cluster_topology = generate_cluster_topology(rack_num=2)
