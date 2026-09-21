@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os
 import pprint
@@ -25,21 +26,24 @@ PP = pprint.PrettyPrinter(indent=2)
 class TestDataDistribution(Tester):
     def prepare(self, num_nodes):
         self.cluster: ScyllaCluster
+        # With vnodes a node's share of the data is its share of the ring, and
+        # ALLOW_BALANCE_DIFF (40%) is sized for upstream's 256 random tokens per
+        # node.  With this suite's default of 16, one of three nodes owning half
+        # the ring is common enough to fail the test on its own.
+        self.cluster.num_tokens = self.dtest_config.num_tokens
         self.cluster.populate(nodes=num_nodes)
         self.cluster.start(wait_for_binary_proto=True, wait_other_notice=True)
         self.ks = "keyspace1"
         self.cf = "standard1"
 
-    @pytest.mark.dtest_full
-    @pytest.mark.single_node
     @pytest.mark.parametrize("num_nodes", [3, 4, 6])
     @pytest.mark.parametrize(
         "strategy",
         [
             pytest.param("LeveledCompactionStrategy"),
-            pytest.param("SizeTieredCompactionStrategy", marks=pytest.mark.next_gating),
-            pytest.param("TimeWindowCompactionStrategy", marks=pytest.mark.next_gating),
-            pytest.param("IncrementalCompactionStrategy", marks=pytest.mark.next_gating),
+            pytest.param("SizeTieredCompactionStrategy"),
+            pytest.param("TimeWindowCompactionStrategy"),
+            pytest.param("IncrementalCompactionStrategy"),
         ],
     )
     @pytest.mark.use_cassandra_stress
@@ -73,8 +77,11 @@ class TestDataDistribution(Tester):
         create_ks(session, name=self.ks, rf=rf, tablets=tablets)
 
         logger.info(f"Writing data...")
+        # No requestTimeout=60000 in -mode: the host's cassandra-stress (3.18)
+        # predates it and rejects the whole command; a timed out write is still
+        # retried, see -errors retries.
         stress_cmd = f"write cl=QUORUM n={keys} -schema replication(factor={rf}) compaction(strategy={strategy}) \
-                    -mode native cql3 requestTimeout=60000 \
+                    -mode native cql3 \
                     -col size=fixed(200) n=FIXED(5) -pop dist=UNIFORM(1..1000000000)"
         logger.debug(f"stress cmd={stress_cmd}")
 

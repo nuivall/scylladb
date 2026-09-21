@@ -25,16 +25,13 @@ cql_tracing_addition_test.py
 cql_tracing_test.py
 cqlsh_tests/cqlsh_copy_tests.py
 cqlsh_tests/cqlsh_tests.py
-data_distribution_balance_test.py
 deletion_test.py
-distributed_queries_test.py
 encryption_at_rest_test.py
 heat_weighted_load_balancing_test.py
 ics_compaction_test.py
 internode_ssl_test.py
 ldap_test.py
 like_operator_test.py
-lwt_banking_load_test.py
 lwt_random_test.py
 lwt_schema_modification_test.py
 lwt_test.py
