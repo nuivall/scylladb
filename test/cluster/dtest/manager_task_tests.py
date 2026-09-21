@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import random
 import time
@@ -15,6 +16,7 @@ from dateutil import tz
 
 from dtest_class import Tester, create_ks
 from dtest_scylla_manager import (
+    MANAGER_UNAVAILABLE_REASON,
     ScyllaManagerError,
     ScyllaManagerMixin,
     ScyllaManagerTool,
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 @pytest.mark.scylla_manager
+@pytest.mark.skip_env(reason=MANAGER_UNAVAILABLE_REASON)
 class TestScyllaManagerTask(Tester, ScyllaManagerMixin):
     def _initiate_cluster(self):
         logger.debug("Starting cluster...")
