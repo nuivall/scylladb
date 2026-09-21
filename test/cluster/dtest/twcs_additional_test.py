@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import os.path
 import re
@@ -21,8 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 class TestTimeWindowCompactionStrategyAdditional(Tester):
-    @pytest.mark.next_gating
-    @pytest.mark.dtest_full
     @pytest.mark.single_node
     def test_expired_sstables_are_compacted_separately(self):
         """
@@ -141,7 +140,7 @@ class TestTimeWindowCompactionStrategyAdditional(Tester):
 
     def expired_sstables_should_not_be_compacted_along_with_unexpired(self, from_mark):
         node = self.cluster.nodelist()[0]
-        log_file = os.path.join(node.get_path(), "logs", "system.log")
+        log_file = node.logfilename()
 
         def get_sstables(line):
             return re.search(r"[\w-]+-Data\.db", line).group(0)
