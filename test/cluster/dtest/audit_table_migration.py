@@ -1,11 +1,14 @@
-import datetime
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
-from dataclasses import dataclass
 
 import pytest
-from cassandra import InvalidRequest
-from cassandra.cluster import ConsistencyLevel, Session
-from cassandra.metadata import LocalStrategy, NetworkTopologyStrategy, ReplicationStrategy, SimpleStrategy
+from cassandra.cluster import ConsistencyLevel
+from cassandra.metadata import LocalStrategy, NetworkTopologyStrategy, SimpleStrategy
 from cassandra.query import BatchStatement, SimpleStatement
 from ccmlib import scylla_repository
 from ccmlib.scylla_cluster import ScyllaCluster, ScyllaNode
@@ -14,7 +17,6 @@ from dtest_class import create_ks
 from dtest_config import DTestConfig
 from tools.cluster import new_node
 from tools.data import get_keyspace_metadata, rows_to_list
-from tools.rackdc import update_properties
 from upgrade_test import UpgradeTester, upgrade_matrix_from_last_enterprise_release_version
 
 logger = logging.getLogger(__name__)
@@ -27,8 +29,10 @@ NetworkTopologyStrategy, or other, the upgrade should not be performed.
 """
 
 
-@pytest.mark.require("scylladb/scylla-enterprise#3399")
-@pytest.mark.next_gating
+@pytest.mark.skip_env(reason="needs a genuine multi-version upgrade: ScyllaNode.upgrade(), "
+                              "ScyllaCluster.set_install_dir(), and ccmlib.scylla_repository.setup() are not "
+                              "implemented by the in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a "
+                              "single Scylla binary per run")
 class TestAuditTableMigration(UpgradeTester):
     __test__ = True
     upgrade_path = upgrade_matrix_from_last_enterprise_release_version
