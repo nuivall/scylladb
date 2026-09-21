@@ -251,16 +251,27 @@ class CassandraDockerNode:
         `hinted_handoff_enabled: false` the migration tests set, say -- has to
         go into the file. The entrypoint then edits the addresses into this
         same file, in place, after the bind mount is in effect.
+
+        The options are edited in line by line rather than through a
+        load/dump round trip, because the entrypoint finds the addresses by
+        `^(# )?<key>:` and several of them -- broadcast_rpc_address above all --
+        ship commented out. A round trip drops those comments, the entrypoint's
+        edit then matches nothing, and Cassandra refuses to start with a
+        wildcard rpc_address and no broadcast_rpc_address.
         """
-        config = yaml.safe_load(self.cluster.default_config_yaml) or {}
+        lines = self.cluster.default_config_yaml.splitlines(keepends=True)
         for key, value in self.cluster.config_options.items():
-            if value is None:
-                config.pop(key, None)
+            rendered = yaml.safe_dump({key: value}, default_flow_style=False)
+            pattern = re.compile(rf"^(# )?{re.escape(key)}:")
+            for i, line in enumerate(lines):
+                if pattern.match(line):
+                    lines[i] = rendered
+                    break
             else:
-                config[key] = value
+                lines.append(rendered)
         path = os.path.join(self.workdir, "conf", "cassandra.yaml")
         with open(path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(config, f, default_flow_style=False)
+            f.writelines(lines)
 
     def wait_for_binary_proto(self, timeout: float = BINARY_PROTO_TIMEOUT) -> None:
         deadline = time.time() + timeout
@@ -338,10 +349,10 @@ class CassandraDockerCluster:
 
         if self._default_config_yaml is None:
             self._pull_image()
+            # The image's entrypoint execs anything that is not `cassandra`.
             self._default_config_yaml = self.docker_client.containers.run(
                 image=self.image,
                 command=["cat", "/etc/cassandra/cassandra.yaml"],
-                entrypoint=[""],
                 remove=True,
                 labels=["dtest"],
             ).decode("utf-8")
