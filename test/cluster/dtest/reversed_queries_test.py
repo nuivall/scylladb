@@ -1,14 +1,19 @@
+#
+# Copyright (C) 2025-present ScyllaDB
+#
+# SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
+#
+
 import logging
 import os
 import random
-import signal
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
 import pytest
-from cassandra import ConsistencyLevel, ReadFailure
+from cassandra import ConsistencyLevel
 from cassandra.query import FETCH_SIZE_UNSET, SimpleStatement, dict_factory
 from ccmlib.utils.version import ComparableScyllaVersion
 
@@ -17,12 +22,12 @@ from paging_test import BasePagingTester, PageAssertionMixin, PageFetcher
 from tools.cluster import has_views_with_tablets_experimental_feature
 from tools.cluster_topology import generate_cluster_topology
 from tools.datahelp import create_rows
-from tools.marks import unmark
 from upgrade_test import UpgradeTester, upgrade_matrix_from_last_release_version
 
 logger = logging.getLogger(__name__)
 
-pytestmark = pytest.mark.next_gating
+_UPGRADE_UNSUPPORTED_REASON = ("needs a genuine multi-version upgrade: ScyllaNode.upgrade() is not implemented by the "
+                                "in-tree ccmlib shim (test/cluster/dtest/ccmlib), which manages a single Scylla binary per run")
 
 
 class ConcurrentExecutor:
@@ -51,7 +56,6 @@ class ConcurrentExecutor:
             future.result()
 
 
-@pytest.mark.dtest_full
 class TestReversedQueriesPaging(BasePagingTester, PageAssertionMixin):
     def reversed_query_template(self, data, fetch_size, expected_page_count, expected_rows):
         session = self.prepare()
@@ -265,7 +269,6 @@ class BaseReversedQuerySelector:
         self.run_multi_partition_selects(session, bypass_cache, callback)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestSinglePartitionReversedQueriesSelectors(Tester, BaseReversedQuerySelector):
     def test_reverse_selectors(self):
@@ -288,7 +291,6 @@ class TestSinglePartitionReversedQueriesSelectors(Tester, BaseReversedQuerySelec
         self.run_single_partition_selects(session, bypass_cache=True)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestMultiPartitionReversedQueriesSelectors(Tester, BaseReversedQuerySelector):
     def test_reverse_selectors(self):
@@ -311,7 +313,6 @@ class TestMultiPartitionReversedQueriesSelectors(Tester, BaseReversedQuerySelect
         self.run_multi_partition_selects(session, bypass_cache=True)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestReversedQueriesMemoryUsage(Tester, ConcurrentExecutor):
     def prepare(self, nr_nodes):
@@ -370,7 +371,6 @@ class TestReversedQueriesMemoryUsage(Tester, ConcurrentExecutor):
         assert reverse_query_page_fetcher.pagecount() == normal_query_page_fetcher.pagecount()
 
 
-@pytest.mark.dtest_full
 class TestReversedQueriesReadRepair(Tester):
     def test_queries_with_read_repair(self):
         ROW_COUNT = 100
@@ -422,7 +422,6 @@ class TestReversedQueriesReadRepair(Tester):
         assert list(response) == expected_rows
 
 
-@pytest.mark.dtest_full
 class TestReversedQueriesMerging(Tester):
     def test_read_from_memtables_and_multiple_sstables(self):  # noqa: PLR0915
         # In order to test combining reader behavior, memtable/sstable rows
@@ -520,7 +519,6 @@ class TestReversedQueriesMerging(Tester):
         assert list(response) == expected_rows
 
 
-@pytest.mark.dtest_full
 class TestReversedQueriesOnTableWithReversedOrder(Tester):
     def test_reversed_query_on_table_with_reversed_order(self):
         ROW_COUNT = 100
@@ -546,10 +544,8 @@ class TestReversedQueriesOnTableWithReversedOrder(Tester):
         assert list(response) == expected_rows
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestReversedQueriesWithOverlappingRangeTombstones(Tester, ConcurrentExecutor):
-    @unmark.next_gating
     def test_reversed_query_with_overlapping_range_tombstones(self):
         TOMBSTONE_COUNT = 100 * 1000
 
@@ -595,12 +591,12 @@ class TestReversedQueriesWithOverlappingRangeTombstones(Tester, ConcurrentExecut
             raise
 
 
-@pytest.mark.dtest_full
 class TestReversedQueriesSelectorsDuringUpgrade(UpgradeTester, BaseReversedQuerySelector):
     __test__ = True
     upgrade_path = upgrade_matrix_from_last_release_version
     init_version = upgrade_path[0]
 
+    @pytest.mark.skip_env(reason=_UPGRADE_UNSUPPORTED_REASON)
     def test_queries_during_upgrade(self, dtest_config):
         """
         Test that reverse queries work on a mixed cluster
@@ -657,12 +653,12 @@ class TestReversedQueriesSelectorsDuringUpgrade(UpgradeTester, BaseReversedQuery
             self.run_selects(session)
 
 
-@pytest.mark.dtest_full
 class TestReversedQueriesReadRepairDuringUpgrade(UpgradeTester, BaseReversedQuerySelector):
     __test__ = True
     upgrade_path = upgrade_matrix_from_last_release_version
     init_version = upgrade_path[0]
 
+    @pytest.mark.skip_env(reason=_UPGRADE_UNSUPPORTED_REASON)
     def test_queries_during_upgrade(self, dtest_config):
         """
         Test that reconciliation with reverse queries work on a mixed cluster
@@ -717,7 +713,6 @@ class TestReversedQueriesReadRepairDuringUpgrade(UpgradeTester, BaseReversedQuer
                 self.run_selects(session, bypass_cache=True, callback=clear_node_data)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 class TestReversedQueriesWithTimeWindowCompactionStrategy(Tester):
     def test_reversed_queries_with_time_window_compaction_strategy(self):
@@ -758,7 +753,6 @@ class TestReversedQueriesWithTimeWindowCompactionStrategy(Tester):
         assert list(response) == expected_rows
 
 
-@pytest.mark.dtest_full
 class TestReversedQueriesReadRepairBigMutationsSmallChanges(Tester):
     def test_queries_with_read_repair(self):
         ROW_COUNT = 10_000
