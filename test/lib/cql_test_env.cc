@@ -21,6 +21,7 @@
 #include "cql3/query_processor.hh"
 #include "cql3/query_options.hh"
 #include "cql3/statements/batch_statement.hh"
+#include "cql3/statements/eventual_consistency/batch_statement.hh"
 #include "cql3/statements/modification_statement.hh"
 #include "cql3/statements/eventual_consistency/modification_statement.hh"
 #include "cql3/cql_config.hh"
@@ -1328,7 +1329,7 @@ public:
             }
             return batch_statement::single_statement(modif_stmt->shared_spec());
         });
-        auto batch = ::make_shared<batch_statement>(
+        auto batch = ::make_shared<cql3::statements::eventual_consistency::batch_statement>(
             batch_type,
             std::move(modifications),
             cql3::attributes::none(),

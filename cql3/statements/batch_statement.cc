@@ -24,6 +24,7 @@
 #include "utils/unique_view.hh"
 #include "cql3/statements/strong_consistency/statement_helpers.hh"
 #include "cql3/statements/strong_consistency/batch_statement.hh"
+#include "cql3/statements/eventual_consistency/batch_statement.hh"
 
 template<typename T = void>
 using coordinator_result = exceptions::coordinator_result<T>;
@@ -55,15 +56,9 @@ batch_statement::batch_statement(int bound_terms, type type_,
     , _has_conditions(std::ranges::any_of(_statements, [] (auto&& s) { return s.spec->has_conditions(); }))
     , _stats(stats)
 {
-    validate();
-    if (has_conditions()) {
-        // A batch can be created not only by raw::batch_statement::prepare, but also by
-        // cql_server::connection::process_batch, which doesn't call any methods of
-        // cql3::statements::batch_statement, only constructs it. So let's call
-        // build_cas_result_set_metadata right from the constructor to avoid crash trying to access
-        // uninitialized batch metadata.
-        build_cas_result_set_metadata();
-    }
+    // Deliberately no validate() here: what a batch may contain depends on how
+    // it is committed, so each sub-class validates in its own constructor,
+    // where the checks it needs are known.
 }
 
 batch_statement::batch_statement(type type_,
@@ -510,7 +505,7 @@ batch_statement::prepare(data_dictionary::database db, cql_stats& stats, const c
     if (has_sc_statements) {
         statement = ::make_shared<strong_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs));
     } else {
-        statement = ::make_shared<cql3::statements::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
+        statement = ::make_shared<eventual_consistency::batch_statement>(meta.bound_variables_size(), _type, std::move(statements), std::move(prep_attrs), stats);
     }
 
     auto ai = audit_info();
