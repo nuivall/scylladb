@@ -1,5 +1,4 @@
 backup_restore_object_storage_tests.py
-bootstrap_test.py
 cdc_types_test.py
 compaction_additional_test.py
 compaction_test.py
@@ -38,7 +37,6 @@ stress_tool_test.py
 system_tables_test.py
 topology_operation_during_upgrade_test.py
 toppartitions_test.py
-ttl_test.py
 twcs_additional_test.py
 update_cluster_layout_tests.py
 upgrade_test.py
