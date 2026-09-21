@@ -6,7 +6,6 @@
  * SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
  */
 
-#include "cql3/statements/modification_statement.hh"
 #include "batch_statement.hh"
 
 #include "db/timeout_clock.hh"
@@ -61,14 +60,14 @@ future<shared_ptr<result_message>> batch_statement::execute_without_checking_exc
     schema_ptr batch_schema;
 
     struct statement_keys {
-        cql3::statements::modification_statement::json_cache_opt json_cache;
+        modification_spec::json_cache_opt json_cache;
         std::vector<dht::partition_range> keys;
     };
     std::vector<statement_keys> all_keys;
     all_keys.reserve(_statements.size());
 
     for (size_t i = 0; i < _statements.size(); ++i) {
-        const auto& stmt = _statements[i].statement->inner_statement();
+        const modification_spec& stmt = _statements[i].statement->spec();
         const auto& statement_options = options.for_statement(i);
         stmt.validate_primary_key(statement_options);
         auto json_cache = stmt.maybe_prepare_json_cache(statement_options);
@@ -96,8 +95,8 @@ future<shared_ptr<result_message>> batch_statement::execute_without_checking_exc
         [&](api::timestamp_type ts) {
             std::optional<mutation> merged;
             for (size_t i = 0; i < _statements.size(); ++i) {
-                const auto& statement_options = options.for_statement(i);
-                auto m = _statements[i].statement->get_mutation(statement_options, ts, all_keys[i].json_cache, all_keys[i].keys);
+                auto m = build_mutation(_statements[i].statement->spec(), options.for_statement(i), ts,
+                    all_keys[i].json_cache, all_keys[i].keys);
                 if (!merged) {
                     merged = std::move(m);
                 } else {
@@ -151,7 +150,7 @@ void batch_statement::validate() const {
 
     schema_ptr batch_schema;
     for (const auto& s: _statements) {
-        const auto& stmt = s.statement->inner_statement();
+        const modification_spec& stmt = s.statement->spec();
         if (!batch_schema) {
             batch_schema = stmt.s;
         } else if (batch_schema != stmt.s) {

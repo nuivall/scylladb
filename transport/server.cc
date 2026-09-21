@@ -2037,12 +2037,14 @@ process_batch_internal(service::client_state& client_state, sharded<cql3::query_
         auto sc_statement = dynamic_pointer_cast<cql3::statements::strong_consistency::modification_statement>(ps->statement);
         is_sc |= bool(sc_statement);
 
-        auto modif_statement_ptr = sc_statement ? sc_statement->inner() : dynamic_pointer_cast<cql3::statements::modification_statement>(ps->statement);
-        if (!modif_statement_ptr) {
+        auto modif_statement_ptr = dynamic_pointer_cast<cql3::statements::modification_statement>(ps->statement);
+        const cql3::statements::modification_spec* spec = sc_statement ? &sc_statement->spec()
+                : (modif_statement_ptr ? &modif_statement_ptr->spec() : nullptr);
+        if (!spec) {
             return make_exception_future<cql_server::process_fn_return_type>(exceptions::invalid_request_exception("Invalid statement in batch: only UPDATE, INSERT and DELETE statements are allowed."));
         }
         if (init_trace && trace_state) {
-            tracing::add_table_name(trace_state, modif_statement_ptr->keyspace(), modif_statement_ptr->column_family());
+            tracing::add_table_name(trace_state, spec->keyspace(), spec->column_family());
             tracing::add_prepared_statement(trace_state, ps);
         }
         if (auto* inner_ai = ps->statement->get_audit_info()) {

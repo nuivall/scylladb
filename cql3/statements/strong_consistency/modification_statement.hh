@@ -9,26 +9,26 @@
 #pragma once
 
 #include "cql3/cql_statement.hh"
-#include "cql3/expr/expression.hh"
-#include "cql3/statements/modification_statement.hh"
+#include "cql3/statements/modification_spec.hh"
 
 namespace cql3::statements::strong_consistency {
 
+/*
+ * A modification committed through the Raft group which owns the partition it
+ * addresses, rather than through storage_proxy.
+ */
 class modification_statement : public cql_statement {
     using result_message = cql_transport::messages::result_message;
-    using base_statement = cql3::statements::modification_statement;
 
-    shared_ptr<base_statement> _statement;
+    ::shared_ptr<modification_spec> _spec;
 public:
-    modification_statement(shared_ptr<base_statement> statement);
+    explicit modification_statement(::shared_ptr<modification_spec> spec);
 
-    shared_ptr<base_statement> inner() const {
-        return _statement;
-    }
+    // What this statement commits. Borrowed, so only valid while it lives.
+    const modification_spec& spec() const { return *_spec; }
 
-    const base_statement& inner_statement() const {
-        return *_statement;
-    }
+    // The same, for a caller which has to keep it alive on its own.
+    const ::shared_ptr<modification_spec>& shared_spec() const { return _spec; }
 
     future<shared_ptr<result_message>> execute(query_processor& qp, service::query_state& state,
         const query_options& options, std::optional<service::group0_guard> guard) const override;
@@ -36,9 +36,6 @@ public:
     future<shared_ptr<result_message>> execute_without_checking_exception_message(query_processor& qp,
         service::query_state& qs, const query_options& options,
         std::optional<service::group0_guard> guard) const override;
-
-    mutation get_mutation(const query_options& options, api::timestamp_type ts,
-            base_statement::json_cache_opt& json_cache, const std::vector<dht::partition_range>& keys) const;
 
     future<> check_access(query_processor& qp, const service::client_state& state) const override;
 
@@ -48,11 +45,16 @@ public:
 
     bool depends_on(std::string_view ks_name, std::optional<std::string_view> cf_name) const override;
 
-    // Wraps a regular modification, so it carries user load exactly when the
-    // wrapped statement does.
+    // Carries user load exactly when the modification it commits does.
     bool should_reclassify_control_connection() const override {
-        return _statement->should_reclassify_control_connection();
+        return _spec->should_reclassify_control_connection();
     }
 };
+
+// Builds the single mutation a strongly consistent modification produces for the
+// given partition key and timestamp. Shared by single modifications and batches,
+// which build one mutation per modification and merge them.
+mutation build_mutation(const modification_spec& spec, const query_options& options, api::timestamp_type ts,
+        const modification_spec::json_cache_opt& json_cache, const std::vector<dht::partition_range>& keys);
 
 }
