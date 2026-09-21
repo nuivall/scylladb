@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 from uuid import uuid4
 
@@ -16,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 @pytest.mark.single_node
 @pytest.mark.scylla_cdc
-@pytest.mark.dtest_full
 class TestCDCTraceInfo(Tester, CDCInitializeHelper):
     keyspace = "ks"
     table = "cf"
