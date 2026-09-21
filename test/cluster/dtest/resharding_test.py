@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import logging
 import multiprocessing
 import re
@@ -27,8 +28,6 @@ logger = logging.getLogger(__name__)
 
 TESTED_STRATEGIES = ["LeveledCompactionStrategy", "SizeTieredCompactionStrategy", "TimeWindowCompactionStrategy", "IncrementalCompactionStrategy"]
 MURMUR3 = 15
-
-pytestmark = pytest.mark.dtest_full
 
 
 class ReshardingBase(Tester):
@@ -196,7 +195,6 @@ class ReshardingBase(Tester):
         self._verify_number_of_data_files(data_files_num_before=data_files_num_before, reshard_to=reshard_to)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 @pytest.mark.parametrize("node_count,compaction_strategy,murmur3", [(1, strategy, MURMUR3) for strategy in TESTED_STRATEGIES])
 @pytest.mark.required_features("!tablets")  # scylladb/scylladb#16739
@@ -335,8 +333,6 @@ class TestReshardingTombstonesSingleNode(Tester):
         assert numfound == 0, "All tombstones were not removed during resharding"
 
 
-@pytest.mark.dtest_full
-@pytest.mark.dtest_heavy
 @pytest.mark.use_cassandra_stress
 @pytest.mark.parametrize(
     "node_count,compaction_strategy,murmur3",

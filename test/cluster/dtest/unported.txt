@@ -43,7 +43,6 @@ read_amplification_test.py
 repair_additional_test.py
 repair_based_node_operations_test.py
 replace_address_test.py
-resharding_test.py
 reversed_queries_test.py
 rolling_upgrade_test.py
 scyllatop_test.py
