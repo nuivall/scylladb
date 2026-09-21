@@ -1,7 +1,6 @@
 backup_restore_object_storage_tests.py
 cdc_types_test.py
 compaction_additional_test.py
-compaction_test.py
 consistency_test.py
 cql_additional_tests.py
 cql_cast_test.py

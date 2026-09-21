@@ -3,6 +3,7 @@
 #
 # SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 #
+
 import datetime
 import logging
 import os
@@ -19,6 +20,10 @@ from packaging.version import Version
 
 from dtest_class import Tester, create_ks, is_autocompaction_enabled, retry_till_success
 from dtest_setup_overrides import DTestSetupOverrides
+
+# repair_additional_test hasn't been ported out of unported/ yet (another file in this
+# same porting batch); reach into it via the namespace package for now. Update this to a
+# plain "from repair_additional_test..." import once it moves out of unported/.
 from repair_additional_test import parallel_repair_on_nodes
 from tools.assertions import assert_none, assert_one
 from tools.cluster import run_rest_api
@@ -26,7 +31,7 @@ from tools.cluster_topology import generate_cluster_topology
 from tools.context import disable_load_balancing
 from tools.data import chunks_list, create_c1c2_table, insert_c1c2, rows_to_list
 from tools.files import copy_files_to, get_node_cf_dir
-from tools.marks import unmark, with_feature
+from tools.marks import with_feature
 from tools.misc import ImmutableMapping, dump_sstables
 from tools.rest_clients import StorageServiceClient
 from tools.stress import fill_data_by_cs
@@ -34,15 +39,14 @@ from tools.stress import fill_data_by_cs
 logger = logging.getLogger(__file__)
 
 
-@pytest.mark.dtest_full
 @pytest.mark.single_node
 @pytest.mark.parametrize(
     "strategy",
     [
         pytest.param("LeveledCompactionStrategy"),
-        pytest.param("SizeTieredCompactionStrategy", marks=pytest.mark.next_gating),
-        pytest.param("TimeWindowCompactionStrategy", marks=pytest.mark.next_gating),
-        pytest.param("IncrementalCompactionStrategy", marks=pytest.mark.next_gating),
+        pytest.param("SizeTieredCompactionStrategy"),
+        pytest.param("TimeWindowCompactionStrategy"),
+        pytest.param("IncrementalCompactionStrategy"),
     ],
 )
 @pytest.mark.cluster_options(repair_hints_batchlog_flush_cache_time_in_ms=0)
@@ -374,6 +378,7 @@ class TestCompaction(Tester):
         node4.stop(wait_other_notice=True, gently=False)
 
         self._delete_keys(verify_deleted=False, num=partition_num // 2)
+        deletion_time = time.time()
         node1.flush()
         node2.flush()
         node3.flush()
@@ -396,6 +401,12 @@ class TestCompaction(Tester):
 
         logger.debug("Starting node4")
         node4.start(wait_other_notice=True, wait_for_binary_proto=True)
+
+        # With tombstone_gc mode=repair a tombstone is purgeable only if it is older than
+        # the repair time (the hints/batchlog flush time at repair start, whole seconds)
+        # minus propagation_delay_in_seconds.  ccm took long enough to restart node4 for
+        # that to hold implicitly; here node4 is back ~3s after the deletes, so wait for it.
+        time.sleep(max(0, deletion_time + self.PROPAGATION_DELAY_IN_SECONDS + 1 - time.time()))
 
         with self.patient_cql_connection(node4, consistency_level=ConsistencyLevel.QUORUM) as session:
             logger.debug("Running a repair on all nodes")
@@ -476,7 +487,6 @@ class TestCompaction(Tester):
         # Nevertheless, we pick 1.02
         assert final_value <= initial_value * 1.02
 
-    @pytest.mark.dtest_debug
     def test_sstable_deletion(self):
         """
         Test that sstables are deleted properly when able after compaction.
@@ -770,8 +780,6 @@ class TestCompaction(Tester):
 
             assert node.watch_log_for(exprs=log_expression, from_mark=mark)
 
-    @unmark.next_gating
-    @pytest.mark.dtest_heavy
     @pytest.mark.use_cassandra_stress
     def test_disable_autocompaction_doesnt_block_user_initiated_reshape_compaction(self):
         """
