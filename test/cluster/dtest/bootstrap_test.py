@@ -106,8 +106,6 @@ class TestBootstrap(Tester):
         cluster.stop()
         logger.info("done")
 
-    @pytest.mark.skip_env(reason="the in-tree ccm shim always registers a new server with the cluster; "
-                                  "it has no way to create a node that new_node(add_node=False) leaves detached")
     def test_add_detached_node(self, request: pytest.FixtureRequest):
         logger.info("populating cluster with three nodes")
         cluster = self.cluster
@@ -760,8 +758,6 @@ class TestBootstrap(Tester):
         for k in range(n_of_keys):
             query_c1c2(session, k, consistency=ConsistencyLevel.QUORUM)
 
-    @pytest.mark.skip_env(reason="the cluster manager rewrites scylla.yaml, seeds included, every time it starts a node, "
-                                 "so the misspelled seeds key this test writes never reaches Scylla")
     def test_reject_bootstrap_wiped_node_misspelled_seeds(self):
         """
         Regression test for https://github.com/scylladb/scylla-enterprise/issues/3523
