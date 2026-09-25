@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import test.pylib.container_accounting as ca
+from test.pylib.resource_gather import ResourceGatherOn
 
 
 def _cgroup(path: Path, anon: int, mapped: int = 0) -> Path:
@@ -72,3 +73,13 @@ def test_nothing_is_recorded_outside_a_worker_or_without_a_registry(world, monke
     monkeypatch.delenv(ca.REGISTRY_ENV)
     ca.register_container_pid(4242, worker="gw0")
     assert ca.container_cgroups("gw0") == []
+
+
+def test_a_tests_anonymous_peak_includes_its_workers_containers(world, monkeypatch):
+    """A learned peak must include the JVM, or the profile prices a migration test at its worker alone."""
+    monkeypatch.setattr(ca, "cgroup_of_pid", lambda pid: world.jvm)
+    ca.register_container_pid(4242, worker="gw1")
+    gatherer = SimpleNamespace(cgroup_path=world.tests / "gw1", worker_id="gw1")
+    assert ResourceGatherOn._read_anon(gatherer) == 2_000 + 800_000
+    other = SimpleNamespace(cgroup_path=world.tests / "gw0", worker_id="gw0")
+    assert ResourceGatherOn._read_anon(other) == 1_000
