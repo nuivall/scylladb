@@ -76,6 +76,15 @@ MEM_DECAY = 0.7
 # contended: its wall time and parallelism are not learned (only its CPU work).
 CONTENDED_STALL_FRAC = 0.10
 PROFILE_VERSION = 4       # bumped when the recorded format changes; older files are ignored
+HELD_FORCE_SECONDS = 60.0 # a worker blocked this long on one test is worth more than the budget
+# A reservation is a test's *peak* memory held for its whole life, and peaks rarely
+# coincide.  Measured on a run with no profile: 34 GB reserved against a 36 GB budget
+# while the tests were really using 13 GB and 38 GB sat free, with four thousand tests
+# queued and the machine at three cores.  So when the reservations are exhausted but the
+# measurement says the budget is genuinely free, admission may go on -- with what the
+# just-admitted tests have not taken yet counted at their predicted size, so that two
+# tests can never be handed the same free gigabyte.
+MEM_RAMP_SECONDS = 30.0   # how long a test is assumed to still be growing into its predicted peak
 # Static memory guesses, for the run that has no profile yet.  Measured over the 11,433
 # tests of the release suite (median / p90 / max, GB):
 #   boost and the other C++ suites    0.19 / 0.36 / 1.84
@@ -615,6 +624,7 @@ class BudgetScheduling:
         self.mem_reserve = min(MEM_RESERVE_MAX, max(MEM_RESERVE_MIN, MEM_RESERVE_FRACTION * total))
         self._started_at: dict[int, float] = {}        # index -> when it started running (not just committed)
         self._fc_mean = 0.0                            # forecast growth still to come, over the running tests
+        self._last_forced = -math.inf
         self._mem_charged_workers = False
         self.psi_cpu_limit = float(opt("--budget-psi-cpu"))
         self.psi_mem_limit = float(opt("--budget-psi-mem"))
@@ -667,6 +677,7 @@ class BudgetScheduling:
         # estimate while it waits, so the running totals must be undone with the number
         # they were built from, or they drift.
         self._queued_wall: dict[int, float] = {}
+        self.held_since: dict[int, float] = {}          # index -> when a worker was given it to hold
         self.committed_at: dict[int, float] = {}        # index -> monotonic time of commit
         self._costs: dict[int, Cost] = {}
         self._costs_by_file: dict[str, set[int]] = defaultdict(set)   # file -> indices with a cached cost
@@ -844,8 +855,29 @@ class BudgetScheduling:
                 while len(self.node2pending[node]) < limit:
                     held = self._held(node)
                     if held is not None and not self._fits(held, node, pressure):
-                        self.stats["held_waiting"] += 1
-                        break
+                        # A test sent to a worker cannot be recalled, so a worker whose
+                        # held test is never admissible does nothing at all.  One test
+                        # over budget costs less than one worker idle for a whole run.
+                        waited = self.now() - self.held_since.get(held, self.now())
+                        # Never force past memory.  CPU is compressible: a test over the
+                        # CPU budget makes everything a little slower.  Memory is not: a
+                        # test over the memory budget swaps, and the machine then spends
+                        # more CPU on reclaim than the test was ever going to use.
+                        # A forced start may override the CPU budget, not the forecast: it
+                        # may dip into half the reserve, only while the machine shows no
+                        # memory pressure at all, and only one at a time, so each forced
+                        # test shows what it takes before the next one goes.
+                        mem_ok = (self._forecast_need(held, node) <= self._available() - 0.5 * self.mem_reserve
+                                  and self._psi[1] == 0.0
+                                  and self.now() - self._last_forced >= MEM_RAMP_SECONDS)
+                        if waited >= HELD_FORCE_SECONDS and mem_ok:
+                            self._log(f"unblocking {node.gateway.id}: {self.collection[held]} has been "
+                                      f"held {waited:.0f}s without fitting; starting it anyway")
+                            self.stats["forced_held"] += 1
+                            self._last_forced = self.now()
+                        else:
+                            self.stats["held_waiting"] += 1
+                            break
                     cand = self._pick(node)
                     if cand is None:
                         if held is not None:
@@ -1214,6 +1246,7 @@ class BudgetScheduling:
         self._fc_mean += fc_mean
         self.res_cpu[idx] = cost.cores
         self.res_mem[idx] = cost.mem
+        self.held_since.pop(idx, None)
         self.stats["admitted"] += 1
         self._log(f"start {node.gateway.id} {self.collection[idx]} cores={cost.cores:.2f} "
                   f"mem={cost.mem / GB:.2f}G forecast={fc_mean / GB:.2f}G wall={cost.wall:.1f}s src={cost.source} "
@@ -1222,6 +1255,7 @@ class BudgetScheduling:
                   f"measured={self.measured_load:.1f}")
 
     def _send(self, node: WorkerController, idx: int) -> None:
+        self.held_since[idx] = self.now()
         self.node2pending[node].append(idx)
         self.node_file[node] = self._file_of(idx)
         node.send_runtest_some([idx])

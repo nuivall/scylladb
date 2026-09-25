@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from test.pylib.budget_scheduler import (
+    HELD_FORCE_SECONDS,
     STATIC_MEM_CPP,
     STATIC_MEM_GDB,
     GB,
@@ -528,6 +529,50 @@ def test_selection_counts_what_other_workers_already_hold(tmp_path):
     big = {i for i, n in enumerate(col) if "big" in n}
     assert len(set(chosen) & big) <= 1, "only one worker may hold a 12 GB test on a 20 GB budget"
     assert len(chosen) == 3, "the other workers still get work, just lighter work"
+
+
+def test_a_blocked_worker_is_never_unblocked_past_memory(tmp_path):
+    """A worker stuck on a test admission keeps refusing is freed, but not by swapping.
+
+    CPU is compressible: one test over that budget makes everything slightly slower.
+    Memory is not: forcing a test the machine has no room for costs more in reclaim
+    than the test was ever going to use.  This is measured, not theoretical: an earlier
+    version of the escape hatch forced an 18 GB test onto a full machine and drove the
+    box from 10 GB of swap to 33 GB.
+    """
+    clock, free = {"t": 1000.0}, {"gb": 40.0}
+    col = ["a.py::hog.dev.1", "b.py::s0.dev.1"]
+    costs = {"a.py::hog.dev.1": (1.0, 12 * GB, 60.0), "b.py::s0.dev.1": (1.0, 4 * GB, 5.0)}
+    model = make_model(tmp_path, 4, {profile_key(n): c for n, c in costs.items()})
+    sched = BudgetScheduling(FakeConfig(tmp_path, 2), model=model, ncpus=4, mem_total=40 * GB,
+                             cgroup_tests=NO_CGROUP, now=lambda: clock["t"],
+                             available_fn=lambda: free["gb"] * GB)
+    nodes = [FakeNode("gw0"), FakeNode("gw1")]
+    for n in nodes:
+        sched.add_node(n); sched.add_node_collection(n, col)
+    sched.collection = col
+    for i in range(len(col)):
+        sched._add_pending(i)
+    hog, small = 0, 1
+    sched._take(sched._file_of(hog), hog)          # gw0 is holding it, un-started
+    sched._send(nodes[0], hog)
+    sched._take(sched._file_of(small), small)      # gw1 is running something, so the
+    sched._send(nodes[1], small)                   # dead-lock rule does not apply
+    sched._commit(small, nodes[1])
+
+    free["gb"] = 8.0                               # something else takes the memory
+    clock["t"] += 10 * HELD_FORCE_SECONDS          # long past the escape hatch
+    sched.check_schedule()
+    assert hog not in committed(sched), "must not be forced onto a machine with no room"
+    assert sched.stats["forced_held"] == 0
+
+    free["gb"] = 40.0                              # the memory comes back
+    for _ in range(4):
+        clock["t"] += 1.0
+        sched.check_schedule()
+        if hog in committed(sched):
+            break
+    assert hog in committed(sched), "once there is room it must start"
 
 
 def test_admission_ramps_instead_of_bursting(tmp_path):
