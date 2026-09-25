@@ -421,6 +421,79 @@ def test_remove_node_distinguishes_held_from_running(tmp_path):
     assert running not in sched.committed_at
 
 
+def _node_of(sched: BudgetScheduling, idx: int) -> FakeNode:
+    return next(n for n in sched.node2pending if idx in sched.node2pending[n])
+
+
+def test_repeats_of_an_unknown_test_start_on_what_the_first_copy_measured(tmp_path):
+    """--repeat of a test the profile does not know: one copy measures, the rest follow.
+
+    Starting every copy at once on the static guess would admit them all against a number
+    that is not the test's, which is exactly what the first copy is there to replace.
+    """
+    col = [f"cluster/test_r.py::t.dev.{i}" for i in range(1, 5)]
+    sched, nodes = make_sched(tmp_path, col, {}, nodes=4, ncpus=16)
+    assert len(committed(sched)) == 1
+    first = next(iter(committed(sched)))
+    assert sched._costs_for(first).source == "static-cluster"
+    # the other copies are parked on workers, not started
+    assert all(sched._waits_for_first_run(i) for i in range(4) if i != first)
+    assert sched.stats["held_first_run"] >= 1
+    sched.learn({"key": profile_key(col[first]), "wall": 3.0, "usage_sec": 1.5, "memory_peak": 3 * GB})
+    sched.mark_test_complete(_node_of(sched, first), first)
+    rest = committed(sched)
+    assert rest == set(range(4)) - {first}
+    for i in rest:
+        c = sched._costs_for(i)
+        assert c.source == "profile"
+        assert c.mem == pytest.approx(3 * GB)
+        assert sched.res_mem[i] == pytest.approx(3 * GB)
+    for i in rest:
+        sched.mark_test_complete(_node_of(sched, i), i)
+    assert sched.tests_finished
+
+
+def test_repeats_of_a_profiled_test_do_not_wait(tmp_path):
+    col = [f"cluster/test_r.py::t.dev.{i}" for i in range(1, 5)]
+    sched, nodes = make_sched(tmp_path, col, {col[0]: (1.0, 1 * GB, 3.0)}, nodes=4, ncpus=16)
+    assert committed(sched) == set(range(4))
+    assert sched.stats["held_first_run"] == 0
+
+
+def test_a_first_copy_that_reports_nothing_still_releases_the_rest(tmp_path):
+    col = [f"cqlpy/test_r.py::t.dev.{i}" for i in range(1, 4)]
+    sched, nodes = make_sched(tmp_path, col, {}, nodes=3, ncpus=16)
+    first = next(iter(committed(sched)))
+    sched.mark_test_complete(_node_of(sched, first), first)    # no sample, e.g. it crashed in setup
+    assert committed(sched) == set(range(3)) - {first}
+
+
+def test_a_parked_copy_takes_over_when_the_first_copy_crashes(tmp_path):
+    col = [f"cluster/test_r.py::t.dev.{i}" for i in range(1, 5)]
+    sched, nodes = make_sched(tmp_path, col, {}, nodes=4, ncpus=16)
+    first = next(iter(committed(sched)))
+    node = _node_of(sched, first)
+    node._down = True
+    assert sched.remove_node(node) == col[first]
+    # exactly one of the parked copies starts, and measures for the others
+    assert len(committed(sched)) == 1
+    successor = next(iter(committed(sched)))
+    assert sched._first_run[profile_key(col[successor])] == successor
+    assert all(sched._waits_for_first_run(i) for n in sched.node2pending
+               for i in sched.node2pending[n] if i != successor)
+
+
+def test_other_tests_run_while_repeats_wait(tmp_path):
+    """Waiting copies are the last resort: a worker takes any other test first."""
+    reps = [f"cluster/test_r.py::t.dev.{i}" for i in range(1, 4)]
+    others = [f"cqlpy/test_o.py::o{i}.dev.1" for i in range(3)]
+    col = reps + others
+    sched, nodes = make_sched(tmp_path, col, {n: (0.5, 0.5 * GB, 1.0) for n in others}, nodes=4, ncpus=16)
+    started = {col[i] for i in committed(sched)}
+    assert len(started & set(reps)) == 1
+    assert set(others) <= started | {col[i] for n in nodes for i in n.sent}
+
+
 def test_file_affinity_and_longest_first(tmp_path):
     col = ["a.py::a1.dev.1", "a.py::a2.dev.1", "a.py::a3.dev.1", "b.py::b1.dev.1", "b.py::b2.dev.1"]
     costs = {"a.py::a1.dev.1": (0.1, 1e8, 5.0), "a.py::a2.dev.1": (0.1, 1e8, 1.0), "a.py::a3.dev.1": (0.1, 1e8, 1.0),

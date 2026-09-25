@@ -714,7 +714,14 @@ class BudgetScheduling:
         self._costs: dict[int, Cost] = {}
         self._costs_by_file: dict[str, set[int]] = defaultdict(set)   # file -> indices with a cached cost
         self._threads: dict[int, float] = {}
-        self._keys: dict[int, str] = {}                 # index -> profile key
+        # --repeat runs one test several times, and the copies share a profile key.  A test
+        # the profile does not know is priced by a static guess, and running every copy on
+        # that guess at once is what the guess cannot afford: the first copy's measurement
+        # is the whole point.  So only one copy of such a test runs until it completes, and
+        # the rest are admitted on what it measured (see _waits_for_first_run).
+        self._keys: dict[int, str] = {}
+        self._first_run: dict[str, int] = {}            # key -> the index measuring it for the others
+        self._first_run_done: set[str] = set()
         self._last_pressure_cut = -math.inf
         self._psi = (0.0, 0.0)
         self.stats = defaultdict(int)
@@ -792,6 +799,9 @@ class BudgetScheduling:
                 self._started_at.pop(idx, None)
                 self.res_cpu.pop(idx, None)
                 self.res_mem.pop(idx, None)
+                # It never reported: the next copy to be picked measures in its place.
+                if self._first_run.get(self._key_of(idx)) == idx:
+                    del self._first_run[self._key_of(idx)]
             for idx in requeue:
                 self._add_pending(idx, front=True)
         self.check_schedule()
@@ -812,6 +822,10 @@ class BudgetScheduling:
             self._started_at[nxt] = now
         self.res_cpu.pop(item_index, None)
         self.res_mem.pop(item_index, None)
+        # Released whether or not a sample came with it: a copy that reported nothing
+        # must not keep the others waiting for the rest of the run.
+        if self._first_run.get(self._key_of(item_index)) == item_index:
+            self._first_run_done.add(self._key_of(item_index))
         self.stats["completed"] += 1
         self.check_schedule()
 
@@ -897,6 +911,11 @@ class BudgetScheduling:
                 limit = 1 if phase == "prime" else self.depth + 1
                 while len(self.node2pending[node]) < limit:
                     held = self._held(node)
+                    if held is not None and self._waits_for_first_run(held):
+                        # Parked only because nothing else was left to pick; it starts once
+                        # the first copy has reported, priced on what that copy measured.
+                        self.stats["held_first_run"] += 1
+                        break
                     if held is not None and not self._fits(held, node, pressure):
                         # A test sent to a worker cannot be recalled, so a worker whose
                         # held test is never admissible does nothing at all.  One test
@@ -942,7 +961,8 @@ class BudgetScheduling:
                         continue
         if not admitted_any and not self.committed_at:
             # Nothing runs anywhere: never dead-lock on an over-sized test.
-            held_nodes = [n for n in nodes if self._held(n) is not None and n not in self.shutdown_sent]
+            held_nodes = [n for n in nodes if self._held(n) is not None and n not in self.shutdown_sent
+                          and not self._waits_for_first_run(self._held(n))]
             if held_nodes:
                 node = min(held_nodes, key=lambda n: self._costs_for(self._held(n)).cores)
                 held = self._held(node)
@@ -1279,8 +1299,12 @@ class BudgetScheduling:
         scanned = 0
         chosen = None
         smallest = None            # cheapest candidate seen, for when nothing fits right now
+        waiting = None             # a repeat waiting for its first copy: the very last resort
         for f in files:
             for idx in self.files[f]:
+                if self._waits_for_first_run(idx):
+                    waiting = waiting or (f, idx)
+                    continue
                 if head is None:
                     head = idx
                 c = self._costs_for(idx)
@@ -1301,7 +1325,9 @@ class BudgetScheduling:
             # is longest-first, so its last entry is its cheapest: look there before
             # giving up.
             for f, lst in self.files.items():
-                idx = lst[-1]
+                idx = next((i for i in reversed(lst) if not self._waits_for_first_run(i)), None)
+                if idx is None:
+                    continue
                 c = self._costs_for(idx)
                 if c.cores <= free_cpu and self._forecast_new(idx, node) <= free_mem:
                     chosen = (f, idx)
@@ -1319,7 +1345,13 @@ class BudgetScheduling:
             if smallest is None and head is not None:
                 smallest = (self._file_of(head), head)
             if smallest is None:
-                return None
+                if waiting is None:
+                    return None
+                # Everything left is a repeat of a test whose first copy is still running.
+                # Handing one out anyway keeps the worker from being shut down; admission
+                # will not start it before the first copy has reported.
+                self.stats["parked_first_run"] += 1
+                return self._take(*waiting)
             chosen = smallest
             self.stats["parked_smallest"] += 1
         if chosen[1] != head:
@@ -1353,7 +1385,7 @@ class BudgetScheduling:
             return None
         best, best_wall = None, 0.0
         for lst in self.files.values():
-            if not lst:
+            if not lst or self._waits_for_first_run(lst[0]):
                 continue
             c = self._costs_for(lst[0])
             if (c.wall > best_wall and c.cores <= self.cpu_ceiling
@@ -1370,6 +1402,7 @@ class BudgetScheduling:
         else:
             lst.remove(idx)
         self.pending_set.discard(idx)
+        self._claim_first_run(idx)
         wall = self._queued_wall.pop(idx, self._costs_for(idx).wall)
         self.file_remaining[file] -= wall
         self.total_remaining = max(0.0, self.total_remaining - wall)
@@ -1411,6 +1444,9 @@ class BudgetScheduling:
     def _commit(self, idx: int, node: WorkerController) -> None:
         """Admit: acquire the reservations atomically with the decision (single scheduler thread)."""
         cost = self._costs_for(idx)
+        # Normally claimed when it was picked; this is for a copy parked behind a first
+        # run whose worker died, which now measures for the rest.
+        self._claim_first_run(idx)
         fc_mean = self._forecast_new(idx, node)
         # Committed behind a running test (the end of a run, --budget-depth > 1) it starts
         # when that test ends, and its clocks with it.
@@ -1446,6 +1482,19 @@ class BudgetScheduling:
             key = self._keys[idx] = profile_key(self.collection[idx])
         return key
 
+    def _claim_first_run(self, idx: int) -> None:
+        key = self._key_of(idx)
+        if (key not in self._first_run and key not in self._first_run_done
+                and self._costs_for(idx).source != "profile"):
+            self._first_run[key] = idx
+
+    def _waits_for_first_run(self, idx: int) -> bool:
+        """A test waiting for a measurement: a repeat of an unknown test while another copy measures it."""
+        key = self._key_of(idx)
+        first = self._first_run.get(key)
+        return (first is not None and first != idx and key not in self._first_run_done
+                and self._costs_for(idx).source != "profile")
+
     def _costs_for(self, idx: int) -> Cost:
         cost = self._costs.get(idx)
         if cost is None:
@@ -1461,9 +1510,10 @@ class BudgetScheduling:
     def learn(self, sample: dict[str, Any]) -> None:
         """In-run learning from a finished test's measured cost."""
         self.model.learn(sample)
-        # Everything not started yet, held tests included: a held test starts on what its
-        # file's tests have just measured.  Only this file's costs: walking every cached
-        # cost on every report was quadratic in the suite, on the loop that also schedules.
+        # Everything not started yet, held tests included: a repeat parked on a worker
+        # behind its first copy must start on what that copy has just measured.  Only this
+        # file's costs: walking every cached cost on every report was quadratic in the
+        # suite, on the loop that also schedules.
         cached = self._costs_by_file.get(file_of_key(sample["key"]), set())
         for idx in list(cached):
             if idx not in self.committed_at:
