@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import os
+import fcntl
+import hashlib
 import logging
 import subprocess
+import shutil
 import tempfile
 import pathlib
 import json
@@ -21,6 +24,7 @@ from xml.etree import ElementTree
 
 import allure
 
+from test import BUILD_DIR
 from test.pylib.cpp.base import CppFile, CppTestFailure
 
 if TYPE_CHECKING:
@@ -110,6 +114,148 @@ class BoostTestFile(CppFile):
 
 pytest_collect_file = BoostTestFile.pytest_collect_file
 
+
+# Listing a test binary costs a process start and ~70 ms, and every xdist worker collects
+# the whole suite, so on a run with many workers the same 150-odd binaries get listed once
+# per worker.  Measured on the release build: 10.6 CPU-seconds per worker, all spent in the
+# first seconds of the run, which saturated the machine before a single test had started.
+#
+# The workers are separate processes, so an in-process cache -- which is what @cache below
+# already is -- cannot help them share anything; the cache has to be somewhere all of them
+# can see.  It is not something to keep, though, so it lives in a temporary directory of
+# its own for the run rather than in the build tree, keyed by what each binary *is* so a
+# rebuild can never read a stale listing.  It is per-invocation and the controller deletes
+# it on the way out, so no listing is ever carried from one ./test.py run to the next.
+LIST_CACHE_DIR = ".boost_list_cache"
+
+
+def _listing_cache_path() -> pathlib.Path:
+    override = os.environ.get("SCYLLA_BOOST_LIST_CACHE")
+    if override:
+        return pathlib.Path(override)
+    # One directory per ./test.py invocation, so nothing is ever carried over from a
+    # previous one -- not even by a run that died before it could clean up.
+    run_id = os.environ.get("SCYLLA_TEST_HOST_ID") or str(os.getppid())
+    return BUILD_DIR / f"{LIST_CACHE_DIR}-{run_id}"
+
+
+@cache
+def _listing_cache_dir() -> pathlib.Path | None:
+    path = _listing_cache_path()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return path
+
+
+OWNER_LOCK = ".owner.lock"
+_owner_lock = None                  # the controller's hold on its run's cache directory
+
+
+def sweep_listing_caches() -> None:
+    """Take this run's listing cache and remove the ones earlier runs left behind.
+
+    Called by the controller at session start.  It is the controller's job and not the
+    first collector's: under xdist the controller never collects, so cleanup that hung off
+    creating the directory never ran and every run left one behind.  A run holds a lock on
+    its own directory for as long as it lives, and only a directory whose lock can be
+    taken is removed: another ./test.py on the same build tree keeps its cache.
+    """
+    global _owner_lock
+    if os.environ.get("SCYLLA_BOOST_LIST_CACHE"):
+        return                          # the user's own directory: not ours to sweep
+    current = _listing_cache_path()
+    try:
+        current.mkdir(parents=True, exist_ok=True)
+        _owner_lock = open(current / OWNER_LOCK, "a")
+        fcntl.flock(_owner_lock.fileno(), fcntl.LOCK_EX)
+    except OSError:
+        _owner_lock = None
+    for other in current.parent.glob(f"{LIST_CACHE_DIR}-*"):
+        if other == current:
+            continue
+        try:
+            with open(other / OWNER_LOCK, "a") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                shutil.rmtree(other, ignore_errors=True)
+        except OSError:
+            pass                        # its run is alive, or it is not ours to open
+
+
+def remove_listing_cache() -> None:
+    """Remove this run's listing cache and let go of it; the controller calls this at session end."""
+    global _owner_lock
+    if os.environ.get("SCYLLA_BOOST_LIST_CACHE"):
+        return
+    shutil.rmtree(_listing_cache_path(), ignore_errors=True)
+    if _owner_lock is not None:
+        _owner_lock.close()
+        _owner_lock = None
+
+
+def _listing_cache_file(executable: pathlib.Path, combined: bool, kind: str) -> pathlib.Path | None:
+    cache_dir = _listing_cache_dir()
+    if cache_dir is None:
+        return None
+    try:
+        st = executable.stat()
+    except OSError:
+        return None
+    key = f"{executable}|{st.st_mtime_ns}|{st.st_size}|{combined}|{kind}"
+    return cache_dir / f"{_listing_prefix(executable, combined, kind)}.{hashlib.sha1(key.encode()).hexdigest()[:16]}.json"
+
+
+def _listing_prefix(executable: pathlib.Path, combined: bool, kind: str) -> str:
+    """The part of a cache entry's name shared by every build of one listing of one binary.
+
+    A binary is listed more than one way (combined_tests both plain and as json), and each
+    listing is its own entry: sweeping by the binary's name alone had each listing delete
+    the other, so every worker listed combined_tests again.
+    """
+    # The binary's path, not just its name: every build mode has its own foo_test, and the
+    # modes of one run share this directory.
+    where = hashlib.sha1(str(executable).encode()).hexdigest()[:8]
+    return f"{executable.name}.{where}.{kind}{'.combined' if combined else ''}"
+
+
+def _shared_listing(executable: pathlib.Path, combined: bool, kind: str, compute, encode, decode):
+    """compute() the listing once per build, not once per worker."""
+    path = _listing_cache_file(executable, combined, kind)
+    if path is None:
+        return compute()
+    try:
+        return decode(json.loads(path.read_text()))
+    except Exception:
+        pass            # missing, unreadable or not the shape we write: list it again
+    # Miss.  Take the lock so that the sixty-odd workers racing us here wait for one
+    # listing instead of each running their own.
+    try:
+        lock = open(path.with_suffix(".lock"), "w")
+    except OSError:
+        return compute()
+    try:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            return decode(json.loads(path.read_text()))   # filled while we waited
+        except Exception:
+            pass
+        data = compute()
+        try:
+            tmp = path.with_suffix(f".{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(encode(data)))
+            os.replace(tmp, path)
+            # every rebuild of this binary leaves an entry behind; keep only the live one
+            for stale in path.parent.glob(f"{_listing_prefix(executable, combined, kind)}.*.json"):
+                if stale != path:
+                    stale.unlink(missing_ok=True)
+        except OSError:
+            pass          # cache is an optimisation; a failure to store it is not an error
+        return data
+    finally:
+        lock.close()
+
+
 @cache
 def get_boost_test_list_json_content(executable: pathlib.Path, combined: bool = False)-> dict[str, list[list[str, set[str]]]]:
     """
@@ -120,6 +266,16 @@ def get_boost_test_list_json_content(executable: pathlib.Path, combined: bool = 
     In case of combined tests the dict will have multiple items, otherwise we assume that name of the executable is the same
     as the source test file (.cc)
     """
+    return _shared_listing(
+        executable, combined, "json",
+        lambda: _list_json_content(executable, combined),
+        # labels are sets, which JSON has no notion of
+        encode=lambda tree: {k: [[name, sorted(labels)] for name, labels in v] for k, v in tree.items()},
+        decode=lambda raw: {k: [[name, set(labels)] for name, labels in v] for k, v in raw.items()},
+    )
+
+
+def _list_json_content(executable: pathlib.Path, combined: bool) -> dict[str, list[list[str, set[str]]]]:
     try:
         output = subprocess.check_output(
             [executable, "--","--list_json_content"],
@@ -186,6 +342,15 @@ def get_boost_test_list_content(executable: pathlib.Path, combined: bool = False
 
     Lines like '_0' are ignored because we count a test with a dataprovider as one test case.
     """
+    return _shared_listing(
+        executable, combined, "plain",
+        lambda: _list_content(executable, combined),
+        encode=lambda tree: tree,
+        decode=lambda raw: raw,
+    )
+
+
+def _list_content(executable: pathlib.Path, combined: bool) -> dict[str, list[str]]:
     output = subprocess.check_output(
         [executable, "--list_content"],
         stderr=subprocess.STDOUT,

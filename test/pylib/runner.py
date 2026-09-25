@@ -422,6 +422,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
     # Run stuff just once for the main pytest process (not in xdist workers).
     if not is_xdist_worker:
+        from test.pylib.cpp.boost import sweep_listing_caches  # lazy: cpp.base imports this module
+        sweep_listing_caches()
         prepare_environment(
             tempdir_base=temp_dir,
             modes=get_modes_to_run(session.config),
@@ -513,6 +515,9 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
 
     if xdist.is_xdist_worker(request_or_session=session):
         return
+
+    from test.pylib.cpp.boost import remove_listing_cache  # lazy: cpp.base imports this module
+    remove_listing_cache()
 
     # Modify exit code to reflect the number of failed tests for easier detection in CI.
     maxfail = session.config.getoption("maxfail")
