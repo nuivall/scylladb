@@ -157,6 +157,10 @@ MEM_RESERVE_MAX = 4 * 10**9
 # top of the expectation: the reserve and the forecast's own correction as tests grow are
 # what protect the machine, and a margin priced in the spread of a heavy-tailed kind cost
 # most of a run's dtest parallelism.
+# A test that has stopped growing for this long, and has outrun its expected wall time,
+# fades out of the forecast with this half-life: it has most likely reached its peak, and
+# counting the rest of its distribution for the rest of its life would starve the run.
+PLATEAU_SECONDS = 30.0
 # Peak-memory distributions for the run that has no profile yet, as quantiles at
 # PEAK_QUANTILES.  Release: firm peaks over a full release run (15,147 tests).  Debug:
 # anonymous peaks of the cluster suite over a full debug run (10,176 tests); the other debug
@@ -740,6 +744,7 @@ class BudgetScheduling:
         free_now = self._available()
         self.mem_target = max(1 * GB, free_now)
         self.mem_reserve = min(MEM_RESERVE_MAX, max(MEM_RESERVE_MIN, MEM_RESERVE_FRACTION * total))
+        self._mem_track: dict[int, list[float]] = {}   # index -> [most it has held, when that last grew]
         self._started_at: dict[int, float] = {}        # index -> when it started running (not just committed)
         self._fc_mean = 0.0                            # forecast growth still to come, over the running tests
         self._file_held: dict[str, float] = defaultdict(float)  # file -> most any running test of it holds
@@ -893,6 +898,7 @@ class BudgetScheduling:
             for idx in queued:
                 self.committed_at.pop(idx, None)
                 self._started_at.pop(idx, None)
+                self._mem_track.pop(idx, None)
                 self.res_cpu.pop(idx, None)
                 self.res_mem.pop(idx, None)
                 # It never reported: the next copy to be picked measures in its place.
@@ -911,11 +917,13 @@ class BudgetScheduling:
             queued.remove(item_index)
         self.committed_at.pop(item_index, None)
         self._started_at.pop(item_index, None)
+        self._mem_track.pop(item_index, None)
         # The test committed behind it on this worker starts now.
         nxt = next((i for i in (queued or ()) if i in self.committed_at), None)
         if nxt is not None and nxt not in self._started_at:
             now = self.now()
             self._started_at[nxt] = now
+            self._mem_track[nxt] = [0.0, now]
         self.res_cpu.pop(item_index, None)
         self.res_mem.pop(item_index, None)
         # Released whether or not a sample came with it: a copy that reported nothing
@@ -1213,8 +1221,26 @@ class BudgetScheduling:
         # Past everything its kind has ever taken: nothing to go by but what it holds.
         return max(basis, held) if fc is None else max(fc, held)
 
+    def _growth_weight(self, idx: int, now: float) -> float:
+        """1 while a test may still be growing into its peak, halving every PLATEAU_SECONDS once it has stopped.
+
+        Stopped means no growth for PLATEAU_SECONDS and past its first MEM_RAMP_SECONDS (or
+        its wall, if shorter).  A test that settled below its forecast releases the rest:
+        peaks rarely coincide, and holding every settled test at its peak for all its life
+        is what left 34 GB reserved against 13 GB in use.
+        """
+        started = self._started_at.get(idx)
+        if started is None:
+            return 1.0          # committed behind a running test: it has not begun to grow
+        _, grew_at = self._mem_track.get(idx, (0.0, started))
+        quiet_from = max(grew_at + PLATEAU_SECONDS, started + min(MEM_RAMP_SECONDS, self._costs_for(idx).wall))
+        if now <= quiet_from:
+            return 1.0
+        return 0.5 ** ((now - quiet_from) / PLATEAU_SECONDS)
+
     def _refresh_forecasts(self) -> None:
         """Forecast growth of every running test, from what each one holds now."""
+        now = self.now()
         self._fc_mean = 0.0
         self._file_held = defaultdict(float)
         running: list[tuple[int, float]] = []
@@ -1229,11 +1255,14 @@ class BudgetScheduling:
                 # keeps alive included: that is what a learned peak measures too.
                 held = live if first else 0.0
                 first = False
+                track = self._mem_track.setdefault(idx, [0.0, self._started_at.get(idx, now)])
+                if held > track[0] * 1.02 + 0.02 * GB:
+                    track[0], track[1] = held, now
                 file = self._file_of(idx)
                 self._file_held[file] = max(self._file_held[file], held)
                 running.append((idx, held))
         for idx, held in running:
-            self._fc_mean += max(0.0, self._forecast(idx, held) - held)
+            self._fc_mean += max(0.0, self._forecast(idx, held) - held) * self._growth_weight(idx, now)
 
     def _forecast_new(self, idx: int, node: WorkerController | None = None) -> float:
         """What a test that has not started will add, conditioned on its file's running tests.
@@ -1575,6 +1604,7 @@ class BudgetScheduling:
         self.committed_at[idx] = self.now()
         if not behind:
             self._started_at[idx] = self.committed_at[idx]
+        self._mem_track[idx] = [0.0, self.committed_at[idx]]
         self._fc_mean += fc_mean
         self.res_cpu[idx] = cost.cores
         self.res_mem[idx] = cost.mem

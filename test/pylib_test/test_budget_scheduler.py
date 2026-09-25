@@ -296,8 +296,12 @@ def test_memory_nobody_reserved_stops_admission(tmp_path):
     assert len(committed(sched)) == 4, "reservations had room, the machine did not"
 
 
-def test_a_started_test_stops_counting_what_it_holds(tmp_path):
-    """What a test has allocated is in MemAvailable already; its forecast counts only the rest."""
+def test_a_started_test_stops_counting_what_it_holds_and_fades_once_settled(tmp_path):
+    """What a test has allocated is in MemAvailable already; its forecast counts only the rest.
+
+    And a test that has settled below its forecast releases the rest over time: holding
+    every settled test at its peak for all its life starves the run.
+    """
     avail, clock, live = {"v": 10 * GB}, {"t": 0.0}, {}
     sched, nodes = make_mem_sched(tmp_path, 4, 3 * GB, avail, clock, live)
     assert len(committed(sched)) == 3                   # 10 - 1 reserve = 9 GB: three 3 GB tests
@@ -309,12 +313,16 @@ def test_a_started_test_stops_counting_what_it_holds(tmp_path):
     avail["v"] = 1 * GB
     sched._refresh_forecasts()
     assert sched._mem_headroom() == pytest.approx(0.0), "the grown part must not count twice"
-    # at 1 GB instead: 2 GB each still to come
+    # settled at 1 GB instead: 2 GB each still to come while they may be growing ...
     for node in running:
         live[node.gateway.id] = 1 * GB
     avail["v"] = 7 * GB
     sched._refresh_forecasts()
     assert sched._mem_headroom() == pytest.approx(0.0)
+    # ... and after five plateau half-lives only a thirty-second of it
+    clock["t"] = 30.0 + 5 * 30.0
+    sched._refresh_forecasts()
+    assert sched._mem_headroom() == pytest.approx(6 * GB - 6 * GB / 32)
 
 
 def test_a_test_growing_past_its_kind_raises_its_own_forecast(tmp_path):
@@ -435,7 +443,7 @@ def test_each_test_is_priced_for_its_own_build_mode(tmp_path):
 
 
 def test_a_test_committed_behind_a_running_one_starts_when_it_ends(tmp_path):
-    """Its clocks start when it really starts, not when it is committed."""
+    """Its forecast must not fade while it waits: its clocks start when it really starts."""
     clock, avail, live = {"t": 0.0}, {"v": 40 * GB}, {}
     col = [f"a.py::t{i}.dev.1" for i in range(3)]
     model = make_model(tmp_path, 16, {profile_key(c): (0.1, 5 * GB, 300.0) for c in col})
@@ -448,7 +456,9 @@ def test_a_test_committed_behind_a_running_one_starts_when_it_ends(tmp_path):
     running, behind = sched.node2pending[node][0], sched.node2pending[node][1]
     sched._commit(behind, node)                        # as a retirement or the end of a run does
     assert running in sched._started_at and behind not in sched._started_at
-    clock["t"] = 600.0
+    clock["t"] = 600.0                                 # ten minutes: long past any plateau
+    sched._refresh_forecasts()
+    assert sched._growth_weight(behind, clock["t"]) == 1.0, "it has not started: its forecast counts in full"
     sched.mark_test_complete(node, running)
     assert sched._started_at[behind] == 600.0
 
@@ -860,6 +870,40 @@ def test_contention_gates_parallelism_learning(tmp_path):
     # an uncontended one does
     model.learn({"key": "dev|f.py::t", "wall": 20.0, "usage_sec": 100.0, "memory_peak": 1e8, "cpu_stall_frac": 0.0})
     assert e["cores"] == pytest.approx(0.7 * 4.0 + 0.3 * 5.0) and e["n_unc"] == 2
+
+
+
+
+
+def _settle_sched(tmp_path, clock, n_tests=24, per_test=3 * GB, nodes=12, mem_total=35 * GB):
+    col = [f"a.py::t{i}.dev.1" for i in range(n_tests)]
+    model = make_model(tmp_path, 8, {profile_key(n): (0.2, per_test, 300.0) for n in col})
+    sched = BudgetScheduling(FakeConfig(tmp_path, nodes), model=model, ncpus=8, mem_total=mem_total,
+                             cgroup_tests=NO_CGROUP, available_fn=lambda: mem_total,
+                             now=lambda: clock["t"])
+    fake = [FakeNode(f"gw{i}") for i in range(nodes)]
+    for n in fake:
+        sched.add_node(n); sched.add_node_collection(n, col)
+    sched.schedule()
+    return sched, fake
+
+
+def test_settled_tests_release_the_memory_they_never_took(tmp_path):
+    """A test's forecast peak held for its whole run starves the queue: peaks rarely coincide.
+
+    Tests that have stopped growing below their forecast fade out of it, and the queue moves.
+    """
+    clock = {"t": 1000.0}
+    sched, _ = _settle_sched(tmp_path, clock)
+    at_start = len(committed(sched))
+    assert at_start >= 2
+    assert sched.stats["rejected_mem"] >= 1, "the forecast must be what stopped it"
+    clock["t"] += 2.0
+    sched.check_schedule()
+    assert len(committed(sched)) == at_start, "seconds after admission they still count in full"
+    clock["t"] += 120.0
+    sched.check_schedule()
+    assert len(committed(sched)) > at_start, "settled tests must let the queue move again"
 
 
 def test_a_target_above_the_core_count_really_over_subscribes(tmp_path):
