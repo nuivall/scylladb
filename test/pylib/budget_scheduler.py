@@ -151,6 +151,11 @@ RETIRE_COOLDOWN = 10.0
 POOL_GROW_SECONDS = 10.0
 POOL_SPAWN_TIMEOUT = 120.0      # a spawned worker that has not collected by then is written off
 POOL_WORKER_PRIOR = 0.25 * 10**9
+# An idle worker holding this much more than its peers is sent home, its held test running
+# on the way out, and the pool grows a fresh one if there is room: a worker keeps whatever its
+# tests left behind, and one that keeps a lot is memory no test can use.
+POOL_BLOAT_MIN = 1.5 * 10**9
+POOL_BLOAT_FACTOR = 3.0
 # A worker with nothing running for this long is drained: when its held test starts it gets
 # the shutdown marker instead of a successor, and it exits after that test.  A held test
 # cannot be recalled, so this is the only way to take a worker out without losing its test.
@@ -1046,6 +1051,7 @@ class BudgetScheduling:
         self.live.refresh(n.gateway.id for n in nodes)
         self._refresh_measurement()
         self._refresh_forecasts()
+        self._recycle_bloated_worker()
         self._maybe_shrink_pool()
         pressure = self._pressure_guard()
         was = self.hold_for
@@ -1363,8 +1369,10 @@ class BudgetScheduling:
         if len(live) >= self.max_workers:
             return
         # A worker with nothing running is free, or blocked on a test that does not fit;
-        # either way another worker would not start anything more.
-        if any(not self._committed(n) for n in live):
+        # either way another worker would not start anything more -- unless the pool is
+        # below its floor (a bloated worker was recycled): then it is refilled.
+        refill = len(live) < self._pool_floor
+        if not refill and any(not self._committed(n) for n in live):
             return
         if pressure or self._estimate_now(now) + 1.0 > self.cpu_target:
             return
@@ -1383,7 +1391,7 @@ class BudgetScheduling:
         self._last_spawn = now
         self.stats["pool_grown"] += 1
         self._fc_mean += cost
-        self._log(f"pool: {len(live)} -> {len(live) + 1} workers (all busy, load {self._estimate_now(now):.1f}/"
+        self._log(f"pool: {len(live)} -> {len(live) + 1} workers ({'refilling' if refill else 'all busy'}, load {self._estimate_now(now):.1f}/"
                   f"{self.cpu_target:.1f} cores, {headroom / GB:.1f}G headroom, a worker holds {cost / GB:.2f}G)")
 
     def _maybe_shrink_pool(self) -> None:
@@ -1426,6 +1434,38 @@ class BudgetScheduling:
         clone = dsession.nodemanager.setup_node(spec, dsession.queue.put)
         dsession._active_nodes.add(clone)
         return spec.id
+
+    def _recycle_bloated_worker(self) -> None:
+        """Send home a worker holding far more between tests than its peers; the pool may grow a fresh one.
+
+        It finishes what it is running and its held test first, as at the end of a run, so
+        the held test has to fit now like any other.
+        """
+        now = self.now()
+        # Only a pool that can grow back may send a worker home for this: with a fixed pool
+        # (-j) every recycled worker is one lost for the rest of the run.
+        if self.max_workers <= 0 or now - self._last_retire < RETIRE_COOLDOWN or len(self._idle_mem) < 3:
+            return
+        limit = max(POOL_BLOAT_MIN, POOL_BLOAT_FACTOR * self.worker_cost())
+        for node in self._live_workers():
+            overhead = self._idle_mem.get(node.gateway.id, 0.0)
+            if overhead <= limit:
+                continue
+            held = self._held(node)
+            if held is not None and held not in self.committed_at:
+                if self._waits_for_first_run(held):
+                    continue        # its test waits for a scout or a first copy: not now
+                if self._forecast_need(held, node) > self._available() - self.mem_reserve:
+                    continue
+                self._commit(held, node)
+            node.shutdown()
+            self.shutdown_sent.add(node)
+            self._idle_mem.pop(node.gateway.id, None)
+            self._last_retire = now
+            self.stats["recycled"] += 1
+            self._log(f"recycling {node.gateway.id}: it held {overhead / GB:.2f}G when its last test started, "
+                      f"against {self.worker_cost() / GB:.2f}G for a typical worker")
+            return
 
     def _forecast_new(self, idx: int, node: WorkerController | None = None) -> float:
         """What a test that has not started will add, conditioned on its file's running tests.
@@ -1761,7 +1801,7 @@ class BudgetScheduling:
         # run whose worker died, which now measures for the rest.
         self._claim_first_run(idx)
         fc_mean = self._forecast_new(idx, node)
-        # Committed behind a running test (a drained worker, the end of a run,
+        # Committed behind a running test (a retired or recycled worker, the end of a run,
         # --budget-depth > 1) it starts when that test ends, and its clocks with it.
         behind = any(i in self.committed_at for i in self.node2pending.get(node, ()) if i != idx)
         self.committed_at[idx] = self.now()
