@@ -555,6 +555,39 @@ def test_the_pool_shrinks_back_when_workers_sit_idle(tmp_path):
     assert draining_done and all(any(i in sched.committed_at for i in sched.node2pending[n]) for n in draining_done)
 
 
+def test_a_bloated_worker_is_recycled(tmp_path):
+    """A worker that holds 3 GB when its tests start, against 0.3 GB for its peers, is sent home."""
+    clock, avail, live = {"t": 0.0}, {"v": 40 * GB}, {}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, n_start=4, max_workers=4, n_tests=20,
+                                                 one_file=False)
+    sched._pool_floor = 4                              # no draining in the way: this is about recycling
+    sched.live.memory = lambda wid: live.get(wid, 0.0)
+    for i, node in enumerate(nodes):
+        live[node.gateway.id] = 3 * GB if i == 0 else 0.3 * GB
+    # every worker finishes its test; the next ones start with the leftovers measured
+    clock["t"] = 100.0
+    for node in nodes:
+        running = next(i for i in sched.node2pending[node] if i in sched.committed_at)
+        sched.mark_test_complete(node, running)
+    assert sched.worker_cost() == pytest.approx(0.3 * GB)
+    assert sched.stats["recycled"] == 1
+    assert nodes[0]._shutdown_sent and not any(n._shutdown_sent for n in nodes[1:])
+
+
+def test_a_fixed_pool_never_recycles(tmp_path):
+    """With -j the pool cannot grow back, so a recycled worker would be lost for the rest of the run."""
+    clock, avail, live = {"t": 0.0}, {"v": 40 * GB}, {}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, n_start=4, max_workers=0, n_tests=20,
+                                                 one_file=False)
+    sched.live.memory = lambda wid: live.get(wid, 0.0)
+    for i, node in enumerate(nodes):
+        live[node.gateway.id] = 3 * GB if i == 0 else 0.3 * GB
+    clock["t"] = 100.0
+    for node in nodes:
+        sched.mark_test_complete(node, next(i for i in sched.node2pending[node] if i in sched.committed_at))
+    assert sched.stats["recycled"] == 0
+
+
 def test_a_module_cluster_kept_for_the_next_test_is_not_worker_overhead(tmp_path):
     """After a test of the same file the worker still holds that module's cluster, which the next test reuses."""
     clock, avail, live = {"t": 0.0}, {"v": 40 * GB}, {}
@@ -588,6 +621,26 @@ def test_a_worker_holding_its_modules_cluster_adds_only_what_the_test_takes_beyo
     assert len(committed(sched)) == 8
 
 
+def test_a_recycled_worker_is_replaced_to_keep_the_pool_at_its_floor(tmp_path):
+    """The pool never stays below its floor: a recycled worker is refilled at once."""
+    clock, avail, live = {"t": 0.0}, {"v": 40 * GB}, {}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, n_start=4, max_workers=8, n_tests=40,
+                                                 cores=4.0, one_file=False)   # 4 x 4 cores: the CPU is full, no growth
+    sched._pool_floor = 4                              # a floor of four, so that recycling one drops below it
+    sched.live.memory = lambda wid: live.get(wid, 0.0)
+    assert spawned == []
+    for i, node in enumerate(nodes):
+        live[node.gateway.id] = 3 * GB if i == 0 else 0.3 * GB
+    clock["t"] = 100.0
+    for node in nodes:
+        running = next(i for i in sched.node2pending[node] if i in sched.committed_at)
+        sched.mark_test_complete(node, running)
+    assert sched.stats["recycled"] == 1
+    clock["t"] = 200.0
+    sched.check_schedule()
+    assert len(spawned) == 1, "below the floor: refilled even though the CPU is busy"
+
+
 def test_a_merged_samples_file_is_not_merged_again(tmp_path):
     """With a fixed SCYLLA_TEST_HOST_ID a left-behind samples file would be learned by every later run."""
     from test.pylib.budget_scheduler import append_sample, merge_run_into_profile, samples_path
@@ -607,6 +660,48 @@ def test_learning_drops_only_the_learned_files_cached_costs(tmp_path):
     sched.learn({"key": "dev|a.py::t1", "wall": 1.0, "usage_sec": 0.5, "memory_peak": 1e9})
     for idx in pending:
         assert (idx in sched._costs) == (sched._file_of(idx) != "dev|a.py"), idx
+
+
+def _scout_and_held_sched(tmp_path, clock, avail, live, ready_running=False):
+    """A started scout on gw0, its waiting sibling held on gw1, a ready cqlpy test held on gw2."""
+    col = ["cluster/dtest/heavy_test.py::test_0.release.1", "cluster/dtest/heavy_test.py::test_1.release.1",
+           "cqlpy/test_x.py::test_a.release.1", "cqlpy/test_x.py::test_b.release.1"]
+    model = CostModel(tmp_path / "p.json", ncpus=16, k_sigma=0.0, mode="release")
+    for name in ("test_a", "test_b"):
+        model.tests[f"release|cqlpy/test_x.py::{name}"] = {"cores": 0.5, "mem": 0.3 * GB, "wall": 1.0,
+                                                          "var_cores": 0.0, "n": 3, "n_unc": 3}
+    sched = BudgetScheduling(FakeConfig(tmp_path, 3, **{"--budget-max-workers": 8}), model=model, ncpus=16,
+                             mem_total=20 * GB, cgroup_tests=NO_CGROUP, now=lambda: clock["t"],
+                             available_fn=lambda: avail["v"])
+    sched.live.memory = lambda wid: live.get(wid, 0.0)
+    nodes = [FakeNode(f"gw{i}") for i in range(3)]
+    for n in nodes:
+        sched.add_node(n); sched.add_node_collection(n, col)
+    sched.collection = col
+    for i in range(len(col)):
+        sched._add_pending(i)
+    sched._pool_floor = 1
+    for idx, node in ((0, nodes[0]), (1, nodes[1]), (2, nodes[2])):
+        sched._take(sched._file_of(idx), idx)
+        sched._send(node, idx)
+    sched._commit(0, nodes[0])                         # the scout runs
+    if ready_running:                                  # gw2 runs its test, with a successor held behind it
+        sched._take(sched._file_of(3), 3)
+        sched._commit(2, nodes[2])
+        sched._send(nodes[2], 3)
+    assert sched._waits_for_first_run(1), "the sibling waits for its scout"
+    return sched, nodes
+
+
+def test_recycling_skips_a_worker_whose_test_waits_for_its_scout(tmp_path):
+    clock, avail = {"t": 5.0}, {"v": 10 * GB}
+    sched, nodes = _scout_and_held_sched(tmp_path, clock, avail, {})
+    # gw1 and gw2 both bloated against typical workers at 0.3 GB
+    sched._idle_mem = {"gw0": 0.3 * GB, "gwA": 0.3 * GB, "gwB": 0.3 * GB, "gw1": 3 * GB, "gw2": 3 * GB}
+    sched._recycle_bloated_worker()
+    assert sched.stats["recycled"] == 1
+    assert nodes[2]._shutdown_sent and not nodes[1]._shutdown_sent
+    assert 1 not in sched.committed_at
 
 
 def test_a_first_in_file_sample_still_teaches_the_peak(tmp_path):
