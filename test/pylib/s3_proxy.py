@@ -13,14 +13,15 @@ import random
 import sys
 import asyncio
 
-import requests
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 import uuid
 from functools import partial
 from collections import OrderedDict
-from requests import Response
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from requests import Response
 from typing_extensions import Optional
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -193,6 +194,7 @@ class InjectingHandler(BaseHTTPRequestHandler):
                 policy.server_should_fail = False
                 policy.should_forward = True
 
+            from requests import Response
             response = Response()
             body = None
 
@@ -204,6 +206,9 @@ class InjectingHandler(BaseHTTPRequestHandler):
                 target_url = self.s3_uri + self.path
                 headers = {key: value for key, value in self.headers.items()}
                 try:
+                    # imported here, not at module level: each worker pays for every
+                    # module-level import whether or not its tests reach this code
+                    import requests
                     response = requests.request(self.command, target_url, headers=headers, data=body,
                                                 timeout=self.forward_timeout)
                 except requests.exceptions.RequestException as e:
