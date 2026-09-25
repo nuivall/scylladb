@@ -76,6 +76,7 @@ MEM_DECAY = 0.7
 # contended: its wall time and parallelism are not learned (only its CPU work).
 CONTENDED_STALL_FRAC = 0.10
 PROFILE_VERSION = 4       # bumped when the recorded format changes; older files are ignored
+TAIL_SECONDS = 20.0       # below this a test is too short to be worth holding capacity for
 HELD_FORCE_SECONDS = 60.0 # a worker blocked this long on one test is worth more than the budget
 # A reservation is a test's *peak* memory held for its whole life, and peaks rarely
 # coincide.  Measured on a run with no profile: 34 GB reserved against a 36 GB budget
@@ -673,11 +674,14 @@ class BudgetScheduling:
         self.pending_set: set[int] = set()
         self.files: dict[str, list[int]] = {}          # file -> pending indices, longest wall first
         self.file_remaining: dict[str, float] = {}      # file -> sum of pending predicted wall
+        self.total_remaining = 0.0                      # predicted wall of everything still pending
+        self.max_pending_wall = 0.0                     # longest wall ever queued, a cheap upper bound
         # The wall each pending test was queued with.  In-run learning changes a test's
         # estimate while it waits, so the running totals must be undone with the number
-        # they were built from, or they drift.
+        # they were built from, or they drift and the critical-path test is never found.
         self._queued_wall: dict[int, float] = {}
         self.held_since: dict[int, float] = {}          # index -> when a worker was given it to hold
+        self.hold_for: int | None = None                # a critical-path test whose capacity is kept free
         self.committed_at: dict[int, float] = {}        # index -> monotonic time of commit
         self._costs: dict[int, Cost] = {}
         self._costs_by_file: dict[str, set[int]] = defaultdict(set)   # file -> indices with a cached cost
@@ -832,6 +836,15 @@ class BudgetScheduling:
         self._refresh_measurement()
         self._refresh_forecasts()
         pressure = self._pressure_guard()
+        was = self.hold_for
+        self.hold_for = self._critical_test()
+        if self.hold_for is not None and self.hold_for != was:
+            c = self._costs_for(self.hold_for)
+            self.stats["critical_holds"] += 1
+            self._log(f"critical path: holding {c.cores:.2f} cores and {c.mem / GB:.1f}G for "
+                      f"{self.collection[self.hold_for]} (wall {c.wall:.0f}s, "
+                      f"{self.total_remaining / max(float(self.ncpus), float(len(self.committed_at))):.0f}s "
+                      f"of work left per running slot)")
 
         # Workers that are idle with a held test come first: they can start right away.
         def prio(n: WorkerController) -> tuple[int, float]:
@@ -867,7 +880,8 @@ class BudgetScheduling:
                         # may dip into half the reserve, only while the machine shows no
                         # memory pressure at all, and only one at a time, so each forced
                         # test shows what it takes before the next one goes.
-                        mem_ok = (self._forecast_need(held, node) <= self._available() - 0.5 * self.mem_reserve
+                        mem_ok = (self._forecast_need(held, node) + self._hold_reservation(held)[1]
+                                  <= self._available() - 0.5 * self.mem_reserve
                                   and self._psi[1] == 0.0
                                   and self.now() - self._last_forced >= MEM_RAMP_SECONDS)
                         if waited >= HELD_FORCE_SECONDS and mem_ok:
@@ -938,15 +952,16 @@ class BudgetScheduling:
         cost = self._costs_for(idx)
         now = self.now()
         # --- RAM: the running tests' forecast growth plus this test must fit what is free --
-        # (less the reserve).
-        if self._forecast_need(idx, node) > self._available() - self.mem_reserve:
+        # (less the reserve, and less the room kept for the critical-path test).
+        hold_cpu, hold_mem = self._hold_reservation(idx)
+        if self._forecast_need(idx, node) + hold_mem > self._available() - self.mem_reserve:
             self.stats["rejected_mem"] += 1
             return False
 
         # --- CPU: reservations with a controlled over-commit band ---------------
         setup_cores = self._setup_for(idx, node)
         req = cost.cores + setup_cores
-        reserved = sum(self.res_cpu.values())
+        reserved = sum(self.res_cpu.values()) + hold_cpu
         if reserved + req > self.cpu_ceiling:
             self.stats["rejected_cpu_ceiling"] += 1
             return False
@@ -979,6 +994,13 @@ class BudgetScheduling:
                 return False
         return True
 
+    def _hold_reservation(self, idx: int | None) -> tuple[float, float]:
+        """Capacity kept free for the critical-path test, as seen by any other test."""
+        if self.hold_for is None or self.hold_for == idx:
+            return 0.0, 0.0
+        c = self._costs_for(self.hold_for)
+        return c.cores, c.mem
+
     def _free_capacity(self, node: WorkerController | None = None) -> tuple[float, float]:
         """(cores, bytes) a *selection* may still count on.
 
@@ -987,15 +1009,17 @@ class BudgetScheduling:
         machine lets it, and a test sent to a worker cannot be recalled.  If selection
         ignored those, each worker would choose as though the machine were free, they
         would all pick something heavy at once, and the ones that lose the race would
-        sit blocked.  So a pick sees what runs, plus what its colleagues are about to run.
+        sit blocked.  So a pick sees what runs, plus what its colleagues are about to
+        run, plus whatever is being kept free for the critical path.
         """
-        hc = hm = 0.0
+        held = self._held(node) if node is not None else None
+        hc, hm = self._hold_reservation(held)
         for other, queued in self.node2pending.items():
             if other is node or not queued:
                 continue
             idx = queued[-1]
-            # chosen, not started yet
-            if idx not in self.committed_at:
+            # chosen, not started yet -- except the critical test, already in the hold
+            if idx not in self.committed_at and idx != self.hold_for:
                 hc += self._costs_for(idx).cores
                 hm += self._forecast_new(idx, other)
         return (self.ncpus - sum(self.res_cpu.values()) - hc, self._mem_headroom() - hm)
@@ -1125,8 +1149,15 @@ class BudgetScheduling:
         Priority order is kept: same file first (longest first), else the file
         with the most remaining work.  Backfill: if a test in that order does not
         fit the capacity free right now, scan past it (bounded) for one that does,
-        so an unfittable big test does not idle the worker.  A passed-over test is not
-        reserved for: no test has a deadline and everything runs before the session ends.
+        so an unfittable big test does not idle the worker.
+
+        A passed-over test is normally not reserved for: no test has a deadline and
+        everything runs before the session ends.  The exception is the critical path.
+        Once the longest test still pending is longer than the time the rest of the
+        work needs, starting it any later makes it the end of the run on its own, and
+        the machine drains behind it.  From that point its capacity is held: smaller
+        tests are admitted only with what is left over, so the room it needs appears.
+        Early in a run nothing is critical and this costs nothing.
         """
         if not self.pending_set:
             return None
@@ -1135,10 +1166,18 @@ class BudgetScheduling:
         # machine had drained and then ran alone.  Each file's list is longest-first, so its
         # head is its longest test: order the files by that.
         by_remaining = sorted(self.files, key=lambda f: -self._costs_for(self.files[f][0]).wall)
+        # The test we are holding capacity for gets first refusal: everyone else has been
+        # admitted against a budget that already excludes it, so when it fits, it goes now.
+        if self.hold_for is not None and self.hold_for in self.pending_set:
+            c = self._costs_for(self.hold_for)
+            if (sum(self.res_cpu.values()) + c.cores <= self.ncpus
+                    and self._forecast_need(self.hold_for, node) <= self._available() - self.mem_reserve):
+                return self._take(self._file_of(self.hold_for), self.hold_for)
         free_cpu, free_mem = self._free_capacity(node)
         # Selection has to be as strict about memory as admission is.  A test sent to a
         # worker cannot be recalled: the worker holds it until it can start.  Picking one
-        # that admission will refuse parks that worker for as long as the refusal lasts.
+        # that admission will refuse parks that worker for as long as the refusal lasts,
+        # and takes the test off the pending queue where the critical-path check looks.
         current = self.node_file.get(node)
         files = ([current] if current is not None and self.files.get(current) else []) + [f for f in by_remaining if f != current]
         head = None
@@ -1180,7 +1219,8 @@ class BudgetScheduling:
             # test we saw, not on the head: a held test is off the queue and blocks its
             # worker until it fits, and the head is the biggest test there is.  A worker
             # blocked for the whole run on a test that needs half the machine's memory is
-            # a worker lost.
+            # a worker lost, and the test itself disappears from the pending set, where
+            # the critical-path check would have made room for it.
             if smallest is None and head is not None:
                 smallest = (self._file_of(head), head)
             if smallest is None:
@@ -1191,6 +1231,43 @@ class BudgetScheduling:
             self.stats["backfilled"] += 1
         return self._take(*chosen)
 
+    def _parallel(self) -> float:
+        return max(float(self.ncpus), float(len(self.committed_at)))
+
+    def _critical_test(self) -> int | None:
+        """The longest pending test, once it is longer than what the rest of the work needs.
+
+        Each file's list is longest-first, so the longest pending test is the head of
+        some file.  Scanning those heads is only worth it when the run has drained far
+        enough for any test to be on the critical path at all, which is a single
+        comparison against the longest wall we have ever queued.
+
+        Once chosen, a test stays chosen until it starts.  Being handed to a worker is not
+        starting: the worker holds it until admission lets it go, and if the hold moved on
+        at that point, smaller tests would take the room back.  Measured, that hold jumped
+        across eight tests in fourteen seconds, and the 113-second test it had picked first
+        started five and a half minutes later and ended the run on its own.
+        """
+        if self.hold_for is not None and self.hold_for not in self.committed_at:
+            return self.hold_for
+        if not self.files:
+            return None
+        # How long the rest of the work needs, at the concurrency this run actually gets.
+        budget = self.total_remaining / self._parallel()
+        if self.max_pending_wall < max(TAIL_SECONDS, budget):
+            return None
+        best, best_wall = None, 0.0
+        for lst in self.files.values():
+            if not lst:
+                continue
+            c = self._costs_for(lst[0])
+            if (c.wall > best_wall and c.cores <= self.cpu_ceiling
+                    and c.mem <= self.mem_target):
+                best, best_wall = lst[0], c.wall
+        if best is None or best_wall < max(TAIL_SECONDS, budget):
+            return None
+        return best
+
     def _take(self, file: str, idx: int | None = None) -> int:
         lst = self.files[file]
         if idx is None:
@@ -1200,6 +1277,7 @@ class BudgetScheduling:
         self.pending_set.discard(idx)
         wall = self._queued_wall.pop(idx, self._costs_for(idx).wall)
         self.file_remaining[file] -= wall
+        self.total_remaining = max(0.0, self.total_remaining - wall)
         if not lst:
             del self.files[file]
             del self.file_remaining[file]
@@ -1218,7 +1296,9 @@ class BudgetScheduling:
                 pos += 1
             lst.insert(pos, idx)
         self.file_remaining[file] = self.file_remaining.get(file, 0.0) + wall
+        self.total_remaining += wall
         self._queued_wall[idx] = wall
+        self.max_pending_wall = max(self.max_pending_wall, wall)
         self.pending_set.add(idx)
 
     # -- helpers ------------------------------------------------------------------
@@ -1246,6 +1326,8 @@ class BudgetScheduling:
         self._fc_mean += fc_mean
         self.res_cpu[idx] = cost.cores
         self.res_mem[idx] = cost.mem
+        if self.hold_for == idx:
+            self.hold_for = None
         self.held_since.pop(idx, None)
         self.stats["admitted"] += 1
         self._log(f"start {node.gateway.id} {self.collection[idx]} cores={cost.cores:.2f} "

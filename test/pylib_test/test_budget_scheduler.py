@@ -512,6 +512,21 @@ def test_longest_test_starts_first(tmp_path):
     sched, nodes = make_sched(tmp_path, col, costs, nodes=3, ncpus=8, mem_total=40 * GB)
     hog = col.index("a.py::hog.dev.1")
     assert hog in committed(sched), "the longest test must be among the first admitted"
+    # and when it cannot fit, its capacity is held rather than lost to the tail
+    col2 = ["a.py::hog.dev.1"] + [f"b.py::s{i}.dev.1" for i in range(20)]
+    costs2 = {"a.py::hog.dev.1": (1.0, 9 * GB, 120.0)}
+    costs2.update({f"b.py::s{i}.dev.1": (1.0, 8 * GB, 10.0) for i in range(20)})
+    sub = tmp_path / "b"; sub.mkdir(exist_ok=True)
+    sched2, nodes2 = make_sched(sub, col2, costs2, nodes=4, ncpus=2, mem_total=30 * GB)
+    for _ in range(20):
+        if 0 in committed(sched2) or sched2.hold_for == 0:
+            break
+        if not committed(sched2):
+            break
+        idx = sorted(committed(sched2))[0]
+        node = next(n for n in sched2.node2pending if idx in sched2.node2pending[n])
+        sched2.mark_test_complete(node, idx)
+    assert 0 in committed(sched2) or sched2.hold_for == 0
 
 
 def test_selection_counts_what_other_workers_already_hold(tmp_path):
@@ -573,6 +588,45 @@ def test_a_blocked_worker_is_never_unblocked_past_memory(tmp_path):
         if hog in committed(sched):
             break
     assert hog in committed(sched), "once there is room it must start"
+
+
+def test_the_critical_hold_stays_until_the_test_starts(tmp_path):
+    """Handed to a worker is not started: the room is kept until it really goes in.
+
+    Measured without this: the hold moved on the moment the test left the queue, smaller
+    tests took the room back, and a 113 s test chosen in the first second started five
+    and a half minutes later and ended the run on its own.
+    """
+    col = ["a.py::big.dev.1"] + [f"b.py::s{i}.dev.1" for i in range(9)]
+    costs = {"a.py::big.dev.1": (1.0, 12 * GB, 200.0)}
+    costs.update({f"b.py::s{i}.dev.1": (1.0, 4 * GB, 10.0) for i in range(9)})
+    model = make_model(tmp_path, 16, {profile_key(n): c for n, c in costs.items()})
+    # 24 GB available: the 3.2 GB reserve, plus room for the 12 GB test once one small test
+    # is gone -- the two still running have just started and count at their full 8 GB.
+    sched = BudgetScheduling(FakeConfig(tmp_path, 4), model=model, ncpus=16, mem_total=64 * GB,
+                             cgroup_tests=NO_CGROUP, available_fn=lambda: 24 * GB)
+    nodes = [FakeNode(f"gw{i}") for i in range(4)]
+    for n in nodes:
+        sched.add_node(n); sched.add_node_collection(n, col)
+    sched.collection = col
+    for i in range(len(col)):
+        sched._add_pending(i)
+    big = 0
+    for node, small in zip(nodes[1:], (1, 2, 3)):     # 12 GB of small tests running
+        sched._take(sched._file_of(small), small)
+        sched._send(node, small)
+        sched._commit(small, node)
+    sched.hold_for = big                               # chosen as critical ...
+    sched._take(sched._file_of(big), big)              # ... and handed to gw0, where it waits
+    sched._send(nodes[0], big)
+
+    sched.check_schedule()
+    assert sched.hold_for == big, "the hold must not move on while the test waits on a worker"
+    assert committed(sched) == {1, 2, 3}, "no small test may take the room being kept for it"
+
+    sched.mark_test_complete(nodes[1], 1)              # 8 GB running: now 12 GB fit
+    assert big in committed(sched)
+    assert sched.hold_for != big
 
 
 def test_admission_ramps_instead_of_bursting(tmp_path):
