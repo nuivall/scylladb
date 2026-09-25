@@ -342,7 +342,7 @@ def test_a_test_growing_past_its_kind_raises_its_own_forecast(tmp_path):
         sched.add_node(node)
         sched.add_node_collection(node, col)
     sched.schedule()
-    assert len(committed(sched)) == 6, "six files, six tests"
+    assert len(committed(sched)) == 6, "six files, six scouts"
     sched._refresh_forecasts()
     to_come_at_start = sched._fc_mean
     for node in nodes:
@@ -354,6 +354,68 @@ def test_a_test_growing_past_its_kind_raises_its_own_forecast(tmp_path):
         assert mean > 2.0 * GB, "a dtest holding 1.5 GB is expected to go on growing"
     # still to come after taking 9 GB between them is more than was expected of them at the start
     assert sched._fc_mean > to_come_at_start
+
+
+def test_an_unmeasured_file_sends_one_scout_first(tmp_path):
+    """Siblings of an unmeasured dtest file wait for its scout, then start on what it shows."""
+    clock = {"t": 0.0}
+    col = [f"cluster/dtest/heavy_test.py::test_{i}.release.1" for i in range(4)]
+    model = CostModel(tmp_path / "p.json", ncpus=16, k_sigma=0.0, mode="release")
+    sched = BudgetScheduling(FakeConfig(tmp_path, 4), model=model, ncpus=16, mem_total=64 * GB, cgroup_tests=NO_CGROUP,
+                             now=lambda: clock["t"], available_fn=lambda: 60 * GB)
+    nodes = [FakeNode(f"gw{i}") for i in range(4)]
+    for node in nodes:
+        sched.add_node(node)
+        sched.add_node_collection(node, col)
+    sched.schedule()
+    assert len(committed(sched)) == 1, "only the scout may start"
+    assert sched.stats["scouts"] == 1
+    clock["t"] = 10.0
+    sched.check_schedule()
+    assert len(committed(sched)) == 1, "a young scout still holds its siblings"
+    clock["t"] = 25.0
+    sched.check_schedule()
+    assert len(committed(sched)) > 1, "past SCOUT_SECONDS, and quiet, the siblings go"
+
+
+def test_a_growing_scout_holds_its_siblings_until_it_settles(tmp_path):
+    """A heavy test takes a minute to grow into its peak; its siblings wait to see how far it goes."""
+    clock, live = {"t": 0.0}, {}
+    col = [f"cluster/dtest/heavy_test.py::test_{i}.release.1" for i in range(4)]
+    model = CostModel(tmp_path / "p.json", ncpus=16, k_sigma=0.0, mode="release")
+    sched = BudgetScheduling(FakeConfig(tmp_path, 4), model=model, ncpus=16, mem_total=64 * GB, cgroup_tests=NO_CGROUP,
+                             now=lambda: clock["t"], available_fn=lambda: 60 * GB)
+    sched.live.memory = lambda wid: live.get(wid, 0.0)
+    nodes = [FakeNode(f"gw{i}") for i in range(4)]
+    for node in nodes:
+        sched.add_node(node)
+        sched.add_node_collection(node, col)
+    sched.schedule()
+    scout_node = next(n for n in nodes if any(i in sched.committed_at for i in sched.node2pending[n]))
+    for t, held in ((10, 0.5), (20, 1.0), (30, 1.8), (40, 2.5)):
+        clock["t"] = t
+        live[scout_node.gateway.id] = held * GB
+        sched.check_schedule()
+        assert len(committed(sched)) == 1, f"the scout is still growing at {t} s"
+    clock["t"] = 52.0                                    # no growth since 40 s
+    sched.check_schedule()
+    assert len(committed(sched)) > 1
+    sibling = next(i for i in sched.committed_at if i != min(sched.committed_at, key=sched.committed_at.get))
+    mean = sched._forecast(sibling, 0.0, sched._file_held[sched._file_of(sibling)])
+    assert mean >= 2.5 * GB, "siblings are forecast on what the scout holds"
+
+
+def test_cheap_uniform_files_do_not_scout(tmp_path):
+    col = [f"cqlpy/test_x.py::test_{i}.release.1" for i in range(4)]
+    model = CostModel(tmp_path / "p.json", ncpus=16, k_sigma=0.0, mode="release")
+    sched = BudgetScheduling(FakeConfig(tmp_path, 4), model=model, ncpus=16, mem_total=64 * GB, cgroup_tests=NO_CGROUP,
+                             available_fn=lambda: 60 * GB)
+    nodes = [FakeNode(f"gw{i}") for i in range(4)]
+    for node in nodes:
+        sched.add_node(node)
+        sched.add_node_collection(node, col)
+    sched.schedule()
+    assert sched.stats["scouts"] == 0 and len(committed(sched)) > 1
 
 
 def test_conditional_peak_of_the_release_dtest_distribution(tmp_path):

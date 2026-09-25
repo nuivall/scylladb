@@ -161,6 +161,17 @@ MEM_RESERVE_MAX = 4 * 10**9
 # fades out of the forecast with this half-life: it has most likely reached its peak, and
 # counting the rest of its distribution for the rest of its life would starve the run.
 PLATEAU_SECONDS = 30.0
+# A file nobody has measured yet sends one scout first.  Its siblings wait until the scout
+# has finished, or has run at least SCOUT_SECONDS and then stopped growing for
+# SCOUT_QUIET_SECONDS, or has run SCOUT_MAX_SECONDS; then they start, forecast on what the
+# scout holds.  A fixed wait would release them before a heavy test shows itself: the
+# heaviest dtests take a minute or more to grow into their peak.  Only the heavy-tailed
+# kinds scout: a cqlpy or boost file is cheap and uniform, and waiting there would cost more
+# than it could save.
+SCOUT_SECONDS = 20.0
+SCOUT_QUIET_SECONDS = 10.0
+SCOUT_MAX_SECONDS = 120.0
+SCOUT_KINDS = frozenset({"cluster", "dtest", "gdb"})
 # Peak-memory distributions for the run that has no profile yet, as quantiles at
 # PEAK_QUANTILES.  Release: firm peaks over a full release run (15,147 tests).  Debug:
 # anonymous peaks of the cluster suite over a full debug run (10,176 tests); the other debug
@@ -748,6 +759,8 @@ class BudgetScheduling:
         self._started_at: dict[int, float] = {}        # index -> when it started running (not just committed)
         self._fc_mean = 0.0                            # forecast growth still to come, over the running tests
         self._file_held: dict[str, float] = defaultdict(float)  # file -> most any running test of it holds
+        self._scout: dict[str, int] = {}               # file -> the index measuring it for its siblings
+        self._scout_done: set[str] = set()
         self._last_forced = -math.inf
         self._mem_charged_workers = False
         self.psi_cpu_limit = float(opt("--budget-psi-cpu"))
@@ -899,6 +912,8 @@ class BudgetScheduling:
                 self.committed_at.pop(idx, None)
                 self._started_at.pop(idx, None)
                 self._mem_track.pop(idx, None)
+                if self._scout.get(self._file_of(idx)) == idx:
+                    del self._scout[self._file_of(idx)]
                 self.res_cpu.pop(idx, None)
                 self.res_mem.pop(idx, None)
                 # It never reported: the next copy to be picked measures in its place.
@@ -918,6 +933,8 @@ class BudgetScheduling:
         self.committed_at.pop(item_index, None)
         self._started_at.pop(item_index, None)
         self._mem_track.pop(item_index, None)
+        if self._scout.get(self._file_of(item_index)) == item_index:
+            self._scout_done.add(self._file_of(item_index))
         # The test committed behind it on this worker starts now.
         nxt = next((i for i in (queued or ()) if i in self.committed_at), None)
         if nxt is not None and nxt not in self._started_at:
@@ -1633,18 +1650,41 @@ class BudgetScheduling:
             key = self._keys[idx] = profile_key(self.collection[idx])
         return key
 
+    def _scouts(self, idx: int) -> bool:
+        """Whether a test belongs to an unmeasured file of a heavy-tailed kind."""
+        return (self._costs_for(idx).source.startswith("static")
+                and self.model.peak_kind(self._key_of(idx)) in SCOUT_KINDS)
+
     def _claim_first_run(self, idx: int) -> None:
         key = self._key_of(idx)
         if (key not in self._first_run and key not in self._first_run_done
                 and self._costs_for(idx).source != "profile"):
             self._first_run[key] = idx
+        file = self._file_of(idx)
+        if file not in self._scout and file not in self._scout_done and self._scouts(idx):
+            self._scout[file] = idx
+            self.stats["scouts"] += 1
 
     def _waits_for_first_run(self, idx: int) -> bool:
-        """A test waiting for a measurement: a repeat of an unknown test while another copy measures it."""
+        """A test waiting for a measurement: a repeat of an unknown test while another copy
+        measures it, or a sibling in an unmeasured file while its scout is young."""
         key = self._key_of(idx)
         first = self._first_run.get(key)
-        return (first is not None and first != idx and key not in self._first_run_done
-                and self._costs_for(idx).source != "profile")
+        if (first is not None and first != idx and key not in self._first_run_done
+                and self._costs_for(idx).source != "profile"):
+            return True
+        file = self._file_of(idx)
+        scout = self._scout.get(file)
+        if scout is None or scout == idx or file in self._scout_done or not self._scouts(idx):
+            return False
+        started = self.committed_at.get(scout)
+        if started is None:
+            return True
+        now = self.now()
+        if now - started >= SCOUT_MAX_SECONDS:
+            return False
+        _, grew_at = self._mem_track.get(scout, (0.0, started))
+        return now - started < SCOUT_SECONDS or now - grew_at < SCOUT_QUIET_SECONDS
 
     def _costs_for(self, idx: int) -> Cost:
         cost = self._costs.get(idx)
