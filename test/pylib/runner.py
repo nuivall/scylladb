@@ -599,6 +599,11 @@ def pytest_configure(config: pytest.Config) -> None:
         root_logger.removeHandler(handler)
         handler.close()
 
+    if worker_id is not None:
+        # Charge the containers a test starts through the Docker SDK to this worker.
+        from test.pylib.container_accounting import install_docker_hook
+        install_docker_hook()
+
     file_handler = logging.FileHandler(_pytest_config.stash[PYTEST_LOG_FILE])
     file_handler.setFormatter(logging.Formatter(log_file_format))
     root_logger.addHandler(file_handler)

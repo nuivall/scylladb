@@ -11,15 +11,19 @@ own cgroups (system.slice/docker-<id>.scope), so a Cassandra JVM a migration tes
 is in no learned peak and no live reading, and the budget scheduler admitted nineteen such
 tests at once on 20 GB it could not see.
 
-Whatever starts a container from a test registers it (see register_container_pid), and the
-container's cgroup is recorded under the xdist worker that started it.  What those cgroups
-hold is added to the worker's own (see worker_anon).  A container that has gone takes its
-cgroup with it and drops out.
+Containers a test starts through the Docker SDK are registered automatically: an xdist
+worker wraps ``ContainerCollection.run`` (see install_docker_hook), and every detached
+container it starts is recorded with the container's cgroup under the worker.  The
+scheduler and the resource gatherer add what those cgroups hold to the worker's own.  A
+container that has gone takes its cgroup with it and drops out.
 """
 
 from __future__ import annotations
 
+import importlib.abc
+import importlib.util
 import os
+import sys
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -109,3 +113,61 @@ def worker_anon(cgroup: Path, containers: Iterable[Path] | None = None, worker: 
     if containers is None:
         containers = container_cgroups(worker) if worker else []
     return own + sum(memory_stat(c, "anon") or 0.0 for c in containers)
+
+
+DOCKER_CONTAINERS_MODULE = "docker.models.containers"
+
+
+def _wrap_container_run(ContainerCollection) -> None:
+    if getattr(ContainerCollection.run, "_charged_to_worker", False):
+        return
+    original = ContainerCollection.run
+
+    def run(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        if kwargs.get("detach"):
+            try:
+                result.reload()
+                register_container_pid(result.attrs.get("State", {}).get("Pid"))
+            except Exception:
+                pass            # accounting is best effort; a test must not fail over it
+        return result
+
+    run._charged_to_worker = True
+    ContainerCollection.run = run
+
+
+class _DockerHook(importlib.abc.MetaPathFinder):
+    """Wraps ContainerCollection.run when the Docker SDK's containers module is first imported."""
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname != DOCKER_CONTAINERS_MODULE:
+            return None
+        sys.meta_path.remove(self)
+        spec = importlib.util.find_spec(fullname)
+        if spec is None or spec.loader is None:
+            return spec
+        exec_module = spec.loader.exec_module
+
+        def exec_and_wrap(module):
+            exec_module(module)
+            _wrap_container_run(module.ContainerCollection)
+
+        spec.loader.exec_module = exec_and_wrap
+        return spec
+
+
+def install_docker_hook() -> None:
+    """Register every detached container this process starts through the Docker SDK.
+
+    Wraps ``docker.models.containers.ContainerCollection.run``, which is how the dtest
+    harnesses start Cassandra, cassandra-stress and LDAP.  A container run to completion
+    (``detach=False``) returns its output and is over before it could matter.  The SDK is
+    not imported for this: a worker that never starts a container never pays for it (it is
+    about 500 modules), and one that does gets the wrapper when the harness imports it.
+    """
+    module = sys.modules.get(DOCKER_CONTAINERS_MODULE)
+    if module is not None:
+        _wrap_container_run(module.ContainerCollection)
+    elif not any(isinstance(f, _DockerHook) for f in sys.meta_path):
+        sys.meta_path.insert(0, _DockerHook())

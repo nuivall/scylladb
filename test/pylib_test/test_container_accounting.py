@@ -83,3 +83,42 @@ def test_a_tests_anonymous_peak_includes_its_workers_containers(world, monkeypat
     assert ResourceGatherOn._read_anon(gatherer) == 2_000 + 800_000
     other = SimpleNamespace(cgroup_path=world.tests / "gw0", worker_id="gw0")
     assert ResourceGatherOn._read_anon(other) == 1_000
+
+
+def test_a_detached_container_started_through_the_docker_sdk_is_registered(world, monkeypatch):
+    """No harness has to cooperate: the worker's hook registers every detached container it starts."""
+    from docker.models.containers import ContainerCollection
+    started = []
+
+    class FakeContainer:
+        attrs = {"State": {"Pid": 4242}}
+
+        def reload(self):
+            pass
+
+    def fake_run(self, image, **kwargs):
+        started.append(image)
+        return FakeContainer() if kwargs.get("detach") else b"output"
+
+    monkeypatch.setattr(ContainerCollection, "run", fake_run)
+    real = ca.cgroup_of_pid
+    monkeypatch.setattr(ca, "cgroup_of_pid", lambda pid: real(pid, world.proc))
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
+    ca.install_docker_hook()
+    ca.install_docker_hook()                           # installing twice does not wrap twice
+    assert ContainerCollection.run._charged_to_worker
+    ContainerCollection.run(None, "cassandra:3.11", detach=True)
+    assert ca.container_cgroups("gw3") == [world.jvm]
+    ContainerCollection.run(None, "cassandra:3.11", command="cat /etc/cassandra/cassandra.yaml")
+    assert ca.container_cgroups("gw3") == [world.jvm], "a container run to completion is not registered"
+    assert started == ["cassandra:3.11", "cassandra:3.11"]
+
+
+def test_the_docker_hook_does_not_import_the_sdk():
+    """A worker that never starts a container must not pay for importing the Docker SDK."""
+    import subprocess, sys
+    code = ("import sys, test.pylib.container_accounting as ca; ca.install_docker_hook(); "
+            "print('docker' in sys.modules); import docker.models.containers as c; "
+            "print(getattr(c.ContainerCollection.run, '_charged_to_worker', False))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.split()
+    assert out == ["False", "True"], "not imported by the hook, and wrapped once the harness imports it"
