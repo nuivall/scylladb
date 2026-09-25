@@ -98,6 +98,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      help="Cores,memory assumed for a test with no profile and no static hint")
     parser.addoption("--budget-k-sigma", action="store", type=float, default=0.5,
                      help="Safety margin in standard deviations added to the predicted cores")
+    parser.addoption("--budget-cpu-overcommit", action="store", type=float, default=1.5,
+                     help="Hard ceiling for CPU reservations as a multiple of the CPU count; above 1.0 only with measured slack")
     parser.addoption('--random-seed', action="store",
                      help="Random number generator seed to be used by boost tests")
 

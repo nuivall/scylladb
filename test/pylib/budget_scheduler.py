@@ -24,8 +24,14 @@ change to the workers: a worker pops a test and then blocks until it knows the
 *next* index (or a shutdown), so sending one more index is what starts the held
 test.
 
-One test is always allowed to start when nothing is running, so a run can never
-dead-lock.
+The scheduler does not trust the profile blindly.  Admission is closed-loop:
+it measures the load the tests actually cause right now (the worker cgroups
+plus the services test.py starts), adds the predicted cost of tests admitted in
+the last couple of seconds that the measurement cannot show yet, and admits the
+next test only if that plus the test's own cost stays under the target.  A test
+is predicted from its average parallelism over its whole run: per-test CPU curves
+were measured against it and bought nothing.  One test is always allowed to start
+when nothing is running, so a run can never dead-lock.
 """
 
 from __future__ import annotations
@@ -126,6 +132,9 @@ STATIC_MEM_MODE_ALIAS = {"sanitize": "debug", "coverage": "debug"}
 MEM_RESERVE_FRACTION = 0.05
 MEM_RESERVE_MIN = 1 * 10**9
 MEM_RESERVE_MAX = 4 * 10**9
+# A test admitted less than this long ago is not visible in the measured load
+# yet; its predicted cost is added on top of the measurement.
+RAMP_SECONDS = 2.0
 
 
 def profile_key(nodeid: str) -> str:
@@ -291,6 +300,20 @@ class CostModel:
         self._learn_mem(entry, mem)
         entry["n"] = n + 1
 
+    def predict_at(self, nodeid: str, elapsed: float, future: bool = False) -> float:
+        """Cores a test is expected to burn: its natural parallelism, over its whole run.
+
+        Per-test CPU curves -- cores at each point of a test's run, so a short test could
+        start in a long one's idle phase -- were measured against this on the full release
+        suite: the same wall time within noise, the same CPU-seconds, a median per-test
+        wall ratio of 1.00.  For a look-ahead (`future=True`) a test well past its expected
+        wall time counts as finished, otherwise the costs of many short tests would pile up.
+        """
+        cost = self.cost(nodeid)
+        if future and elapsed > cost.wall * 1.5 + 1.0:
+            return 0.0
+        return cost.cores
+
     # -- prediction --------------------------------------------------------
 
     def cost(self, nodeid: str) -> Cost:
@@ -443,10 +466,12 @@ def _ema(old: float | None, new: float, n: int) -> float:
 
 
 class CgroupReader:
-    """Reads the live memory (bytes) of a worker's cgroup from the controller."""
+    """Reads live CPU (cores) and memory (bytes) of a worker's cgroup from the controller."""
 
     def __init__(self, cgroup_tests: Path | None):
         self.base = cgroup_tests
+        self._last: dict[str, tuple[float, float]] = {}   # worker -> (monotonic, usage_sec)
+        self._cores: dict[str, float] = {}
         # worker -> cgroups of the containers it started (test/pylib/container_accounting.py)
         self._containers: dict[str, list[Path]] = {}
         self._mem: dict[str, float | None] = {}             # worker -> memory() this pass
@@ -456,6 +481,50 @@ class CgroupReader:
             return
         self._containers = all_container_cgroups()
         self._mem = {}
+        now = time.monotonic()
+        for wid in worker_ids:
+            usage = self._read_usage(wid)
+            if usage is None:
+                continue
+            prev = self._last.get(wid)
+            if prev is None:
+                self._last[wid] = (now, usage)
+                continue
+            dt = now - prev[0]
+            if dt >= 0.5:
+                self._cores[wid] = max(0.0, (usage - prev[1]) / dt)
+                self._last[wid] = (now, usage)
+
+    def cores(self, wid: str) -> float | None:
+        return self._cores.get(wid)
+
+    def rate(self, path: Path) -> float | None:
+        """Cores currently used by an arbitrary cgroup (hierarchical), sampled >= 0.5 s apart."""
+        key = f"path:{path}"
+        usage = self._read_usage_path(path)
+        if usage is None:
+            return None
+        now = time.monotonic()
+        prev = self._last.get(key)
+        if prev is None:
+            self._last[key] = (now, usage)
+            return self._cores.get(key)
+        dt = now - prev[0]
+        if dt >= 0.5:
+            self._cores[key] = max(0.0, (usage - prev[1]) / dt)
+            self._last[key] = (now, usage)
+        return self._cores.get(key)
+
+    @staticmethod
+    def _read_usage_path(path: Path) -> float | None:
+        try:
+            with open(path / "cpu.stat") as f:
+                for line in f:
+                    if line.startswith("usage_usec"):
+                        return float(line.split()[1]) / 1e6
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
 
     def memory(self, wid: str) -> float | None:
         """A worker's anonymous memory, the containers it started included.
@@ -471,6 +540,17 @@ class CgroupReader:
         if wid not in self._mem:
             self._mem[wid] = worker_anon(self.base / wid, self._containers.get(wid, ()))
         return self._mem[wid]
+
+    def _read_usage(self, wid: str) -> float | None:
+        try:
+            with open(self.base / wid / "cpu.stat") as f:
+                for line in f:
+                    if line.startswith("usage_usec"):
+                        return float(line.split()[1]) / 1e6
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
+
 
 # ---------------------------------------------------------------------------
 # The scheduler
@@ -511,14 +591,22 @@ class BudgetScheduling:
         free_now = self._available()
         self.mem_target = max(1 * GB, free_now)
         self.mem_reserve = min(MEM_RESERVE_MAX, max(MEM_RESERVE_MIN, MEM_RESERVE_FRACTION * total))
+        self._started_at: dict[int, float] = {}        # index -> when it started running (not just committed)
         self._fc_mean = 0.0                            # forecast growth still to come, over the running tests
         self._mem_charged_workers = False
+        self.measured_load = 0.0       # test-attributable cores, smoothed
         # Reservations: acquired when a test is admitted (committed), released on
-        # completion or worker loss.  Invariant: sum(res_cpu) <= cpu_target at every point
-        # after admission.  Memory is not reserved -- admission checks it against
+        # completion or worker loss.  Invariant: sum(res_cpu) <= ncpus * cpu_overcommit at
+        # every point after admission.  Memory is not reserved -- admission checks it against
         # the forecast -- and res_mem is kept only to be logged.
         self.res_cpu: dict[int, float] = {}
         self.res_mem: dict[int, float] = {}
+        self.cpu_overcommit = float(opt("--budget-cpu-overcommit"))
+        self.cpu_ceiling = self.ncpus * max(1.0, self.cpu_overcommit)
+        self._services_path = None
+        base = cgroup_tests if cgroup_tests is not None else _cgroup_tests_path()
+        if base is not None and base.exists():
+            self._services_path = base.parent / "resource_gather"
 
         if model is None:
             default_cores, default_mem = opt("--budget-default-cost").split(",")
@@ -554,6 +642,7 @@ class BudgetScheduling:
         self._log(f"budget scheduler v8.2 (reservations, work-domain phases): ncpus={self.ncpus} cpu_target={self.cpu_target:.1f} "
                   f"mem_target={self.mem_target / GB:.1f}G (of {total / GB:.0f}G total, "
                   f"{free_now / GB:.0f}G free at start) depth={self.depth} "
+                  f"cpu_ceiling={self.cpu_ceiling:.1f} "
                   f"profile_entries={len(self.model.tests)}")
 
     # -- protocol: properties ----------------------------------------------
@@ -615,6 +704,7 @@ class BudgetScheduling:
                 requeue = queued
             for idx in queued:
                 self.committed_at.pop(idx, None)
+                self._started_at.pop(idx, None)
                 self.res_cpu.pop(idx, None)
                 self.res_mem.pop(idx, None)
             for idx in requeue:
@@ -629,6 +719,12 @@ class BudgetScheduling:
         if queued is not None and item_index in queued:
             queued.remove(item_index)
         self.committed_at.pop(item_index, None)
+        self._started_at.pop(item_index, None)
+        # The test committed behind it on this worker starts now.
+        nxt = next((i for i in (queued or ()) if i in self.committed_at), None)
+        if nxt is not None and nxt not in self._started_at:
+            now = self.now()
+            self._started_at[nxt] = now
         self.res_cpu.pop(item_index, None)
         self.res_mem.pop(item_index, None)
         self.stats["completed"] += 1
@@ -681,6 +777,7 @@ class BudgetScheduling:
             return
         nodes = [n for n in self.node2pending if not n.shutting_down]
         self.live.refresh(n.gateway.id for n in nodes)
+        self._refresh_measurement()
         self._refresh_forecasts()
 
         # Workers that are idle with a held test come first: they can start right away.
@@ -746,21 +843,46 @@ class BudgetScheduling:
 
         RAM: what the running tests are still forecast to take, plus this test's forecast
         peak, must fit what the machine has available less the reserve (see _forecast).
-        CPU: the reservations (natural parallelism) of what runs, plus this test's, must
-        stay within the CPU target.
+        CPU is compressible: reservations (natural parallelism) may exceed the
+        core count up to a hard ceiling, but only when the machine shows slack
+        (measured utilization below target, counting what was just admitted and is
+        not visible yet).  Above the ceiling, never.
         """
         cost = self._costs_for(idx)
+        now = self.now()
         # --- RAM: the running tests' forecast growth plus this test must fit what is free --
         # (less the reserve).
         if self._forecast_need(idx, node) > self._available() - self.mem_reserve:
             self.stats["rejected_mem"] += 1
             return False
 
-        # --- CPU: reservations within the target ---------------------------------
-        req = cost.cores + self._setup_for(idx, node)
-        if sum(self.res_cpu.values()) + req > self.cpu_target:
-            self.stats["rejected_cpu"] += 1
+        # --- CPU: reservations with a controlled over-commit band ---------------
+        setup_cores = self._setup_for(idx, node)
+        req = cost.cores + setup_cores
+        reserved = sum(self.res_cpu.values())
+        if reserved + req > self.cpu_ceiling:
+            self.stats["rejected_cpu_ceiling"] += 1
             return False
+        # Measured headroom, in both bands.  A reservation is the test's *average*
+        # parallelism, and a test's first seconds are its heaviest: process start,
+        # cluster start, compaction.  Reservations inside the core count can therefore
+        # still drive the machine past it, which is what the run's first half-minute
+        # used to look like.  So admission also needs the load we can actually see to
+        # leave room, counting what was admitted too recently to be visible yet.
+        # The measured-headroom gate.  Normally the machine itself is the limit, but a
+        # target set above the core count is a deliberate request to over-subscribe --
+        # to keep more work runnable than there are cores, so none ever idles waiting for
+        # the next test to be admitted -- and then the target is the limit.
+        headroom_limit = max(float(self.ncpus), self.cpu_target)
+        if self._estimate_now(now) + req > headroom_limit:
+            self.stats["rejected_no_headroom"] += 1
+            return False
+        if reserved + req > self.ncpus:
+            # over-commit band: only with evidence of real slack; recently admitted
+            # tests count at full weight so one stale reading cannot admit a wave.
+            if self._estimate_now(now) + req > self.cpu_target:
+                self.stats["rejected_cpu_band"] += 1
+                return False
         return True
 
     def _free_capacity(self, node: WorkerController | None = None) -> tuple[float, float]:
@@ -827,6 +949,51 @@ class BudgetScheduling:
     def _forecast_need(self, idx: int, node: WorkerController | None = None) -> float:
         """Memory the running tests are still going to take, with this one added."""
         return self._fc_mean + self._forecast_new(idx, node)
+
+    def _refresh_measurement(self) -> None:
+        """Test-attributable CPU load: all worker cgroups (hierarchical) plus the services cgroup."""
+        cores = None
+        if self.live.base is not None:
+            tests_rate = self.live.rate(self.live.base)
+            if tests_rate is not None:
+                cores = tests_rate
+            if self._services_path is not None:
+                svc = self.live.rate(self._services_path)
+                if svc is not None:
+                    cores = (cores or 0.0) + svc
+        if cores is None:
+            # no cgroup data (unit tests, foreign environment): fall back to per-node readings
+            cores = sum((self.live.cores(n.gateway.id) or 0.0) for n in self.node2pending)
+        self.measured_load = 0.5 * self.measured_load + 0.5 * cores
+
+    def _predict_running(self, idx: int, elapsed: float, tau: float = 0.0) -> float:
+        """Cores a running test is expected to use `tau` seconds from now."""
+        return self.model.predict_at(self.collection[idx], elapsed + tau, future=tau > 0)
+
+    def _inflight(self, now: float) -> list[int]:
+        return [i for i, t in self.committed_at.items() if self._ramp_weight(now, i) > 0.0]
+
+    def _inflight_pred(self, now: float, idx: int) -> float:
+        return self._predict_running(idx, now - self.committed_at[idx])
+
+    def _ramp_weight(self, now: float, idx: int) -> float:
+        """1 right after admission, fading to 0 as the measurement catches up.
+
+        The window is the shorter of RAMP_SECONDS and the test's expected wall
+        time: a 0.3 s test is over (and measured) long before 2 s have passed, and
+        with a dozen such completions per second a fixed window would charge more
+        in-flight cost than the whole budget.
+        """
+        started = self._started_at.get(idx)
+        if started is None:
+            return 0.0          # committed behind a running test: it burns nothing yet
+        window = max(0.2, min(RAMP_SECONDS, self._costs_for(idx).wall))
+        return max(0.0, 1.0 - (now - started) / window)
+
+    def _estimate_now(self, now: float) -> float:
+        """Measured load plus the not-yet-visible part of what was just admitted."""
+        inflight = sum(self._inflight_pred(now, i) * self._ramp_weight(now, i) for i in self._inflight(now))
+        return self.measured_load + inflight
 
     # -- selection ------------------------------------------------------------
 
@@ -948,15 +1115,21 @@ class BudgetScheduling:
         """Admit: acquire the reservations atomically with the decision (single scheduler thread)."""
         cost = self._costs_for(idx)
         fc_mean = self._forecast_new(idx, node)
+        # Committed behind a running test (the end of a run, --budget-depth > 1) it starts
+        # when that test ends, and its clocks with it.
+        behind = any(i in self.committed_at for i in self.node2pending.get(node, ()) if i != idx)
         self.committed_at[idx] = self.now()
+        if not behind:
+            self._started_at[idx] = self.committed_at[idx]
         self._fc_mean += fc_mean
         self.res_cpu[idx] = cost.cores
         self.res_mem[idx] = cost.mem
         self.stats["admitted"] += 1
         self._log(f"start {node.gateway.id} {self.collection[idx]} cores={cost.cores:.2f} "
                   f"mem={cost.mem / GB:.2f}G forecast={fc_mean / GB:.2f}G wall={cost.wall:.1f}s src={cost.source} "
-                  f"reserved={sum(self.res_cpu.values()):.1f}/{self.cpu_target:.1f} "
-                  f"mem_reserved={sum(self.res_mem.values()) / GB:.1f}/{self.mem_target / GB:.1f}G")
+                  f"reserved={sum(self.res_cpu.values()):.1f}/{self.cpu_ceiling:.1f} "
+                  f"mem_reserved={sum(self.res_mem.values()) / GB:.1f}/{self.mem_target / GB:.1f}G "
+                  f"measured={self.measured_load:.1f}")
 
     def _send(self, node: WorkerController, idx: int) -> None:
         self.node2pending[node].append(idx)

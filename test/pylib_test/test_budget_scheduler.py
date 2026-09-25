@@ -57,6 +57,7 @@ class FakeConfig:
             "--budget-depth": 1,
             "--budget-cpu-target": 0.9,
             "--mode": ["release"],
+            "--budget-cpu-overcommit": 1.5,
 
                     "--budget-default-cost": "2,2G",
             "--budget-k-sigma": 0.0,
@@ -202,7 +203,8 @@ def test_sending_a_successor_is_what_starts_a_test(tmp_path):
     # finishing the running test frees the budget: exactly one more starts
     sched.mark_test_complete(runner, running)
     assert len(committed(sched)) == 1
-    assert sched.stats["rejected_cpu"] >= 1
+    assert (sched.stats["rejected_cpu_band"] + sched.stats["rejected_cpu_ceiling"]
+            + sched.stats["rejected_no_headroom"]) >= 1
     assert waiter.sent or runner.sent  # somebody got the successor
 
 
@@ -378,6 +380,25 @@ def test_each_test_is_priced_for_its_own_build_mode(tmp_path):
     assert model.cost("cluster/test_x.py::test_y.dev.1").mem == pytest.approx(0.6e9)
 
 
+def test_a_test_committed_behind_a_running_one_starts_when_it_ends(tmp_path):
+    """Its clocks start when it really starts, not when it is committed."""
+    clock, avail, live = {"t": 0.0}, {"v": 40 * GB}, {}
+    col = [f"a.py::t{i}.dev.1" for i in range(3)]
+    model = make_model(tmp_path, 16, {profile_key(c): (0.1, 5 * GB, 300.0) for c in col})
+    sched = BudgetScheduling(FakeConfig(tmp_path, 1), model=model, ncpus=16, mem_total=64 * GB, cgroup_tests=NO_CGROUP,
+                             now=lambda: clock["t"], available_fn=lambda: avail["v"])
+    sched.live.memory = lambda wid: live.get(wid, 0.0)
+    node = FakeNode("gw0")
+    sched.add_node(node); sched.add_node_collection(node, col)
+    sched.schedule()
+    running, behind = sched.node2pending[node][0], sched.node2pending[node][1]
+    sched._commit(behind, node)                        # as a retirement or the end of a run does
+    assert running in sched._started_at and behind not in sched._started_at
+    clock["t"] = 600.0
+    sched.mark_test_complete(node, running)
+    assert sched._started_at[behind] == 600.0
+
+
 def test_remove_node_distinguishes_held_from_running(tmp_path):
     col = [f"a.py::t{i}.dev.1" for i in range(4)]
     sched, nodes = make_sched(tmp_path, col, {n: (3.0, 1e9, 1.0) for n in col})
@@ -404,6 +425,15 @@ def test_file_affinity_and_longest_first(tmp_path):
     # successors stay in the same file
     assert col[nodes[0].sent[1]].startswith("b.py")
     assert col[nodes[1].sent[1]].startswith("a.py")
+
+
+def test_a_test_is_predicted_at_its_average_parallelism(tmp_path):
+    """One number per test: CPU-seconds over wall time, and nothing once it is well past its wall."""
+    model = CostModel(tmp_path / "p.json", ncpus=8)
+    model.learn({"key": "dev|f.py::t", "wall": 6.0, "usage_sec": 12.0, "memory_peak": 1.2e9})
+    assert model.predict_at("f.py::t.dev.1", 0.5) == pytest.approx(2.0)
+    assert model.predict_at("f.py::t.dev.1", 5.0) == pytest.approx(2.0)
+    assert model.predict_at("f.py::t.dev.1", 30.0, future=True) == 0.0           # long past its wall
 
 
 def test_a_just_started_test_counts_at_its_forecast_not_what_it_holds(tmp_path):
@@ -521,6 +551,24 @@ def test_contention_gates_parallelism_learning(tmp_path):
     # an uncontended one does
     model.learn({"key": "dev|f.py::t", "wall": 20.0, "usage_sec": 100.0, "memory_peak": 1e8, "cpu_stall_frac": 0.0})
     assert e["cores"] == pytest.approx(0.7 * 4.0 + 0.3 * 5.0) and e["n_unc"] == 2
+
+
+def test_a_target_above_the_core_count_really_over_subscribes(tmp_path):
+    """Asking for more than the machine has is a request to keep work runnable, not idle.
+
+    Below 100 % the machine itself is the limit and the target only bites inside the
+    over-commit band; above it, the target has to move the hard gate too or the setting
+    does nothing at all.
+    """
+    col = [f"a.py::t{i}.dev.1" for i in range(12)]
+    costs = {n: (1.0, GB, 30.0) for n in col}
+    at100, _ = make_sched(tmp_path, col, costs, nodes=12, ncpus=4, mem_total=60 * GB,
+                          **{"--budget-cpu-target": 1.0})
+    sub = tmp_path / "over"; sub.mkdir()
+    at150, _ = make_sched(sub, col, costs, nodes=12, ncpus=4, mem_total=60 * GB,
+                          **{"--budget-cpu-target": 1.5})
+    assert len(committed(at150)) > len(committed(at100)), (
+        f"1.5 admitted {len(committed(at150))}, 1.0 admitted {len(committed(at100))}")
 
 
 def test_the_budget_is_measured_once_the_workers_are_up(tmp_path):
