@@ -526,9 +526,42 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
         session.exitstatus = EXIT_MAXFAIL_REACHED
 
 
+def _harden_allure_writer() -> None:
+    """Make allure's result writer recreate its directory before every write.
+
+    Any other pytest session started in this checkout while a run is active
+    (for example the framework's own unit tests without --noconftest) loads
+    this plugin too and wipes <tmpdir>/report at its session start.  allure
+    then raises FileNotFoundError from pytest_runtest_logfinish in a worker and
+    xdist treats that as a worker crash, losing the whole run.  Recreating the
+    directory costs one stat per write and makes the run survive it.
+    """
+    try:
+        from allure_commons import logger as allure_logger
+    except ImportError:
+        return
+    cls = allure_logger.AllureFileLogger
+    if getattr(cls, "_scylla_hardened", False):
+        return
+    def hardened(original):
+        def wrapper(self, *args, **kwargs):
+            try:
+                pathlib.Path(self._report_dir).mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            return original(self, *args, **kwargs)
+        return wrapper
+
+    for name in ("_report_item", "report_attached_file", "report_attached_data"):
+        if hasattr(cls, name):
+            setattr(cls, name, hardened(getattr(cls, name)))
+    cls._scylla_hardened = True
+
+
 def pytest_configure(config: pytest.Config) -> None:
     global _pytest_config
     _pytest_config = config
+    _harden_allure_writer()
     log_file_format = config.getini("log_file_format") or config.getini("log_format") or "%(asctime)s %(levelname)s %(name)s> %(message)s"
     log_file_level = config.getini("log_file_level") or config.getini("log_level") or "INFO"
 
@@ -838,6 +871,9 @@ def prepare_dirs(tempdir_base: pathlib.Path,
     for directory in ['report', 'ldap_instances']:
         full_path_directory = tempdir_base / directory
         prepare_dir(full_path_directory, '*', save_log_on_success)
+    # The master's own allure plugin created this run's directory at configure
+    # time, before the wipe above; put it back.
+    (tempdir_base / 'report' / f'allure_{HOST_ID}').mkdir(parents=True, exist_ok=True)
     for mode in modes:
         prepare_dir(tempdir_base / mode, "*.log", save_log_on_success)
         prepare_dir(tempdir_base / mode, "*.reject", save_log_on_success)
