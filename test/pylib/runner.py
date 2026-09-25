@@ -306,7 +306,7 @@ def pytest_runtest_protocol(item, nextitem):
 
     resource_gather = get_resource_gather(
         temp_dir=pathlib.Path(item.config.getoption("--tmpdir")),
-        is_switched_on=item.config.getoption("--gather-metrics"),
+        is_switched_on=needs_worker_cgroups(item.config),
         test=test_mock,
         worker_id=os.environ.get("PYTEST_XDIST_WORKER"),
     )
@@ -506,6 +506,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     is_xdist_worker = xdist.is_xdist_worker(request_or_session=session)
 
     gather_metrics = session.config.getoption("--gather-metrics")
+    worker_cgroups = needs_worker_cgroups(session.config)
     temp_dir = pathlib.Path(session.config.getoption("--tmpdir")).absolute()
 
     # Run stuff just once for the main pytest process (not in xdist workers).
@@ -528,16 +529,17 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         prepare_environment(
             tempdir_base=temp_dir,
             modes=get_modes_to_run(session.config),
-            gather_metrics=gather_metrics,
+            gather_metrics=worker_cgroups,
             save_log_on_success=session.config.getoption("--save-log-on-success"),
             toxiproxy_byte_limit= session.config.getoption("--byte-limit"),
         )
-    if gather_metrics:
+    if worker_cgroups:
         # In the master process, set up the cgroup hierarchy if test.py hasn't done it already.
         # Workers inherit SCYLLA_TEST_CGROUP_BASE_ENV from the master via environment inheritance.
         if not is_xdist_worker and SCYLLA_TEST_CGROUP_BASE_ENV not in os.environ:
             setup_cgroup(is_required=True)
         setup_worker_cgroup()
+    if gather_metrics:
         # System-wide resource metrics (CPU%, memory) are identical from any process.
         # Only the master needs to record them.
         if not is_xdist_worker:
@@ -546,6 +548,17 @@ def pytest_sessionstart(session: pytest.Session) -> None:
             async def stop_resource_monitor() -> None:
                 system_resource_monitor.stop()
             artifacts.add_exit_artifact(stop_resource_monitor)
+
+
+def needs_worker_cgroups(config: pytest.Config) -> bool:
+    """Whether each worker runs in a cgroup of its own that per-test measurements read.
+
+    --gather-metrics needs them for its metrics, and the budget scheduler reads its live
+    load and learns each test's cost from them; without them it sees no load at all, admits
+    on its priors alone and grows its pool without bound.  So the scheduler gets them
+    whatever --gather-metrics says, which only decides the system-wide monitor.
+    """
+    return bool(config.getoption("--gather-metrics") or config.getoption("--budget-scheduler"))
 
 
 @pytest.hookimpl(tryfirst=True)
