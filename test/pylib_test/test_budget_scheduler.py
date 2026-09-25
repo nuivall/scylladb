@@ -56,6 +56,7 @@ class FakeConfig:
     def __init__(self, tmp: Path, nodes: int, **overrides):
         self.opts = {
             "--budget-depth": 1,
+            "--budget-max-workers": 0,   # the pool stays as it starts unless a test grows it
             "--budget-cpu-target": 0.9,
             "--budget-psi-cpu": 1e9,     # pressure guard off unless a test lowers it
             "--budget-psi-mem": 1e9,
@@ -444,6 +445,90 @@ def test_release_guesses_price_dtests_as_the_heavy_tail_of_the_cluster_suite(tmp
     assert debug.cost("cluster/dtest/x_test.py::test_y.debug.1").mem == pytest.approx(8.5e9)
 
 
+def make_pool_sched(tmp: Path, clock: dict, avail: dict, n_start: int = 2, max_workers: int = 6, n_tests: int = 40,
+                    cores: float = 0.1, mem: float = 0.5 * GB, one_file: bool = True):
+    col = [f"a.py::t{i}.dev.1" if one_file else f"f{i}.py::t.dev.1" for i in range(n_tests)]
+    model = make_model(tmp, 16, {profile_key(c): (cores, mem, 60.0) for c in col})
+    spawned: list[int] = []
+    sched = BudgetScheduling(FakeConfig(tmp, n_start, **{"--budget-max-workers": max_workers}), model=model, ncpus=16,
+                             mem_total=64 * GB, cgroup_tests=NO_CGROUP, now=lambda: clock["t"],
+                             available_fn=lambda: avail["v"],
+                             spawn_worker=lambda: spawned.append(1) or f"gw{n_start + len(spawned) - 1}")
+    nodes = [FakeNode(f"gw{i}") for i in range(n_start)]
+    for node in nodes:
+        sched.add_node(node)
+        sched.add_node_collection(node, col)
+    sched.schedule()
+    return sched, nodes, col, spawned
+
+
+def arrive(sched: BudgetScheduling, nodes: list[FakeNode], col: list[str]) -> FakeNode:
+    """A spawned worker comes up and reports its collection, as xdist would."""
+    node = FakeNode(f"gw{len(nodes)}")
+    nodes.append(node)
+    sched.add_node(node)
+    sched.add_node_collection(node, col)
+    sched.schedule()
+    return node
+
+
+def test_the_pool_grows_one_worker_at_a_time_while_every_worker_is_busy(tmp_path):
+    """Start at the CPU count, add a worker only when all are busy, and only after the last one has collected."""
+    clock, avail = {"t": 0.0}, {"v": 40 * GB}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail)
+    assert len(committed(sched)) == 2 and len(spawned) == 1, "both workers busy: grow by one"
+    clock["t"] = 30.0
+    sched.check_schedule()
+    assert len(spawned) == 1, "the new worker has not collected yet"
+    new = arrive(sched, nodes, col)
+    assert any(i in sched.committed_at for i in sched.node2pending[new]), "the new worker gets work at once"
+    sched.check_schedule()
+    assert len(spawned) == 2, "collected and past the cooldown: the next one"
+    clock["t"] = 31.0
+    arrive(sched, nodes, col)
+    assert len(spawned) == 2, "within POOL_GROW_SECONDS of the last spawn"
+    for _ in range(10):
+        clock["t"] += 11.0
+        if sched._spawning:
+            arrive(sched, nodes, col)
+        sched.check_schedule()
+    assert len(sched._live_workers()) + sched._spawning <= 6, "never past --budget-max-workers"
+    assert sched.stats["pool_grown"] == 4
+
+
+def test_the_pool_does_not_grow_without_memory_for_a_worker_and_a_test(tmp_path):
+    clock, avail = {"t": 0.0}, {"v": 4.5 * GB}       # 1.3 GB after the 3.2 GB reserve: two 0.5 GB tests, no worker
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail)
+    assert len(committed(sched)) == 2
+    assert spawned == [], "no room for a worker and the test it would run"
+
+
+def test_a_worker_that_is_starting_is_charged_to_the_forecast(tmp_path):
+    clock, avail = {"t": 0.0}, {"v": 40 * GB}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail)
+    assert sched._spawning == 1
+    sched._refresh_forecasts()
+    starting = sched._mem_headroom()
+    arrive(sched, nodes, col)
+    sched._refresh_forecasts()
+    assert sched._spawning == 0
+    assert sched._mem_headroom() != starting
+
+
+def test_a_module_cluster_kept_for_the_next_test_is_not_worker_overhead(tmp_path):
+    """After a test of the same file the worker still holds that module's cluster, which the next test reuses."""
+    clock, avail, live = {"t": 0.0}, {"v": 40 * GB}, {}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, n_start=4, max_workers=8, n_tests=20)
+    sched.live.memory = lambda wid: live.get(wid, 0.0)
+    for node in nodes:
+        live[node.gateway.id] = 3 * GB
+    clock["t"] = 100.0
+    for node in nodes:
+        sched.mark_test_complete(node, next(i for i in sched.node2pending[node] if i in sched.committed_at))
+    assert sched._idle_mem == {}, "one file: every worker's 3 GB is its module's cluster"
+    assert sched.stats["recycled"] == 0
+
+
 def test_a_worker_holding_its_modules_cluster_adds_only_what_the_test_takes_beyond_it(tmp_path):
     """A peak is learned as the whole worker cgroup; what the worker holds already is not new memory."""
     avail, clock, live = {"v": 10 * GB}, {"t": 0.0}, {}
@@ -502,6 +587,19 @@ def test_each_test_is_priced_for_its_own_build_mode(tmp_path):
     assert model.cost("cluster/test_x.py::test_y.dev.1").mem == pytest.approx(0.6e9)
     assert model.kind_dist("dtest", model.mode_of("debug|cluster/dtest/x.py::t")) is not None
     assert model.kind_dist("dtest", model.mode_of("dev|cluster/dtest/x.py::t")) is None
+
+
+def test_a_crash_clone_does_not_finish_a_spawn(tmp_path):
+    """xdist replaces a crashed worker on its own; only the worker we spawned ends our spawn."""
+    clock, avail = {"t": 0.0}, {"v": 40 * GB}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail)
+    assert sched._spawning == 1                       # gw2 is on its way
+    clone = FakeNode("gw9")
+    sched.add_node(clone)
+    sched.add_node_collection(clone, col)
+    assert sched._spawning == 1, "gw9 is xdist's clone, not the worker we started"
+    arrive(sched, nodes, col)
+    assert sched._spawning == 0
 
 
 def test_a_test_committed_behind_a_running_one_starts_when_it_ends(tmp_path):

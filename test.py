@@ -122,7 +122,7 @@ def parse_cmd_line() -> argparse.Namespace:
                         help='Quiet reporting')
     parser.add_argument('--cpu-aware', action=argparse.BooleanOptionalAction, default=True,
                         help="Admit tests against a CPU/RAM budget learned from previous runs (profile in "
-                             "<tmpdir>/budget_profile.json). With it, --jobs defaults to twice the number of CPUs. "
+                             "<tmpdir>/budget_profile.json). With it, --jobs defaults to the number of CPUs. "
                              "--no-cpu-aware restores the fixed-size worksteal scheduling.")
     parser.add_argument('--cpu-target', action="store", type=float, default=0.95,
                         help="Fraction of CPUs the cpu-aware scheduler tries to keep busy with test load (default 0.95)")
@@ -232,6 +232,8 @@ def parse_cmd_line() -> argparse.Namespace:
             print(palette.fail("Failed to read output of `ninja mode_list`: please run ./configure.py first"))
             raise
 
+    # Workers the budget scheduler may grow the pool to (0: the pool stays as it starts).
+    args.max_workers = 0
     if not args.jobs:
         if not args.cpus:
             nr_cpus = multiprocessing.cpu_count()
@@ -240,10 +242,11 @@ def parse_cmd_line() -> argparse.Namespace:
                 ['taskset', '-c', args.cpus, 'python3', '-c',
                  'import os; print(len(os.sched_getaffinity(0)))']))
         if args.cpu_aware:
-            # Two workers per CPU: the budget scheduler, not the number of workers, decides
-            # how many tests run at once, and a worker blocked on a test that does not fit
-            # yet must not leave a CPU idle.  It watches memory, so memory is its call.
-            args.jobs = max(1, int(2 * nr_cpus * args.threads_multiplier))
+            # One worker per CPU to start with; the budget scheduler adds workers while every
+            # one of them is busy and the machine has CPU and memory to spare, up to three per
+            # CPU.  It measures what a worker costs, so memory is its call.
+            args.jobs = max(1, int(nr_cpus * args.threads_multiplier))
+            args.max_workers = max(args.jobs, int(3 * nr_cpus * args.threads_multiplier))
         else:
             args.jobs = ThreadsCalculator(args.modes, args.threads_multiplier).get_number_of_threads(nr_cpus)
 
@@ -373,7 +376,8 @@ def run_pytest(options: argparse.Namespace) -> int:
     if options.cpu_aware:
         args.extend(['--budget-scheduler',
                      f'--budget-cpu-target={options.cpu_target}',
-                     f'--budget-depth={options.budget_depth}'])
+                     f'--budget-depth={options.budget_depth}',
+                     f'--budget-max-workers={options.max_workers}'])
         if options.profile_file:
             args.append(f'--budget-profile={options.profile_file}')
     else:

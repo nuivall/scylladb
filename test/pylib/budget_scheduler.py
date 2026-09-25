@@ -138,6 +138,17 @@ STATIC_MEM_MODE_ALIAS = {"sanitize": "debug", "coverage": "debug"}
 # only cost parallelism: on a 33 GB machine with 22 GB free it left 17 GB for debug
 # cluster tests that take 7-11 GB each.  Admission watches RAM itself: a test starts only
 # while the machine has its predicted peak available.
+# The pool starts at one worker per CPU and grows, one worker at a time, while every worker
+# is busy and the machine has CPU and memory to spare.  Starting 64 workers at once had half
+# of them holding a test and their last module's memory for most of the run: the run kept
+# 33-36 tests going on average.  A new worker imports the framework and collects the whole
+# suite, about a core and a quarter of a gigabyte for several seconds, so the next one waits
+# until it has collected, and at least POOL_GROW_SECONDS.  Until then its expected overhead is
+# charged to the forecast, so admission cannot hand that memory to a test.  A worker's
+# overhead is measured, not assumed: what its cgroup holds the moment each test starts.
+POOL_GROW_SECONDS = 10.0
+POOL_SPAWN_TIMEOUT = 120.0      # a spawned worker that has not collected by then is written off
+POOL_WORKER_PRIOR = 0.25 * 10**9
 # Admission gates on measured headroom: what the machine has available, minus what the
 # tests admitted recently have not taken yet, minus this reserve.  Reservations alone were
 # blind to memory no test owns -- workers growing from 0.2 to 0.5 GB each over a run, module
@@ -730,7 +741,7 @@ class BudgetScheduling:
 
     def __init__(self, config: pytest.Config, log: Any = None, *, model: CostModel | None = None,
                  ncpus: int | None = None, mem_total: float | None = None, cgroup_tests: Path | None = None,
-                 now: Any = time.monotonic, available_fn: Any = None):
+                 now: Any = time.monotonic, available_fn: Any = None, spawn_worker: Any = None):
         from xdist.workermanage import parse_tx_spec_config
         self.config = config
         self.numnodes = len(parse_tx_spec_config(config))
@@ -741,6 +752,12 @@ class BudgetScheduling:
         self._available = available_fn or (lambda: psutil.virtual_memory().available)
         opt = config.getoption
         self.depth = max(1, int(opt("--budget-depth")))
+        self.max_workers = int(opt("--budget-max-workers"))
+        self._spawn_worker = spawn_worker or self._spawn_xdist_worker
+        self._spawning_ids: set[str] = set()      # workers this scheduler started that have not collected yet
+        self._last_spawn = -math.inf
+        self._idle_mem: dict[str, float] = {}     # worker id -> what its cgroup held when its last test started
+        self._last_file_done: dict[WorkerController, str] = {}  # worker -> file of the last test it finished
         self.cpu_target_frac = float(opt("--budget-cpu-target"))
         self.cpu_target = self.cpu_target_frac * self.ncpus
         self.cpu_target_floor = 0.5 * self.ncpus
@@ -755,6 +772,7 @@ class BudgetScheduling:
         free_now = self._available()
         self.mem_target = max(1 * GB, free_now)
         self.mem_reserve = min(MEM_RESERVE_MAX, max(MEM_RESERVE_MIN, MEM_RESERVE_FRACTION * total))
+        self._mem_at_commit: dict[int, float] = {}     # index -> its worker's firm memory when it started
         self._mem_track: dict[int, list[float]] = {}   # index -> [most it has held, when that last grew]
         self._started_at: dict[int, float] = {}        # index -> when it started running (not just committed)
         self._fc_mean = 0.0                            # forecast growth still to come, over the running tests
@@ -885,6 +903,9 @@ class BudgetScheduling:
 
     def add_node_collection(self, node: WorkerController, collection: Sequence[str]) -> None:
         assert node in self.node2pending
+        # Only a worker this scheduler spawned: xdist also brings up a clone of a crashed
+        # worker, and counting that one would write off a spawn still under way.
+        self._spawning_ids.discard(node.gateway.id)
         if self.collection_is_completed and self.collection is not None:
             if list(collection) != self.collection:
                 from xdist.report import report_collection_diff
@@ -895,6 +916,8 @@ class BudgetScheduling:
 
     def remove_node(self, node: WorkerController) -> str | None:
         queued = self.node2pending.pop(node, [])
+        self._idle_mem.pop(node.gateway.id, None)
+        self._last_file_done.pop(node, None)
         self.node_file.pop(node, None)
         was_shutdown = node in self.shutdown_sent
         self.shutdown_sent.discard(node)
@@ -911,6 +934,7 @@ class BudgetScheduling:
             for idx in queued:
                 self.committed_at.pop(idx, None)
                 self._started_at.pop(idx, None)
+                self._mem_at_commit.pop(idx, None)
                 self._mem_track.pop(idx, None)
                 if self._scout.get(self._file_of(idx)) == idx:
                     del self._scout[self._file_of(idx)]
@@ -927,11 +951,13 @@ class BudgetScheduling:
     # -- protocol: test lifecycle -------------------------------------------
 
     def mark_test_complete(self, node: WorkerController, item_index: int, duration: float | None = None) -> None:
+        self._last_file_done[node] = self._file_of(item_index)
         queued = self.node2pending.get(node)
         if queued is not None and item_index in queued:
             queued.remove(item_index)
         self.committed_at.pop(item_index, None)
         self._started_at.pop(item_index, None)
+        self._mem_at_commit.pop(item_index, None)
         self._mem_track.pop(item_index, None)
         if self._scout.get(self._file_of(item_index)) == item_index:
             self._scout_done.add(self._file_of(item_index))
@@ -1096,6 +1122,7 @@ class BudgetScheduling:
                     self.shutdown_sent.add(node)
                 else:
                     self._send(node, cand)
+        self._maybe_grow_pool(pressure)
 
     def _grow_ceiling(self) -> None:
         """Let the admission ceiling rise with time, and never below what already runs."""
@@ -1280,6 +1307,69 @@ class BudgetScheduling:
                 running.append((idx, held))
         for idx, held in running:
             self._fc_mean += max(0.0, self._forecast(idx, held) - held) * self._growth_weight(idx, now)
+        if self._spawning and now - self._last_spawn > POOL_SPAWN_TIMEOUT:
+            self._log(f"pool: {self._spawning} spawned worker(s) never collected; writing them off")
+            self._spawning_ids.clear()
+        self._fc_mean += self._spawning * self.worker_cost()
+
+    @property
+    def _spawning(self) -> int:
+        return len(self._spawning_ids)
+
+    def worker_cost(self) -> float:
+        """What a worker holds between tests: the median over the workers measured, the prior before any is."""
+        return max(POOL_WORKER_PRIOR, statistics.median(self._idle_mem.values())) if self._idle_mem else POOL_WORKER_PRIOR
+
+    def _live_workers(self) -> list[WorkerController]:
+        return [n for n in self.node2pending if n not in self.shutdown_sent and not n.shutting_down]
+
+    def _maybe_grow_pool(self, pressure: bool) -> None:
+        """Add one worker when every worker is busy and the machine has CPU and memory to spare."""
+        if self.max_workers <= 0 or self._spawning or not self.pending_set:
+            return
+        now = self.now()
+        if now - self._last_spawn < POOL_GROW_SECONDS:
+            return
+        live = self._live_workers()
+        if len(live) >= self.max_workers:
+            return
+        # A worker with nothing running is free, or blocked on a test that does not fit;
+        # either way another worker would not start anything more.
+        if any(not self._committed(n) for n in live):
+            return
+        if pressure or self._estimate_now(now) + 1.0 > self.cpu_target:
+            return
+        head = next((lst[0] for lst in self.files.values() if lst and not self._waits_for_first_run(lst[0])), None)
+        if head is None:
+            return
+        fc = self._forecast(head, 0.0, self._file_held.get(self._file_of(head), 0.0))
+        cost = self.worker_cost()
+        headroom = self._mem_headroom()
+        if headroom < cost + fc:
+            return
+        wid = self._spawn_worker()
+        if not wid:
+            return
+        self._spawning_ids.add(wid)
+        self._last_spawn = now
+        self.stats["pool_grown"] += 1
+        self._fc_mean += cost
+        self._log(f"pool: {len(live)} -> {len(live) + 1} workers (all busy, load {self._estimate_now(now):.1f}/"
+                  f"{self.cpu_target:.1f} cores, {headroom / GB:.1f}G headroom, a worker holds {cost / GB:.2f}G)")
+
+    def _spawn_xdist_worker(self) -> str | None:
+        """Start one more xdist worker, the way xdist replaces a crashed one; return its id."""
+        dsession = self.config.pluginmanager.getplugin("dsession")
+        template = next(iter(self.node2pending), None)
+        if dsession is None or getattr(dsession, "shuttingdown", True) or template is None:
+            return None
+        import execnet
+        spec = execnet.XSpec(template.gateway.spec._spec)
+        spec.id = None
+        dsession.nodemanager.group.allocate_id(spec)
+        clone = dsession.nodemanager.setup_node(spec, dsession.queue.put)
+        dsession._active_nodes.add(clone)
+        return spec.id
 
     def _forecast_new(self, idx: int, node: WorkerController | None = None) -> float:
         """What a test that has not started will add, conditioned on its file's running tests.
@@ -1615,12 +1705,19 @@ class BudgetScheduling:
         # run whose worker died, which now measures for the rest.
         self._claim_first_run(idx)
         fc_mean = self._forecast_new(idx, node)
-        # Committed behind a running test (the end of a run, --budget-depth > 1) it starts
-        # when that test ends, and its clocks with it.
+        # Committed behind a running test (the end of a run,
+        # --budget-depth > 1) it starts when that test ends, and its clocks with it.
         behind = any(i in self.committed_at for i in self.node2pending.get(node, ()) if i != idx)
         self.committed_at[idx] = self.now()
         if not behind:
             self._started_at[idx] = self.committed_at[idx]
+        self._mem_at_commit[idx] = self.live.memory(node.gateway.id) or 0.0
+        if (self._mem_at_commit[idx] > 0 and not self._committed(node)
+                and self._last_file_done.get(node) != self._file_of(idx)):
+            # Nothing else runs on it, and its last module has been torn down (the test it
+            # starts now is from another file): what it holds now is its own overhead.  After
+            # a test of the same file it would be that module's cluster, which this test reuses.
+            self._idle_mem[node.gateway.id] = self._mem_at_commit[idx]
         self._mem_track[idx] = [0.0, self.committed_at[idx]]
         self._fc_mean += fc_mean
         self.res_cpu[idx] = cost.cores

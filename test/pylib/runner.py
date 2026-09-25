@@ -94,6 +94,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      help="Fraction of the CPUs the budget scheduler tries to keep busy")
     parser.addoption("--budget-depth", action="store", type=int, default=1,
                      help="Tests a worker may have queued behind the running one (1 = exact gating)")
+    parser.addoption("--budget-max-workers", action="store", type=int, default=0,
+                     help="Workers the budget scheduler may grow the pool to while every worker is busy and "
+                          "the machine has CPU and memory to spare (0 = the pool stays as it starts)")
     parser.addoption("--budget-default-cost", action="store", default="2,2G",
                      help="Cores,memory assumed for a test with no profile and no static hint")
     parser.addoption("--budget-k-sigma", action="store", type=float, default=0.5,
