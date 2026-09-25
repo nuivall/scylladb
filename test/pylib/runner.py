@@ -85,8 +85,19 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      help="Specific byte limit for failure injection (random by default)")
     parser.addoption("--gather-metrics", action=BooleanOptionalAction, default=False,
                      help='Switch on gathering cgroup metrics')
+    parser.addoption("--budget-scheduler", action=BooleanOptionalAction, default=True,
+                     help="Admit tests against a CPU/RAM budget learned from previous runs "
+                          "(see test/pylib/budget_scheduler.py).  --no-budget-scheduler restores xdist worksteal.")
     parser.addoption("--budget-profile", action="store", default=None,
                      help="Path of the budget profile JSON (default: <tmpdir>/budget_profile.json)")
+    parser.addoption("--budget-cpu-target", action="store", type=float, default=0.95,
+                     help="Fraction of the CPUs the budget scheduler tries to keep busy")
+    parser.addoption("--budget-depth", action="store", type=int, default=1,
+                     help="Tests a worker may have queued behind the running one (1 = exact gating)")
+    parser.addoption("--budget-default-cost", action="store", default="2,2G",
+                     help="Cores,memory assumed for a test with no profile and no static hint")
+    parser.addoption("--budget-k-sigma", action="store", type=float, default=0.5,
+                     help="Safety margin in standard deviations added to the predicted cores")
     parser.addoption('--random-seed', action="store",
                      help="Random number generator seed to be used by boost tests")
 

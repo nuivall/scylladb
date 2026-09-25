@@ -120,6 +120,16 @@ def parse_cmd_line() -> argparse.Namespace:
                         help='Verbose reporting')
     parser.add_argument('--quiet', '-q', action='store_true', default=False,
                         help='Quiet reporting')
+    parser.add_argument('--cpu-aware', action=argparse.BooleanOptionalAction, default=True,
+                        help="Admit tests against a CPU/RAM budget learned from previous runs (profile in "
+                             "<tmpdir>/budget_profile.json). With it, --jobs defaults to twice the number of CPUs. "
+                             "--no-cpu-aware restores the fixed-size worksteal scheduling.")
+    parser.add_argument('--cpu-target', action="store", type=float, default=0.95,
+                        help="Fraction of CPUs the cpu-aware scheduler tries to keep busy with test load (default 0.95)")
+    parser.add_argument('--profile-file', action="store", default=None,
+                        help="Path of the cpu-aware scheduler profile (default: <tmpdir>/budget_profile.json)")
+    parser.add_argument('--budget-depth', action="store", type=int, default=1,
+                        help="cpu-aware scheduler: tests a worker may queue behind the running one (default 1)")
     threads = parser.add_mutually_exclusive_group(required=False)
     threads.add_argument('--jobs', '-j', action="store", type=int,
                         help="Number of jobs to use for running the tests")
@@ -229,7 +239,13 @@ def parse_cmd_line() -> argparse.Namespace:
             nr_cpus = int(subprocess.check_output(
                 ['taskset', '-c', args.cpus, 'python3', '-c',
                  'import os; print(len(os.sched_getaffinity(0)))']))
-        args.jobs = ThreadsCalculator(args.modes, args.threads_multiplier).get_number_of_threads(nr_cpus)
+        if args.cpu_aware:
+            # Two workers per CPU: the budget scheduler, not the number of workers, decides
+            # how many tests run at once, and a worker blocked on a test that does not fit
+            # yet must not leave a CPU idle.  It watches memory, so memory is its call.
+            args.jobs = max(1, int(2 * nr_cpus * args.threads_multiplier))
+        else:
+            args.jobs = ThreadsCalculator(args.modes, args.threads_multiplier).get_number_of_threads(nr_cpus)
 
     if not args.coverage_modes and args.coverage:
         args.coverage_modes = list(args.modes)
@@ -354,6 +370,14 @@ def run_pytest(options: argparse.Namespace) -> int:
         args.append(f'--random-seed={options.random_seed}')
     if options.gather_metrics:
         args.append('--gather-metrics')
+    if options.cpu_aware:
+        args.extend(['--budget-scheduler',
+                     f'--budget-cpu-target={options.cpu_target}',
+                     f'--budget-depth={options.budget_depth}'])
+        if options.profile_file:
+            args.append(f'--budget-profile={options.profile_file}')
+    else:
+        args.append('--no-budget-scheduler')
     if options.coverage:
         args.append('--coverage')
         args.extend(f'--coverage-mode={mode}' for mode in options.coverage_modes)
