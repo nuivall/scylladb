@@ -56,6 +56,8 @@ class FakeConfig:
         self.opts = {
             "--budget-depth": 1,
             "--budget-cpu-target": 0.9,
+            "--budget-psi-cpu": 1e9,     # pressure guard off unless a test lowers it
+            "--budget-psi-mem": 1e9,
             "--mode": ["release"],
             "--budget-cpu-overcommit": 1.5,
 
@@ -425,6 +427,39 @@ def test_file_affinity_and_longest_first(tmp_path):
     # successors stay in the same file
     assert col[nodes[0].sent[1]].startswith("b.py")
     assert col[nodes[1].sent[1]].startswith("a.py")
+
+
+def test_pressure_guard_shrinks_target(tmp_path, monkeypatch):
+    import test.pylib.budget_scheduler as bs
+    col = [f"a.py::t{i}.dev.1" for i in range(4)]
+    monkeypatch.setattr(bs, "read_psi", lambda kind: 50.0 if kind == "cpu" else 0.0)
+    sched, nodes = make_sched(tmp_path, col, {n: (0.5, 1e8, 1.0) for n in col}, nodes=2, ncpus=4,
+                              **{"--budget-psi-cpu": 20.0})
+    assert sched.stats["pressure_cuts"] == 1
+    assert sched.cpu_target == pytest.approx(0.9 * 4 * 0.9)
+    # pressure gates only the over-commit band: 4 x 0.5 cores fit within 4 CPUs and all start
+    assert len(committed(sched)) == 2 and sched.stats["forced"] == 0   # 2 workers, one running test each
+
+
+def test_target_recovers_after_pressure(tmp_path, monkeypatch):
+    import test.pylib.budget_scheduler as bs
+    col = [f"a.py::t{i}.dev.1" for i in range(4)]
+    clock = {"t": 1000.0}
+    psi = {"cpu": 50.0}
+    monkeypatch.setattr(bs, "read_psi", lambda kind: psi["cpu"] if kind == "cpu" else 0.0)
+    model = make_model(tmp_path, 4, {profile_key(n): (0.5, 1e8, 1.0) for n in col})
+    sched = BudgetScheduling(FakeConfig(tmp_path, 1, **{"--budget-psi-cpu": 20.0}), model=model, ncpus=4,
+                             mem_total=20 * GB, cgroup_tests=NO_CGROUP, now=lambda: clock["t"])
+    node = FakeNode("gw0")
+    sched.add_node(node); sched.add_node_collection(node, col); sched.schedule()
+    cut = sched.cpu_target
+    assert cut == pytest.approx(3.6 * 0.9)
+    psi["cpu"] = 0.0
+    sched.check_schedule()
+    assert sched.cpu_target == cut                  # cooldown not over yet
+    clock["t"] += 11
+    sched.check_schedule()
+    assert sched.cpu_target == pytest.approx(min(3.6, cut + 0.08))
 
 
 def test_a_test_is_predicted_at_its_average_parallelism(tmp_path):

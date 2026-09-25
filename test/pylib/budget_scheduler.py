@@ -30,8 +30,9 @@ plus the services test.py starts), adds the predicted cost of tests admitted in
 the last couple of seconds that the measurement cannot show yet, and admits the
 next test only if that plus the test's own cost stays under the target.  A test
 is predicted from its average parallelism over its whole run: per-test CPU curves
-were measured against it and bought nothing.  One test is always allowed to start
-when nothing is running, so a run can never dead-lock.
+were measured against it and bought nothing.  A kernel pressure-stall (PSI) guard shrinks the target
+when the machine is oversubscribed and grows it back when calm, and one test is
+always allowed to start when nothing is running so a run can never dead-lock.
 """
 
 from __future__ import annotations
@@ -67,6 +68,8 @@ GB = 1e9
 PROFILE_FILENAME = "budget_profile.json"
 SAMPLES_GLOB = "budget_samples_*.jsonl"
 
+# Minimum spacing between two consecutive PSI-triggered budget cuts.
+PRESSURE_COOLDOWN = 10.0
 EMA_ALPHA = 0.3
 MEM_DECAY = 0.7
 # A run whose cgroup waited for a CPU more than this share of its wall time was
@@ -465,6 +468,22 @@ def _ema(old: float | None, new: float, n: int) -> float:
 # ---------------------------------------------------------------------------
 
 
+def read_psi(kind: str, path: Path | None = None) -> float:
+    """Return the ``some avg10`` percentage from /proc/pressure/<kind>, or from a
+    cgroup's own <path>/<kind>.pressure when a path is given (the stalls of *our*
+    tests, not of everything else on the machine), or 0 if unavailable."""
+    try:
+        with open(path / f"{kind}.pressure" if path is not None else f"/proc/pressure/{kind}") as f:
+            for line in f:
+                if line.startswith("some"):
+                    for tok in line.split():
+                        if tok.startswith("avg10="):
+                            return float(tok[6:])
+    except OSError:
+        pass
+    return 0.0
+
+
 class CgroupReader:
     """Reads live CPU (cores) and memory (bytes) of a worker's cgroup from the controller."""
 
@@ -579,7 +598,9 @@ class BudgetScheduling:
         self._available = available_fn or (lambda: psutil.virtual_memory().available)
         opt = config.getoption
         self.depth = max(1, int(opt("--budget-depth")))
-        self.cpu_target = float(opt("--budget-cpu-target")) * self.ncpus
+        self.cpu_target_frac = float(opt("--budget-cpu-target"))
+        self.cpu_target = self.cpu_target_frac * self.ncpus
+        self.cpu_target_floor = 0.5 * self.ncpus
         total = mem_total if mem_total is not None else psutil.virtual_memory().total
         # What the tests may reserve: the memory that is actually free when the run
         # starts.  Not the memory the machine has - if something else
@@ -594,6 +615,8 @@ class BudgetScheduling:
         self._started_at: dict[int, float] = {}        # index -> when it started running (not just committed)
         self._fc_mean = 0.0                            # forecast growth still to come, over the running tests
         self._mem_charged_workers = False
+        self.psi_cpu_limit = float(opt("--budget-psi-cpu"))
+        self.psi_mem_limit = float(opt("--budget-psi-mem"))
         self.measured_load = 0.0       # test-attributable cores, smoothed
         # Reservations: acquired when a test is admitted (committed), released on
         # completion or worker loss.  Invariant: sum(res_cpu) <= ncpus * cpu_overcommit at
@@ -633,6 +656,8 @@ class BudgetScheduling:
         self._costs: dict[int, Cost] = {}
         self._costs_by_file: dict[str, set[int]] = defaultdict(set)   # file -> indices with a cached cost
         self._keys: dict[int, str] = {}                 # index -> profile key
+        self._last_pressure_cut = -math.inf
+        self._psi = (0.0, 0.0)
         self.stats = defaultdict(int)
         self._tick_timer: threading.Timer | None = None
         self._stopped = False
@@ -642,7 +667,7 @@ class BudgetScheduling:
         self._log(f"budget scheduler v8.2 (reservations, work-domain phases): ncpus={self.ncpus} cpu_target={self.cpu_target:.1f} "
                   f"mem_target={self.mem_target / GB:.1f}G (of {total / GB:.0f}G total, "
                   f"{free_now / GB:.0f}G free at start) depth={self.depth} "
-                  f"cpu_ceiling={self.cpu_ceiling:.1f} "
+                  f"cpu_ceiling={self.cpu_ceiling:.1f} psi_cpu_limit={self.psi_cpu_limit:.0f} "
                   f"profile_entries={len(self.model.tests)}")
 
     # -- protocol: properties ----------------------------------------------
@@ -779,6 +804,7 @@ class BudgetScheduling:
         self.live.refresh(n.gateway.id for n in nodes)
         self._refresh_measurement()
         self._refresh_forecasts()
+        pressure = self._pressure_guard()
 
         # Workers that are idle with a held test come first: they can start right away.
         def prio(n: WorkerController) -> tuple[int, float]:
@@ -801,7 +827,7 @@ class BudgetScheduling:
                 limit = 1 if phase == "prime" else self.depth + 1
                 while len(self.node2pending[node]) < limit:
                     held = self._held(node)
-                    if held is not None and not self._fits(held, node):
+                    if held is not None and not self._fits(held, node, pressure):
                         self.stats["held_waiting"] += 1
                         break
                     cand = self._pick(node)
@@ -838,15 +864,15 @@ class BudgetScheduling:
                 else:
                     self._send(node, cand)
 
-    def _fits(self, idx: int, node: WorkerController) -> bool:
+    def _fits(self, idx: int, node: WorkerController, pressure: bool) -> bool:
         """Admission.
 
         RAM: what the running tests are still forecast to take, plus this test's forecast
         peak, must fit what the machine has available less the reserve (see _forecast).
         CPU is compressible: reservations (natural parallelism) may exceed the
         core count up to a hard ceiling, but only when the machine shows slack
-        (measured utilization below target, counting what was just admitted and is
-        not visible yet).  Above the ceiling, never.
+        (low PSI and measured utilization below target, counting what was just
+        admitted and is not visible yet).  Above the ceiling, never.
         """
         cost = self._costs_for(idx)
         now = self.now()
@@ -878,8 +904,12 @@ class BudgetScheduling:
             self.stats["rejected_no_headroom"] += 1
             return False
         if reserved + req > self.ncpus:
-            # over-commit band: only with evidence of real slack; recently admitted
-            # tests count at full weight so one stale reading cannot admit a wave.
+            # over-commit band: only while the tests' own cgroup shows no CPU pressure,
+            # and with evidence of real slack; recently admitted tests count at full
+            # weight so one stale reading cannot admit a wave.
+            if pressure:
+                self.stats["rejected_pressure"] += 1
+                return False
             if self._estimate_now(now) + req > self.cpu_target:
                 self.stats["rejected_cpu_band"] += 1
                 return False
@@ -994,6 +1024,34 @@ class BudgetScheduling:
         """Measured load plus the not-yet-visible part of what was just admitted."""
         inflight = sum(self._inflight_pred(now, i) * self._ramp_weight(now, i) for i in self._inflight(now))
         return self.measured_load + inflight
+
+    def _pressure_guard(self) -> bool:
+        # CPU pressure of the tests' own cgroup tree when available: on a pinned or
+        # shared machine the system-wide file also counts stalls on other cores and
+        # of other processes.  Memory pressure is machine-wide by nature.
+        psi_cpu = read_psi("cpu", self.live.base) if self.live.base is not None and (self.live.base / "cpu.pressure").exists() else read_psi("cpu")
+        psi_mem = read_psi("memory")
+        self._psi = (psi_cpu, psi_mem)
+        now = self.now()
+        # Not the run queue: it was tried as a second signal and carried nothing PSI does
+        # not.  PSI sat at 2% whether the queue read 8 or 28, and the queue is over the
+        # core count a quarter of the time on a busy box simply because it counts the
+        # tasks on the CPUs as well.
+        if psi_cpu <= self.psi_cpu_limit and psi_mem <= self.psi_mem_limit:
+            # Calm again: grow the target back slowly towards the configured one
+            # (additive-increase / multiplicative-decrease, like TCP).
+            full = self.cpu_target_frac * self.ncpus
+            if self.cpu_target < full and now - self._last_pressure_cut >= PRESSURE_COOLDOWN:
+                self.cpu_target = min(full, self.cpu_target + 0.02 * self.ncpus)
+            return False
+        if now - self._last_pressure_cut >= PRESSURE_COOLDOWN:
+            old = self.cpu_target
+            self.cpu_target = max(self.cpu_target_floor, self.cpu_target * 0.9)
+            self._last_pressure_cut = now
+            self.stats["pressure_cuts"] += 1
+            self._log(f"pressure: psi cpu={psi_cpu:.1f}% mem={psi_mem:.1f}%; "
+                      f"cpu target {old:.1f} -> {self.cpu_target:.1f}")
+        return True
 
     # -- selection ------------------------------------------------------------
 
