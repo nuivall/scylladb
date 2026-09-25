@@ -150,6 +150,10 @@ CLUSTER_KEY = pytest.StashKey[ScyllaCluster | None]()
 
 FAILED_TEST_DIR = "failed_test"
 
+# (resource_gather, test_mock, first_in_file) of the test currently running in this
+# worker, so pytest_runtest_makereport can attach the measured cost to the
+# teardown report (the budget scheduler on the controller learns from it).
+RESOURCE_GATHER_KEY = pytest.StashKey[tuple]()
 # (path, build mode, run id): each --repeat copy of a file is a module of its own, with
 # its own fixtures, so the copy after it on the same worker pays the setup again.
 _last_test_file: tuple | None = None
@@ -277,6 +281,7 @@ def pytest_runtest_protocol(item, nextitem):
         test=test_mock,
         worker_id=os.environ.get("PYTEST_XDIST_WORKER"),
     )
+    item.stash[RESOURCE_GATHER_KEY] = (resource_gather, test_mock, first_in_file)
     try:
         resource_gather.setup_test_tracking()
         resource_gather.cgroup_monitor()
@@ -324,6 +329,7 @@ def pytest_runtest_protocol(item, nextitem):
                 except Exception as e:
                     logger.debug("budget sample not recorded for %s: %s", item.nodeid, e)
             finally:
+                item.stash[RESOURCE_GATHER_KEY] = None
                 resource_gather.teardown_test_tracking()
 
 
@@ -772,6 +778,19 @@ def pytest_runtest_makereport(item, call):
 
     # Store report per phase for use by fixtures and hooks
     item.stash.setdefault(PHASE_REPORT_KEY, {})[report.when] = report
+
+    if report.when == "teardown":
+        # Ship the measured cost to the xdist controller with the last report of
+        # the test, so the budget scheduler can refine its estimates during the run.
+        tracked = item.stash.get(RESOURCE_GATHER_KEY, None)
+        if tracked is not None:
+            resource_gather, test_mock, first_in_file = tracked
+            try:
+                metrics = resource_gather.get_test_metrics()
+                report.scylla_cost = _cost_sample(item, resource_gather, metrics, first_in_file,
+                                                  time.time() - test_mock.time_start)
+            except Exception as e:
+                logger.debug("budget cost not attached for %s: %s", item.nodeid, e)
 
     # Optionally save test failure logs to files
     if report.failed or item.config.getoption("--save-log-on-success"):

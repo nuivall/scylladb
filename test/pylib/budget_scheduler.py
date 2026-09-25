@@ -543,6 +543,7 @@ class BudgetScheduling:
         self._queued_wall: dict[int, float] = {}
         self.committed_at: dict[int, float] = {}        # index -> monotonic time of commit
         self._costs: dict[int, Cost] = {}
+        self._costs_by_file: dict[str, set[int]] = defaultdict(set)   # file -> indices with a cached cost
         self._keys: dict[int, str] = {}                 # index -> profile key
         self.stats = defaultdict(int)
         self._tick_timer: threading.Timer | None = None
@@ -975,12 +976,25 @@ class BudgetScheduling:
         cost = self._costs.get(idx)
         if cost is None:
             cost = self._costs[idx] = self.model.cost(self.collection[idx])
+            self._costs_by_file[self._file_of(idx)].add(idx)
         return cost
 
     def _setup_for(self, idx: int, node: WorkerController) -> float:
         if self.node_file.get(node) == self._file_of(idx):
             return 0.0
         return self.model.setup_cost(self.collection[idx])
+
+    def learn(self, sample: dict[str, Any]) -> None:
+        """In-run learning from a finished test's measured cost."""
+        self.model.learn(sample)
+        # Everything not started yet, held tests included: a held test starts on what its
+        # file's tests have just measured.  Only this file's costs: walking every cached
+        # cost on every report was quadratic in the suite, on the loop that also schedules.
+        cached = self._costs_by_file.get(file_of_key(sample["key"]), set())
+        for idx in list(cached):
+            if idx not in self.committed_at:
+                self._costs.pop(idx, None)
+                cached.discard(idx)
 
     def _source_histogram(self) -> dict[str, int]:
         hist: dict[str, int] = defaultdict(int)
@@ -1128,6 +1142,16 @@ def pytest_xdist_make_scheduler(config: pytest.Config, log: Any) -> Any:
         return None
     _scheduler = BudgetScheduling(config, log)
     return _scheduler
+
+
+@pytest.hookimpl
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    cost = getattr(report, "scylla_cost", None)
+    if cost and _scheduler is not None:
+        try:
+            _scheduler.learn(cost)
+        except Exception as e:  # never break reporting
+            logger.debug("budget: in-run learn failed: %s", e)
 
 
 @pytest.hookimpl(trylast=True)

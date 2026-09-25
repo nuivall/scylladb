@@ -349,6 +349,17 @@ def test_a_merged_samples_file_is_not_merged_again(tmp_path):
     assert CostModel(tmp_path / "profile.json", 8).tests["dev|f.py::t"]["n"] == 1
 
 
+def test_learning_drops_only_the_learned_files_cached_costs(tmp_path):
+    col = ["a.py::t1.dev.1", "a.py::t2.dev.1", "b.py::t1.dev.1"]
+    sched, nodes = make_sched(tmp_path, col, {n: (0.5, 1e9, 1.0) for n in col}, nodes=1)
+    for idx in range(3):
+        sched._costs_for(idx)
+    pending = [i for i in range(3) if i not in sched.committed_at]
+    sched.learn({"key": "dev|a.py::t1", "wall": 1.0, "usage_sec": 0.5, "memory_peak": 1e9})
+    for idx in pending:
+        assert (idx in sched._costs) == (sched._file_of(idx) != "dev|a.py"), idx
+
+
 def test_a_first_in_file_sample_still_teaches_the_peak(tmp_path):
     """A small file is first-in-file on every worker; its tests' peaks must still be learned."""
     model = CostModel(tmp_path / "p.json", ncpus=8)
