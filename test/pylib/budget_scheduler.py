@@ -892,6 +892,10 @@ class BudgetScheduling:
 
         tmpdir = Path(opt("--tmpdir")).absolute()
         self._log_file = open(tmpdir / f"budget_scheduler_{HOST_ID}.txt", "a")
+        self._csv_file = open(tmpdir / f"budget_load_{HOST_ID}.csv", "a")
+        if self._csv_file.tell() == 0:
+            self._csv_file.write("time,pred_cores,live_cores,cpu_target,pred_mem,live_mem,available,"
+                                 "committed,held,psi_cpu,psi_mem,pending,sys_cores,measured,pred_now,runnable,reserved_cpu,reserved_mem\n")
         self._log(f"budget scheduler v8.2 (reservations, work-domain phases): ncpus={self.ncpus} cpu_target={self.cpu_target:.1f} "
                   f"mem_target={self.mem_target / GB:.1f}G (of {total / GB:.0f}G total, "
                   f"{free_now / GB:.0f}G free at start) depth={self.depth} "
@@ -1189,6 +1193,7 @@ class BudgetScheduling:
                 else:
                     self._send(node, cand)
         self._maybe_grow_pool(pressure)
+        self._write_csv(pressure)
 
     def _grow_ceiling(self) -> None:
         """Let the admission ceiling rise with time, and never below what already runs."""
@@ -1598,6 +1603,10 @@ class BudgetScheduling:
         """Measured load plus the not-yet-visible part of what was just admitted."""
         inflight = sum(self._inflight_pred(now, i) * self._ramp_weight(now, i) for i in self._inflight(now))
         return self.measured_load + inflight
+
+    def _predicted_at(self, now: float, tau: float) -> float:
+        """Sum over running tests of their expected load tau seconds from now."""
+        return sum(self._predict_running(i, now - t, tau) for i, t in self.committed_at.items())
 
     def _system_busy_cores(self) -> float:
         now = self.now()
@@ -2051,10 +2060,11 @@ class BudgetScheduling:
         if self._tick_timer is not None:
             self._tick_timer.cancel()
         self._log(f"done: {dict(self.stats)}")
-        try:
-            self._log_file.flush()
-        except Exception:
-            pass
+        for f in (self._log_file, self._csv_file):
+            try:
+                f.flush()
+            except Exception:
+                pass
 
     # -- logging ------------------------------------------------------------------------
 
@@ -2065,6 +2075,29 @@ class BudgetScheduling:
         except Exception:
             pass
         self.log(msg)
+
+    def _write_csv(self, pressure: bool) -> None:
+        now = self.now()
+        if now - getattr(self, "_csv_at", 0.0) < 1.0:
+            return                      # the loop runs many times a second; the chart wants one row
+        self._csv_at = now
+        try:
+            pred_cores = sum(self._costs_for(i).cores for i in self.committed_at)
+            live_cores = sum((self.live.cores(n.gateway.id) or 0.0) for n in self.node2pending)
+            pred_mem = sum(self._costs_for(i).mem for i in self.committed_at)
+            live_mem = sum((self.live.memory(n.gateway.id) or 0.0) for n in self.node2pending)
+            held = sum(1 for n in self.node2pending if self._held(n) is not None)
+            psi_cpu, psi_mem = getattr(self, "_psi", (0.0, 0.0))
+            self._csv_file.write(f"{time.time():.1f},{pred_cores:.2f},{live_cores:.2f},{self.cpu_target:.2f},"
+                                 f"{pred_mem / GB:.2f},{live_mem / GB:.2f},{psutil.virtual_memory().available / GB:.2f},"
+                                 f"{len(self.committed_at)},{held},{psi_cpu:.1f},{psi_mem:.1f},{len(self.pending_set)},"
+                                 f"{getattr(self, '_sys_sample', (0, 0.0))[1]:.2f},{self.measured_load:.2f},"
+                                 f"{self._predicted_at(self.now(), 0):.2f},{self.runnable:.1f},"
+                                 f"{sum(self.res_cpu.values()):.2f},{sum(self.res_mem.values()) / GB:.2f}\n")
+            self._csv_file.flush()
+        except Exception:
+            pass
+
 
 # ---------------------------------------------------------------------------
 # Profile merge at the end of a run
