@@ -85,6 +85,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      help="Specific byte limit for failure injection (random by default)")
     parser.addoption("--gather-metrics", action=BooleanOptionalAction, default=False,
                      help='Switch on gathering cgroup metrics')
+    parser.addoption("--budget-profile", action="store", default=None,
+                     help="Path of the budget profile JSON (default: <tmpdir>/budget_profile.json)")
     parser.addoption('--random-seed', action="store",
                      help="Random number generator seed to be used by boost tests")
 
@@ -136,6 +138,28 @@ PHASE_REPORT_KEY = pytest.StashKey[dict[str, pytest.CollectReport]]()
 CLUSTER_KEY = pytest.StashKey[ScyllaCluster | None]()
 
 FAILED_TEST_DIR = "failed_test"
+
+# (path, build mode, run id): each --repeat copy of a file is a module of its own, with
+# its own fixtures, so the copy after it on the same worker pays the setup again.
+_last_test_file: tuple | None = None
+
+
+def _cost_sample(item: pytest.Item, resource_gather, metrics, first_in_file: bool, wall: float) -> dict:
+    from test.pylib.budget_scheduler import profile_key  # lazy: the module is also a pytest plugin
+    sample = {
+        "key": profile_key(item.nodeid),
+        "wall": wall,
+        "usage_sec": getattr(metrics, "usage_sec", None),
+        # the anonymous peak: what the test itself took.  memory.peak was tried and it
+        # inherits whatever cache the worker already held, so a two-second boost case
+        # learned a footprint of eight gigabytes.  The cache is the kernel's to manage.
+        "memory_peak": getattr(resource_gather, "anon_peak", None) or getattr(metrics, "memory_peak", None),
+        "first_in_file": first_in_file,
+        # contention: share of the test's wall time its cgroup spent waiting for a CPU
+        "cpu_stall_frac": (getattr(resource_gather, "cpu_stall_sec", None) / wall
+                           if getattr(resource_gather, "cpu_stall_sec", None) is not None and wall > 0 else None),
+    }
+    return sample
 
 
 def make_failed_test_dir(config: pytest.Config, build_mode: str, test_name: str) -> pathlib.Path:
@@ -229,8 +253,12 @@ def _build_test_mock(item: pytest.Item) -> SimpleNamespace:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_protocol(item, nextitem):
+    global _last_test_file
     test_mock = _build_test_mock(item)
     test_mock.time_start = time.time()
+    this_file = (item.path, item.stash.get(BUILD_MODE, None), item.stash.get(RUN_ID, None))
+    first_in_file = this_file != _last_test_file
+    _last_test_file = this_file
 
     resource_gather = get_resource_gather(
         temp_dir=pathlib.Path(item.config.getoption("--tmpdir")),
@@ -277,6 +305,13 @@ def pytest_runtest_protocol(item, nextitem):
                     metrics=test_metrics,
                     success=success
                 )
+                try:
+                    from test.pylib.budget_scheduler import append_sample
+                    append_sample(pathlib.Path(item.config.getoption("--tmpdir")).absolute(),
+                                  _cost_sample(item, resource_gather, test_metrics, first_in_file,
+                                               test_metrics.time_taken))
+                except Exception as e:
+                    logger.debug("budget sample not recorded for %s: %s", item.nodeid, e)
             finally:
                 resource_gather.teardown_test_tracking()
 
