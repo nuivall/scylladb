@@ -424,6 +424,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     if not is_xdist_worker:
         from test.pylib.cpp.boost import sweep_listing_caches  # lazy: cpp.base imports this module
         sweep_listing_caches()
+        # Containers the tests start are charged to their worker through this registry
+        # (test/pylib/container_accounting.py); the workers inherit where it is.
+        from test.pylib.container_accounting import REGISTRY_ENV
+        registry = temp_dir / "budget_containers"
+        shutil.rmtree(registry, ignore_errors=True)
+        registry.mkdir(parents=True, exist_ok=True)
+        os.environ[REGISTRY_ENV] = str(registry)
         prepare_environment(
             tempdir_base=temp_dir,
             modes=get_modes_to_run(session.config),
