@@ -142,6 +142,8 @@ class ResourceGatherOn(ResourceGatherRecord):
     all Scylla node processes running under that worker, giving accurate memory readings.
     """
 
+    _warned_no_local_peak = False
+
     def __init__(self, temp_dir: Path, test: SimpleNamespace, worker_id: str | None = None):
         super().__init__(temp_dir, test, worker_id)
         self.pool = ThreadPoolExecutor(max_workers=1)
@@ -181,12 +183,31 @@ class ResourceGatherOn(ResourceGatherRecord):
             sqlite_writer.close()
 
     def setup_test_tracking(self) -> None:
-        # Open a fresh FD on memory.peak so the kernel resets its per-FD peak tracker
-        # to the current memory. Reading this FD later returns the peak memory since it
-        # was opened, i.e., the peak during this test only.
+        # memory.peak keeps a peak per open file description, but only once that
+        # description has been armed by writing to it.  Opening the file read-only and
+        # reading it returns the cgroup's peak since it was created, which for a worker
+        # that runs thousands of tests is the high-water mark of everything it has ever
+        # run, not of this test.  So open it read-write, write to arm the local peak,
+        # and read back through the same file object.  Kernels without the reset fail
+        # the write; there we keep the old behaviour rather than lose the metric.
         memory_peak_path = self.cgroup_path / 'memory.peak'
         if memory_peak_path.exists():
-            self._memory_peak_fd = open(memory_peak_path, 'r')
+            try:
+                fd = open(memory_peak_path, 'r+')
+                fd.write('0')
+                fd.flush()
+                self._memory_peak_fd = fd
+            except OSError:
+                # No per-description peak on this kernel: memory_peak will be the worker's
+                # high-water mark rather than this test's.  Say so once, loudly enough to
+                # explain why every test on a worker reports the same number.
+                self._memory_peak_fd = open(memory_peak_path, 'r')
+                if not ResourceGatherOn._warned_no_local_peak:
+                    ResourceGatherOn._warned_no_local_peak = True
+                    self.logger.warning(
+                        "%s cannot be reset per test (kernel without a writable memory.peak); "
+                        "recorded memory_peak is the worker's peak, not the test's",
+                        memory_peak_path)
 
         # Snapshot cpu.stat at the start of the test. Unlike memory.peak, cpu.stat
         # has no per-FD reset mechanism — values are cumulative for the cgroup's
