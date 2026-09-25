@@ -137,9 +137,17 @@ STATIC_MEM_MODE_ALIAS = {"sanitize": "debug", "coverage": "debug"}
 # fixed share of RAM kept aside on top of that (12% of the machine, and a 70% ceiling)
 # only cost parallelism: on a 33 GB machine with 22 GB free it left 17 GB for debug
 # cluster tests that take 7-11 GB each.  Admission watches RAM itself: a test starts only
-# while the machine has its predicted peak available.  Workers are sent home one per this
-# many seconds, so that one retirement is visible before the next.
+# while the machine has its predicted peak available.  When no waiting test fits in what
+# is available, idle workers -- each holding its last module's cluster -- are sent home,
+# one per this many seconds, so that one retirement is visible before the next.
 RETIRE_COOLDOWN = 10.0
+# An idle worker already holds the next test it will run, and xdist cannot take a test back:
+# the shutdown that sends the worker home is also what starts that test.  So the controller
+# first leaves a flag in this directory, one file per worker naming the held test, and the
+# worker skips a test it finds flagged (see take_eviction).  It exits without running it, and
+# the test goes back to the queue.  Killing the worker instead would make xdist replace it
+# and count a crash.
+EVICT_ENV = "SCYLLA_TEST_BUDGET_EVICT_DIR"
 # The pool starts at one worker per CPU and grows, one worker at a time, while every worker
 # is busy and the machine has CPU and memory to spare.  Starting 64 workers at once had half
 # of them holding a test and their last module's memory for most of the run: the run kept
@@ -776,6 +784,7 @@ class BudgetScheduling:
         self._idle_since: dict[WorkerController, float] = {}    # worker -> since when nothing runs on it
         self._last_file_done: dict[WorkerController, str] = {}  # worker -> file of the last test it finished
         self._draining: set[WorkerController] = set()          # workers to shut down after their held test
+        self._evicted: dict[WorkerController, int] = {}         # workers sent home told to skip their held test
         self._pool_floor = 0                      # fewest workers the pool keeps: a share of its start
         self._pool_start = 0                      # workers the run started with
         self.cpu_target_frac = float(opt("--budget-cpu-target"))
@@ -904,7 +913,8 @@ class BudgetScheduling:
     def tests_finished(self) -> bool:
         if not self.collection_is_completed or self.collection is None:
             return False
-        if self.pending_set:
+        if self.pending_set or self._evicted:
+            # An evicted test is queued again only once its worker says it skipped it.
             return False
         for node, queued in self.node2pending.items():
             if queued and not node.shutting_down:
@@ -944,9 +954,11 @@ class BudgetScheduling:
         self.node_file.pop(node, None)
         was_shutdown = node in self.shutdown_sent
         self.shutdown_sent.discard(node)
+        # Evicted, and gone before it said it skipped the test: that test never started.
+        evicted = self._evicted.pop(node, None) is not None
         crashitem = None
         if queued:
-            committed = queued if was_shutdown else queued[:-1]
+            committed = queued if was_shutdown and not evicted else queued[:-1]
             if committed:
                 # The first committed item was running when the worker died.
                 crashitem = self.collection[queued[0]]
@@ -974,6 +986,9 @@ class BudgetScheduling:
     # -- protocol: test lifecycle -------------------------------------------
 
     def mark_test_complete(self, node: WorkerController, item_index: int, duration: float | None = None) -> None:
+        if self._evicted.get(node) == item_index:
+            self._requeue_evicted(node, item_index)
+            return
         self._last_file_done[node] = self._file_of(item_index)
         queued = self.node2pending.get(node)
         if queued is not None and item_index in queued:
@@ -997,6 +1012,21 @@ class BudgetScheduling:
         if self._first_run.get(self._key_of(item_index)) == item_index:
             self._first_run_done.add(self._key_of(item_index))
         self.stats["completed"] += 1
+        self.check_schedule()
+
+    def _requeue_evicted(self, node: WorkerController, idx: int) -> None:
+        """The evicted worker skipped its held test: queue it again, at the front."""
+        del self._evicted[node]
+        queued = self.node2pending.get(node)
+        if queued is not None and idx in queued:
+            queued.remove(idx)
+        if self._scout.get(self._file_of(idx)) == idx:
+            del self._scout[self._file_of(idx)]
+        if self._first_run.get(self._key_of(idx)) == idx:
+            del self._first_run[self._key_of(idx)]
+        self._add_pending(idx, front=True)
+        self.stats["evicted_requeued"] += 1
+        self._log(f"requeued {self.collection[idx]}: {node.gateway.id} exited without running it")
         self.check_schedule()
 
     def mark_test_pending(self, item: str) -> None:
@@ -1051,6 +1081,7 @@ class BudgetScheduling:
         self.live.refresh(n.gateway.id for n in nodes)
         self._refresh_measurement()
         self._refresh_forecasts()
+        self._ram_guard()
         self._recycle_bloated_worker()
         self._maybe_shrink_pool()
         pressure = self._pressure_guard()
@@ -1581,6 +1612,69 @@ class BudgetScheduling:
             self._sys_sample = (now, pct * self.ncpus / 100.0)
         return self._sys_sample[1]
 
+    def _ram_guard(self) -> None:
+        """Send home an idle worker while the run is stalled on memory.
+
+        Idle workers keep their heap and whatever their last module left behind, memory no
+        test can use.  When no held test fits the forecast, one such worker goes per
+        cooldown.  An idle worker usually holds its next test, and a shutdown alone would
+        start it, so that worker is told to skip it first (see EVICT_ENV): it exits without
+        running the test, and the test goes back to the queue for a worker that has room.
+        """
+        now = self.now()
+        if now - self._last_retire < RETIRE_COOLDOWN:
+            return
+        room = self._available() - self.mem_reserve
+        waiting = [(n, i) for n in self._live_workers() if (i := self._held(n)) is not None
+                   and i not in self.committed_at]
+        if not waiting:
+            return
+        needs = [self._forecast_need(i, n) + self._hold_reservation(i)[1] for n, i in waiting]
+        if min(needs) <= room:
+            return
+        why = (f"{self._available() / GB:.1f}G available, {max(0.0, room) / GB:.1f}G after the reserve; "
+               f"the smallest of {len(waiting)} held tests needs {min(needs) / GB:.1f}G")
+        if self._retire_idle_worker(why):
+            self._last_retire = now
+
+    def _retire_idle_worker(self, why: str) -> bool:
+        """Send home the idle worker holding the most memory, if the pool may shrink.
+
+        A worker holding no test goes first, as nothing has to be queued again.  Never below
+        the pool's floor, and with a fixed pool (-j), which cannot grow back, never below the
+        size it started with.  The worker exits cleanly, so xdist neither replaces it nor
+        counts it as a crash.
+        """
+        live = self._live_workers()
+        floor = self._pool_floor if self.max_workers > 0 else max(self._pool_floor, self._pool_start)
+        if len(live) <= max(1, floor):
+            return False
+        idle = [n for n in live if not self._committed(n)]
+        if not idle:
+            return False
+        node = max(idle, key=lambda n: (self._held(n) is None, self.live.memory(n.gateway.id) or 0.0))
+        held = self._held(node)
+        wid = node.gateway.id
+        if held is not None:
+            if not request_eviction(wid, self.collection[held]):
+                return False
+            self._evicted[node] = held
+            self.held_since.pop(held, None)
+        node.shutdown()
+        self.shutdown_sent.add(node)
+        self._draining.discard(node)
+        self._idle_since.pop(node, None)
+        mem = self.live.memory(wid) or 0.0
+        if held is None:
+            self.stats["retired"] += 1
+            self._log(f"retiring {wid}, holding {mem / GB:.1f}G ({why}); {len(live) - 1} workers left")
+        else:
+            self.stats["evicted"] += 1
+            self._log(f"evicting {wid}, holding {mem / GB:.1f}G, on purpose: it holds {self.collection[held]}, "
+                      f"which cannot start ({why}); the worker exits without running it and the test is "
+                      f"queued again; {len(live) - 1} workers left")
+        return True
+
     def _pressure_guard(self) -> bool:
         # CPU pressure of the tests' own cgroup tree when available: on a pinned or
         # shared machine the system-wide file also counts stalls on other cores and
@@ -1792,7 +1886,7 @@ class BudgetScheduling:
 
     def _committed(self, node: WorkerController) -> list[int]:
         queued = self.node2pending.get(node) or []
-        return queued if node in self.shutdown_sent else queued[:-1]
+        return queued if node in self.shutdown_sent and node not in self._evicted else queued[:-1]
 
     def _commit(self, idx: int, node: WorkerController) -> None:
         """Admit: acquire the reservations atomically with the decision (single scheduler thread)."""
@@ -1989,6 +2083,33 @@ def _cgroup_tests_path() -> Path | None:
         return CGROUP_TESTS if CGROUP_TESTS.exists() else None
     except Exception:
         return None
+
+
+def request_eviction(worker_id: str, nodeid: str) -> bool:
+    """Tell a worker to skip the test it holds; False when no worker could see it."""
+    directory = os.environ.get(EVICT_ENV)
+    if not directory:
+        return False
+    try:
+        (Path(directory) / worker_id).write_text(nodeid)
+    except OSError:
+        return False
+    return True
+
+
+def take_eviction(worker_id: str | None, nodeid: str) -> bool:
+    """On a worker: whether the controller told it to skip this test, consuming the flag."""
+    directory = os.environ.get(EVICT_ENV)
+    if not directory or worker_id is None:
+        return False
+    flag = Path(directory) / worker_id
+    try:
+        if flag.read_text() != nodeid:
+            return False
+        flag.unlink()
+    except OSError:
+        return False
+    return True
 
 
 def samples_path(tmpdir: Path) -> Path:
