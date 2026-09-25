@@ -138,6 +138,7 @@ MEM_RESERVE_MAX = 4 * 10**9
 # A test admitted less than this long ago is not visible in the measured load
 # yet; its predicted cost is added on top of the measurement.
 RAMP_SECONDS = 2.0
+START_CEILING = 2.0       # cores admissible in the very first pass, before anything is measured
 
 
 def profile_key(nodeid: str) -> str:
@@ -626,6 +627,20 @@ class BudgetScheduling:
         self.res_mem: dict[int, float] = {}
         self.cpu_overcommit = float(opt("--budget-cpu-overcommit"))
         self.cpu_ceiling = self.ncpus * max(1.0, self.cpu_overcommit)
+        # Admission ramp.  Reservations may only *grow* at this rate, so the run
+        # cannot commit two dozen held tests in one pass before a single one of them
+        # is visible in the measurement.  It has to be slow: a reservation is a test's
+        # average parallelism over its whole life, and a test that averages 0.2 cores
+        # over ninety seconds still burns one or two while its node boots, so the first
+        # admissions are worth several times what they reserve.  Completions do not lower the ceiling, so a
+        # worker that finishes a test refills its slot with no delay: the ramp limits
+        # growth of the running set, never churn within it.
+        self.burst_rate = max(0.0, float(opt("--budget-burst"))) * self.ncpus
+        self._ceiling = START_CEILING if self.burst_rate > 0 else self.cpu_ceiling
+        # Anchored on the first scheduling pass, not on construction: the workers spend
+        # their first half-minute collecting, and the ramp must start when the first
+        # test could actually be admitted.
+        self._ceiling_t: float | None = None
         self._services_path = None
         base = cgroup_tests if cgroup_tests is not None else _cgroup_tests_path()
         if base is not None and base.exists():
@@ -801,6 +816,7 @@ class BudgetScheduling:
         if self.collection is None or self._stopped:
             return
         nodes = [n for n in self.node2pending if not n.shutting_down]
+        self._grow_ceiling()
         self.live.refresh(n.gateway.id for n in nodes)
         self._refresh_measurement()
         self._refresh_forecasts()
@@ -864,6 +880,19 @@ class BudgetScheduling:
                 else:
                     self._send(node, cand)
 
+    def _grow_ceiling(self) -> None:
+        """Let the admission ceiling rise with time, and never below what already runs."""
+        if self.burst_rate <= 0:
+            return
+        now = self.now()
+        if self._ceiling_t is None:
+            self._ceiling_t = now
+            return
+        self._ceiling = min(self.cpu_ceiling,
+                            max(self._ceiling + self.burst_rate * max(0.0, now - self._ceiling_t),
+                                sum(self.res_cpu.values())))
+        self._ceiling_t = now
+
     def _fits(self, idx: int, node: WorkerController, pressure: bool) -> bool:
         """Admission.
 
@@ -888,6 +917,9 @@ class BudgetScheduling:
         reserved = sum(self.res_cpu.values())
         if reserved + req > self.cpu_ceiling:
             self.stats["rejected_cpu_ceiling"] += 1
+            return False
+        if self.burst_rate > 0 and reserved + req > self._ceiling:
+            self.stats["rejected_burst"] += 1
             return False
         # Measured headroom, in both bands.  A reservation is the test's *average*
         # parallelism, and a test's first seconds are its heaviest: process start,

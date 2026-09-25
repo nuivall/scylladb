@@ -100,6 +100,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      help="Safety margin in standard deviations added to the predicted cores")
     parser.addoption("--budget-cpu-overcommit", action="store", type=float, default=1.5,
                      help="Hard ceiling for CPU reservations as a multiple of the CPU count; above 1.0 only with measured slack")
+    parser.addoption("--budget-burst", action="store", type=float, default=0.05,
+                     help="How fast CPU reservations may grow, as a fraction of the CPU count per second "
+                          "(0 = no ramp); stops the run from committing every held test before the first "
+                          "measurement exists")
     parser.addoption("--budget-psi-cpu", action="store", type=float, default=25.0,
                      help="/proc/pressure/cpu 'some avg10' percentage above which admission pauses and the CPU target shrinks")
     parser.addoption("--budget-psi-mem", action="store", type=float, default=5.0,

@@ -60,6 +60,7 @@ class FakeConfig:
             "--budget-psi-mem": 1e9,
             "--mode": ["release"],
             "--budget-cpu-overcommit": 1.5,
+    "--budget-burst": 0.0,          # ramp off by default in tests; one test exercises it
 
                     "--budget-default-cost": "2,2G",
             "--budget-k-sigma": 0.0,
@@ -527,6 +528,41 @@ def test_selection_counts_what_other_workers_already_hold(tmp_path):
     big = {i for i, n in enumerate(col) if "big" in n}
     assert len(set(chosen) & big) <= 1, "only one worker may hold a 12 GB test on a 20 GB budget"
     assert len(chosen) == 3, "the other workers still get work, just lighter work"
+
+
+def test_admission_ramps_instead_of_bursting(tmp_path):
+    """Reservations may only grow at the burst rate, so a cold start cannot commit everything at once.
+
+    Completions do not lower the ceiling, so refilling a freed slot is immediate: the
+    ramp limits growth of the running set, not churn within it.
+    """
+    clock = {"t": 1000.0}
+    col = [f"a.py::t{i}.dev.1" for i in range(8)]
+    model = make_model(tmp_path, 4, {profile_key(n): (1.0, 1e8, 10.0) for n in col})
+    sched = BudgetScheduling(FakeConfig(tmp_path, 8, **{"--budget-burst": 0.25}), model=model, ncpus=4,
+                             mem_total=20 * GB, cgroup_tests=NO_CGROUP, now=lambda: clock["t"],
+                             available_fn=lambda: 20 * GB)
+    nodes = [FakeNode(f"gw{i}") for i in range(8)]
+    for n in nodes:
+        sched.add_node(n); sched.add_node_collection(n, col)
+    sched.schedule()
+    assert len(committed(sched)) == 2              # 2 cores of ceiling on the first pass
+    clock["t"] += 2.0                              # + 2 s x 1 core/s
+    sched.check_schedule()
+    assert len(committed(sched)) == 4
+    clock["t"] += 10.0                             # ramp no longer binds; the CPU band does
+    sched.live.cores = lambda wid: 0.5             # the four running tests burn their core each: no slack
+    sched.measured_load = 4.0
+    sched.check_schedule()
+    assert len(committed(sched)) == 4              # 4 cores on 4 CPUs, the over-commit band needs slack
+    assert sched.stats["rejected_burst"] > 0
+    # a completion frees a slot and the replacement starts at once, with no new ramp
+    idx = min(committed(sched), key=lambda i: sched.committed_at[i])
+    node = next(n for n in sched.node2pending if idx in sched.node2pending[n])
+    sched.live.cores = lambda wid: 3 / 8           # three tests still burning their core
+    sched.measured_load = 3.0
+    sched.mark_test_complete(node, idx)
+    assert len(committed(sched)) == 4
 
 
 def test_passed_over_test_still_runs(tmp_path):
