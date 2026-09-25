@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from test.pylib.budget_scheduler import (
+    EVICT_ENV,
     HELD_FORCE_SECONDS,
     STATIC_MEM_CPP,
     STATIC_MEM_GDB,
@@ -28,6 +29,7 @@ from test.pylib.budget_scheduler import (
     CostModel,
     parse_seastar_args,
     profile_key,
+    take_eviction,
 )
 
 NO_CGROUP = Path("/nonexistent/cgroup")
@@ -693,6 +695,84 @@ def _scout_and_held_sched(tmp_path, clock, avail, live, ready_running=False):
     return sched, nodes
 
 
+def test_retiring_a_worker_never_starts_its_held_test(tmp_path, monkeypatch):
+    """Without a way to tell it to skip its test, a worker holding one is never sent home:
+    the shutdown would start the test, waiting or not."""
+    monkeypatch.delenv(EVICT_ENV, raising=False)
+    clock, avail = {"t": 5.0}, {"v": 0.2 * GB}          # short: nothing held fits
+    live = {"gw1": 2 * GB, "gw2": 1 * GB}
+    sched, nodes = _scout_and_held_sched(tmp_path, clock, avail, live)
+    sched._ram_guard()
+    assert sched.stats["retired"] == 0
+    assert not any(n._shutdown_sent for n in nodes) and 1 not in sched.committed_at and 2 not in sched.committed_at
+
+
+def test_a_stalled_run_sends_home_an_idle_worker_that_holds_nothing(tmp_path):
+    """Its heap and leftovers are memory no test can use, and nothing starts when it goes."""
+    clock, avail = {"t": 5.0}, {"v": 0.2 * GB}
+    live = {"gw1": 2 * GB, "gw2": 1 * GB, "gw3": 1.5 * GB}
+    sched, nodes = _scout_and_held_sched(tmp_path, clock, avail, live)
+    spare = FakeNode("gw3")
+    sched.add_node(spare)
+    sched._ram_guard()
+    assert sched.stats["retired"] == 1 and spare._shutdown_sent
+    assert not any(n._shutdown_sent for n in nodes)
+
+
+def _evicting_sched(tmp_path, monkeypatch):
+    evictions = tmp_path / "evictions"
+    evictions.mkdir()
+    monkeypatch.setenv(EVICT_ENV, str(evictions))
+    clock, avail = {"t": 5.0}, {"v": 0.2 * GB}          # short: nothing held fits
+    live = {"gw1": 2 * GB, "gw2": 1 * GB}
+    sched, nodes = _scout_and_held_sched(tmp_path, clock, avail, live)
+    sched._ram_guard()
+    return sched, nodes, evictions
+
+
+def test_a_stalled_run_evicts_the_idle_worker_holding_most_without_starting_its_test(tmp_path, monkeypatch):
+    """A held test cannot be recalled, so its worker is told to skip it, then sent home."""
+    sched, nodes, evictions = _evicting_sched(tmp_path, monkeypatch)
+    assert sched.stats["evicted"] == 1 and sched.stats["retired"] == 0
+    assert nodes[1]._shutdown_sent and not nodes[0]._shutdown_sent and not nodes[2]._shutdown_sent
+    assert (evictions / "gw1").read_text() == sched.collection[1]
+    assert 1 not in sched.committed_at and 1 not in sched.pending_set
+    assert not sched.tests_finished, "the evicted test is still to be run"
+    assert sched._committed(nodes[1]) == [], "a test it skips is not running on it"
+    log = tmp_path.glob("budget_scheduler_*.txt")
+    text = "".join(f.read_text() for f in log)
+    assert "evicting gw1" in text and "on purpose" in text and "cannot start" in text
+
+
+def test_an_evicted_test_is_queued_again_once_its_worker_skipped_it(tmp_path, monkeypatch):
+    sched, nodes, evictions = _evicting_sched(tmp_path, monkeypatch)
+    assert take_eviction("gw1", sched.collection[1]), "what the worker's runner sees"
+    completed = sched.stats["completed"]
+    sched.mark_test_complete(nodes[1], 1)
+    assert sched.stats["completed"] == completed, "skipped, not completed"
+    assert sched.stats["evicted_requeued"] == 1 and 1 in sched.pending_set
+    assert sched.remove_node(nodes[1]) is None, "xdist asserts a clean exit leaves no crashed test"
+    assert sched.collection[1] in [sched.collection[i] for i in sched.pending_set]
+
+
+def test_an_evicted_worker_that_dies_first_crashes_nothing(tmp_path, monkeypatch):
+    sched, nodes, _ = _evicting_sched(tmp_path, monkeypatch)
+    assert sched.remove_node(nodes[1]) is None
+    assert 1 in sched.pending_set and not sched._evicted
+
+
+def test_a_worker_skips_only_the_test_it_was_told_to(tmp_path, monkeypatch):
+    monkeypatch.setenv(EVICT_ENV, str(tmp_path))
+    (tmp_path / "gw3").write_text("a.py::t1")
+    assert not take_eviction("gw3", "a.py::t2")
+    assert not take_eviction("gw4", "a.py::t1")
+    assert not take_eviction(None, "a.py::t1")
+    assert take_eviction("gw3", "a.py::t1")
+    assert not take_eviction("gw3", "a.py::t1"), "the flag is consumed"
+    monkeypatch.delenv(EVICT_ENV)
+    assert not take_eviction("gw3", "a.py::t1")
+
+
 def test_recycling_skips_a_worker_whose_test_waits_for_its_scout(tmp_path):
     clock, avail = {"t": 5.0}, {"v": 10 * GB}
     sched, nodes = _scout_and_held_sched(tmp_path, clock, avail, {})
@@ -1273,6 +1353,46 @@ def test_the_budget_follows_ram_not_swap(tmp_path):
     sched.schedule()
     assert sched.mem_target == before == 30 * GB
     assert committed(sched) == {0, 1}
+
+
+def test_a_short_machine_sends_idle_workers_home(tmp_path):
+    """Idle workers hold their last module's cluster; when short, the pool is the lever.
+
+    Measured: 32 workers holding 21.6 GB with one test running, and nothing in admission
+    could touch it.  When no held test fits, an idle worker that holds no test goes, one per
+    cooldown, never below the floor -- and with a fixed pool, never below its start.
+    """
+    col = [f"a.py::t{i}.dev.1" for i in range(12)]
+    model = make_model(tmp_path, 8, {profile_key(n): (0.2, 10 * GB, 300.0) for n in col})
+    clock, avail = {"t": 1000.0}, {"b": 64 * GB}
+    sched = BudgetScheduling(FakeConfig(tmp_path, 4, **{"--budget-max-workers": 12}), model=model, ncpus=8,
+                             mem_total=64 * GB, cgroup_tests=NO_CGROUP, available_fn=lambda: avail["b"],
+                             now=lambda: clock["t"])
+    fake = [FakeNode(f"gw{i}") for i in range(4)]
+    for n in fake:
+        sched.add_node(n); sched.add_node_collection(n, col)
+    sched.schedule()
+    # two workers that have just come up and hold nothing yet
+    empty = [FakeNode("gw4"), FakeNode("gw5")]
+    for n in empty:
+        sched.add_node(n)
+    fake += empty
+    assert all(sched.node2pending[n] for n in fake[:4])
+    sched._ram_guard()
+    assert sched.stats["retired"] == 0, "a held test fits: it will be admitted, nobody goes"
+    avail["b"] = 5 * GB                                # no held 10 GB test can start any more
+    sched._ram_guard()
+    assert sched.stats["retired"] == 1
+    gone = [n for n in fake if n._shutdown_sent]
+    assert len(gone) == 1 and gone[0] in empty, "only a worker holding nothing goes"
+    # a fixed pool cannot grow back: it keeps what it started with (4), however low its floor
+    sched.max_workers = 0
+    clock["t"] += 60
+    sched._ram_guard()
+    assert sched.stats["retired"] == 2                 # 5 workers -> 4
+    clock["t"] += 60
+    sched._ram_guard()
+    assert sched.stats["retired"] == 2, "never below the four it started with"
 
 
 def test_debug_mode_guesses_more_memory_than_release(tmp_path):

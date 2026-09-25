@@ -177,6 +177,8 @@ RESOURCE_GATHER_KEY = pytest.StashKey[tuple]()
 # (path, build mode, run id): each --repeat copy of a file is a module of its own, with
 # its own fixtures, so the copy after it on the same worker pays the setup again.
 _last_test_file: tuple | None = None
+# Set on a test the budget scheduler evicted: its worker is shutting down and skips it.
+EVICTED_KEY = pytest.StashKey[bool]()
 
 
 def _cost_sample(item: pytest.Item, resource_gather, metrics, first_in_file: bool, wall: float) -> dict:
@@ -289,6 +291,13 @@ def _build_test_mock(item: pytest.Item) -> SimpleNamespace:
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_protocol(item, nextitem):
     global _last_test_file
+    from test.pylib.budget_scheduler import take_eviction  # lazy: the module is heavy
+    if take_eviction(os.environ.get("PYTEST_XDIST_WORKER"), item.nodeid):
+        # The budget scheduler sent this worker home to free memory, and the test it held
+        # goes to another worker.  Run nothing and report nothing: the hook below keeps
+        # pytest from running it, and session teardown stops the previous module's cluster.
+        item.stash[EVICTED_KEY] = True
+        return (yield)
     test_mock = _build_test_mock(item)
     test_mock.time_start = time.time()
     this_file = (item.path, item.stash.get(BUILD_MODE, None), item.stash.get(RUN_ID, None))
@@ -351,6 +360,13 @@ def pytest_runtest_protocol(item, nextitem):
             finally:
                 item.stash[RESOURCE_GATHER_KEY] = None
                 resource_gather.teardown_test_tracking()
+
+
+@pytest.hookimpl(tryfirst=True, specname="pytest_runtest_protocol")
+def pytest_runtest_protocol_skip_evicted(item, nextitem):
+    if item.stash.get(EVICTED_KEY, False):
+        return True
+    return None
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -503,6 +519,12 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         shutil.rmtree(registry, ignore_errors=True)
         registry.mkdir(parents=True, exist_ok=True)
         os.environ[REGISTRY_ENV] = str(registry)
+        # Where the budget scheduler tells a worker it sends home to skip its held test.
+        from test.pylib.budget_scheduler import EVICT_ENV
+        evictions = temp_dir / f"budget_evictions_{HOST_ID}"
+        shutil.rmtree(evictions, ignore_errors=True)
+        evictions.mkdir(parents=True, exist_ok=True)
+        os.environ[EVICT_ENV] = str(evictions)
         prepare_environment(
             tempdir_base=temp_dir,
             modes=get_modes_to_run(session.config),
