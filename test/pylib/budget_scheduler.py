@@ -47,6 +47,7 @@ import shlex
 import statistics
 import threading
 import time
+from bisect import bisect_left
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -146,6 +147,62 @@ STATIC_MEM_MODE_ALIAS = {"sanitize": "debug", "coverage": "debug"}
 MEM_RESERVE_FRACTION = 0.05
 MEM_RESERVE_MIN = 1 * 10**9
 MEM_RESERVE_MAX = 4 * 10**9
+# Admission forecasts each test's peak instead of trusting one price for it.  A test's
+# memory is known only once it has taken it, and by then it cannot be recalled, so what
+# admission needs is where the running tests are going, not where they are.  Measured over
+# the release dtests, what a test already holds says a lot about that: the average peak is
+# 0.54 GB, but a test that has reached 1 GB ends at 2.0 GB on average, and one at 2 GB at
+# 3.3 GB.  So each running test counts at its expected peak *given what it holds now*, less
+# what it holds, and the forecast rises as a heavy test shows itself.  No margin is kept on
+# top of the expectation: the reserve and the forecast's own correction as tests grow are
+# what protect the machine, and a margin priced in the spread of a heavy-tailed kind cost
+# most of a run's dtest parallelism.
+# Peak-memory distributions for the run that has no profile yet, as quantiles at
+# PEAK_QUANTILES.  Release: firm peaks over a full release run (15,147 tests).  Debug:
+# anonymous peaks of the cluster suite over a full debug run (10,176 tests); the other debug
+# kinds have no measured distribution and keep their point guess.
+PEAK_QUANTILES = (0.0, 0.5, 0.9, 0.99, 1.0)
+PEAK_KNOTS_BY_MODE = {
+    "release": {
+        "dtest": (0.15e9, 0.35e9, 0.90e9, 3.3e9, 9.4e9),
+        "cluster": (0.15e9, 0.32e9, 0.62e9, 1.02e9, 1.7e9),
+        "py": (0.15e9, 0.28e9, 0.30e9, 0.33e9, 0.53e9),
+        "cpp": (0.05e9, 0.24e9, 0.30e9, 0.38e9, 2.4e9),
+        "gdb": (1.0e9, 2.9e9, 6.1e9, 13.1e9, 13.1e9),
+    },
+    "debug": {
+        "dtest": (1.0e9, 2.0e9, 5.5e9, 9.3e9, 11.4e9),
+        "cluster": (1.0e9, 2.0e9, 5.5e9, 9.3e9, 11.4e9),
+    },
+}
+
+
+class PeakDist:
+    """A distribution of peak memory, as equally weighted points, for conditional forecasts."""
+
+    POINTS = 200
+
+    def __init__(self, values: Iterable[float]):
+        self.values = sorted(values)
+
+    @classmethod
+    def from_knots(cls, knots: Sequence[float]) -> PeakDist:
+        """Points of the piecewise-linear quantile function through the knots."""
+        points = []
+        for i in range(cls.POINTS):
+            q = (i + 0.5) / cls.POINTS
+            j = next(j for j in range(1, len(PEAK_QUANTILES)) if q <= PEAK_QUANTILES[j])
+            lo, hi = PEAK_QUANTILES[j - 1], PEAK_QUANTILES[j]
+            points.append(knots[j - 1] + (q - lo) / (hi - lo) * (knots[j] - knots[j - 1]))
+        return cls(points)
+
+    def conditional(self, held: float) -> float | None:
+        """Expected peak, given the test already holds `held`; None past every point."""
+        tail = self.values[bisect_left(self.values, held):]
+        if not tail:
+            return None
+        return max(statistics.fmean(tail), held)
+
 # A test admitted less than this long ago is not visible in the measured load
 # yet; its predicted cost is added on top of the measurement.
 RAMP_SECONDS = 2.0
@@ -224,6 +281,8 @@ class CostModel:
         self.ncpus = ncpus
         self.k_sigma = k_sigma
         self.mode = STATIC_MEM_MODE_ALIAS.get(mode, mode)   # for a key that names no known mode
+        self._kind_dists: dict[tuple[str, str], PeakDist | None] = {}
+        self._sibling_dists: dict[str, PeakDist] = {}       # file -> its measured peaks
         self.default_cores, self.default_mem = default_cost
         self.tests: dict[str, dict[str, Any]] = {}
         self.files: dict[str, dict[str, Any]] = {}
@@ -247,6 +306,7 @@ class CostModel:
         self.tests = data.get("tests", {})
         self.files = data.get("files", {})
         self._file_index = None
+        self._sibling_dists.clear()
 
     def save(self) -> None:
         data = {"version": PROFILE_VERSION, "tests": self.tests, "files": self.files}
@@ -293,13 +353,14 @@ class CostModel:
             extra_cores = max(0.0, cores - (entry.get("cores") or 0.0)) if cores is not None else 0.0
             setup["setup_cores"] = _ema(setup["setup_cores"], extra_cores, setup["n"])
             setup["n"] += 1
-            self._learn_mem(entry, mem)
+            self._learn_mem(entry, mem, fkey)
             return
 
         if entry is None:
             entry = self.tests[key] = {"wall": wall, "cores": cores, "mem": mem,
                                        "var_cores": 0.0, "n": 0, "n_unc": 0, "low_streak": 0}
             self._file_index = None
+            self._sibling_dists.pop(fkey, None)
         n = entry["n"]
         # parallelism and runtime: only from uncontended runs (or until one exists)
         if not contended or entry.get("n_unc", 0) == 0:
@@ -312,7 +373,7 @@ class CostModel:
                 entry["cores"] = _ema(old, cores, n_unc)
             if not contended:
                 entry["n_unc"] = n_unc + 1
-        self._learn_mem(entry, mem)
+        self._learn_mem(entry, mem, fkey)
         entry["n"] = n + 1
 
     def predict_at(self, nodeid: str, elapsed: float, future: bool = False) -> float:
@@ -373,7 +434,7 @@ class CostModel:
                 max(s["mem"] for s in siblings),
                 statistics.median(s["wall"] for s in siblings))
 
-    def _learn_mem(self, entry: dict[str, Any], mem: float | None) -> None:
+    def _learn_mem(self, entry: dict[str, Any], mem: float | None, fkey: str) -> None:
         """Memory adapts asymmetrically: a higher peak is taken at once, a lower one slowly."""
         if mem is None:
             return
@@ -388,6 +449,7 @@ class CostModel:
                 entry["low_streak"] = 0
         else:
             entry["low_streak"] = 0
+        self._sibling_dists.pop(fkey, None)
 
     def _siblings(self, key: str) -> list[dict[str, Any]]:
         if self._file_index is None:
@@ -397,6 +459,23 @@ class CostModel:
             self._file_index = idx
         return [self.tests[k] for k in self._file_index.get(file_of_key(key), ())]
 
+    def sibling_peaks(self, key: str) -> list[float]:
+        """Measured peaks of the tests in the same file."""
+        return [s["mem"] for s in self._siblings(key) if s.get("mem") is not None]
+
+    def peak_kind(self, key: str) -> str:
+        """The family whose peak distribution a test is forecast from."""
+        path = key.split("|", 1)[1].split("::", 1)[0]
+        if path.endswith(".cc"):
+            return "cpp"
+        if path.startswith("scylla_gdb/"):
+            return "gdb"
+        if path.startswith("cluster/dtest/"):
+            return "dtest"
+        if path.startswith("cluster/"):
+            return "cluster"
+        return "py"
+
     def mode_of(self, key: str) -> str:
         """The build mode a profile key belongs to.
 
@@ -405,6 +484,22 @@ class CostModel:
         """
         mode = STATIC_MEM_MODE_ALIAS.get(key.split("|", 1)[0], key.split("|", 1)[0])
         return mode if mode in ("dev", "release", "debug") else self.mode
+
+    def kind_dist(self, kind: str, mode: str | None = None) -> PeakDist | None:
+        """The first-run peak distribution of a family in a build mode, if one was measured."""
+        mode = mode or self.mode
+        if (mode, kind) not in self._kind_dists:
+            knots = PEAK_KNOTS_BY_MODE.get(mode, {}).get(kind)
+            self._kind_dists[(mode, kind)] = PeakDist.from_knots(knots) if knots else None
+        return self._kind_dists[(mode, kind)]
+
+    def sibling_dist(self, key: str) -> PeakDist:
+        """The measured peaks of a test's file, sorted once per change rather than per forecast."""
+        fkey = file_of_key(key)
+        dist = self._sibling_dists.get(fkey)
+        if dist is None:
+            dist = self._sibling_dists[fkey] = PeakDist(self.sibling_peaks(key))
+        return dist
 
     def static_mem(self, kind: str, default: float, mode: str | None = None) -> float:
         """Static memory guess for a family, for a build mode."""
@@ -647,6 +742,7 @@ class BudgetScheduling:
         self.mem_reserve = min(MEM_RESERVE_MAX, max(MEM_RESERVE_MIN, MEM_RESERVE_FRACTION * total))
         self._started_at: dict[int, float] = {}        # index -> when it started running (not just committed)
         self._fc_mean = 0.0                            # forecast growth still to come, over the running tests
+        self._file_held: dict[str, float] = defaultdict(float)  # file -> most any running test of it holds
         self._last_forced = -math.inf
         self._mem_charged_workers = False
         self.psi_cpu_limit = float(opt("--budget-psi-cpu"))
@@ -1091,13 +1187,36 @@ class BudgetScheduling:
         """Memory a new test may still take: available now, less the running tests' forecast growth, less the reserve."""
         return self._available() - self.mem_reserve - self._fc_mean
 
-    def _forecast(self, idx: int, held: float) -> float:
-        """Expected peak of a test, given what it holds now: its price, or more once it has taken more."""
-        return max(self._costs_for(idx).mem, held)
+    def _forecast(self, idx: int, held: float, file_held: float = 0.0) -> float:
+        """Expected peak of a test, given what it holds now.
+
+        A profiled test is forecast at its learned peak.  A test whose file has been measured
+        is forecast from its siblings' peaks, and one from an unmeasured file from its
+        family's distribution.  Either way the forecast is conditional: once a test holds
+        more than most of its kind ever take, it is expected to be one of the heavy ones.
+        A test that has not started is conditioned on what its file's running tests hold:
+        a running test of a file prices the rest of it.
+        """
+        cost = self._costs_for(idx)
+        if cost.source == "profile":
+            return max(cost.mem, held)
+        key = self._key_of(idx)
+        dist = self.model.kind_dist(self.model.peak_kind(key), self.model.mode_of(key))
+        basis = max(held, file_held)
+        if cost.source == "family":
+            fc = self.model.sibling_dist(key).conditional(basis)
+            if fc is not None:
+                return max(fc, held)
+        elif dist is None:
+            return max(cost.mem, held)
+        fc = dist.conditional(basis) if dist is not None else None
+        # Past everything its kind has ever taken: nothing to go by but what it holds.
+        return max(basis, held) if fc is None else max(fc, held)
 
     def _refresh_forecasts(self) -> None:
         """Forecast growth of every running test, from what each one holds now."""
         self._fc_mean = 0.0
+        self._file_held = defaultdict(float)
         running: list[tuple[int, float]] = []
         for node, queued in self.node2pending.items():
             live = self.live.memory(node.gateway.id) or 0.0
@@ -1110,19 +1229,21 @@ class BudgetScheduling:
                 # keeps alive included: that is what a learned peak measures too.
                 held = live if first else 0.0
                 first = False
+                file = self._file_of(idx)
+                self._file_held[file] = max(self._file_held[file], held)
                 running.append((idx, held))
         for idx, held in running:
             self._fc_mean += max(0.0, self._forecast(idx, held) - held)
 
     def _forecast_new(self, idx: int, node: WorkerController | None = None) -> float:
-        """What a test that has not started will add.
+        """What a test that has not started will add, conditioned on its file's running tests.
 
         A peak is learned as the whole worker cgroup at its highest: the worker's interpreter
         and whatever its module keeps alive included.  That part is already resident and
         already out of MemAvailable, so on a known worker only the peak beyond what the
         worker holds now is new.  A new worker's own overhead is charged separately.
         """
-        peak = self._forecast(idx, 0.0)
+        peak = self._forecast(idx, 0.0, self._file_held.get(self._file_of(idx), 0.0))
         if node is None:
             return peak
         return max(0.0, peak - (self.live.memory(node.gateway.id) or 0.0))

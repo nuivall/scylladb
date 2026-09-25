@@ -317,6 +317,51 @@ def test_a_started_test_stops_counting_what_it_holds(tmp_path):
     assert sched._mem_headroom() == pytest.approx(0.0)
 
 
+def test_a_test_growing_past_its_kind_raises_its_own_forecast(tmp_path):
+    """A test that has reached 1.5 GB is not a typical dtest; count the growth still ahead of it.
+
+    Pricing each unknown dtest at 0.9 GB and counting nothing once its worker had grown past
+    that let twenty of the heaviest dtests start together and swap the machine.
+    """
+    avail, clock, live = {"v": 40 * GB}, {"t": 0.0}, {}
+    col = [f"cluster/dtest/f{i}_test.py::test_a.release.1" for i in range(6)]
+    model = CostModel(tmp_path / "p.json", ncpus=16, k_sigma=0.0, mode="release")
+    sched = BudgetScheduling(FakeConfig(tmp_path, 6), model=model, ncpus=16, mem_total=64 * GB, cgroup_tests=NO_CGROUP,
+                             now=lambda: clock["t"], available_fn=lambda: avail["v"])
+    sched.live.memory = lambda wid: live.get(wid, 0.0)
+    nodes = [FakeNode(f"gw{i}") for i in range(6)]
+    for node in nodes:
+        sched.add_node(node)
+        sched.add_node_collection(node, col)
+    sched.schedule()
+    assert len(committed(sched)) == 6, "six files, six tests"
+    sched._refresh_forecasts()
+    to_come_at_start = sched._fc_mean
+    for node in nodes:
+        live[node.gateway.id] = 1.5 * GB
+    sched._refresh_forecasts()
+    grew = [i for n in nodes for i in sched.node2pending[n] if i in sched.committed_at]
+    for idx in grew:
+        mean = sched._forecast(idx, 1.5 * GB)
+        assert mean > 2.0 * GB, "a dtest holding 1.5 GB is expected to go on growing"
+    # still to come after taking 9 GB between them is more than was expected of them at the start
+    assert sched._fc_mean > to_come_at_start
+
+
+def test_conditional_peak_of_the_release_dtest_distribution(tmp_path):
+    model = CostModel(tmp_path / "p.json", ncpus=16, mode="release")
+    dist = model.kind_dist("dtest")
+    mean0 = dist.conditional(0.0)
+    mean1 = dist.conditional(1.0 * GB)
+    mean2 = dist.conditional(2.0 * GB)
+    assert 0.5 * GB < mean0 < 0.8 * GB
+    assert mean0 < mean1 < mean2
+    assert 1.6 * GB < mean1 < 3.2 * GB
+    assert dist.conditional(20 * GB) is None
+    assert model.kind_dist("gdb") is not None
+    assert CostModel(tmp_path / "d.json", ncpus=16, mode="dev").kind_dist("dtest") is None
+
+
 def test_release_guesses_price_dtests_as_the_heavy_tail_of_the_cluster_suite(tmp_path):
     model = CostModel(tmp_path / "p.json", ncpus=16, mode="release")
     dtest = model.cost("cluster/dtest/manager_backup_tests.py::TestX::test_y.release.1")
@@ -385,6 +430,8 @@ def test_each_test_is_priced_for_its_own_build_mode(tmp_path):
     model = CostModel(tmp_path / "p.json", ncpus=8, mode="dev")
     assert model.cost("cluster/test_x.py::test_y.debug.1").mem == pytest.approx(8.5e9)
     assert model.cost("cluster/test_x.py::test_y.dev.1").mem == pytest.approx(0.6e9)
+    assert model.kind_dist("dtest", model.mode_of("debug|cluster/dtest/x.py::t")) is not None
+    assert model.kind_dist("dtest", model.mode_of("dev|cluster/dtest/x.py::t")) is None
 
 
 def test_a_test_committed_behind_a_running_one_starts_when_it_ends(tmp_path):
