@@ -137,7 +137,9 @@ STATIC_MEM_MODE_ALIAS = {"sanitize": "debug", "coverage": "debug"}
 # fixed share of RAM kept aside on top of that (12% of the machine, and a 70% ceiling)
 # only cost parallelism: on a 33 GB machine with 22 GB free it left 17 GB for debug
 # cluster tests that take 7-11 GB each.  Admission watches RAM itself: a test starts only
-# while the machine has its predicted peak available.
+# while the machine has its predicted peak available.  Workers are sent home one per this
+# many seconds, so that one retirement is visible before the next.
+RETIRE_COOLDOWN = 10.0
 # The pool starts at one worker per CPU and grows, one worker at a time, while every worker
 # is busy and the machine has CPU and memory to spare.  Starting 64 workers at once had half
 # of them holding a test and their last module's memory for most of the run: the run kept
@@ -149,6 +151,15 @@ STATIC_MEM_MODE_ALIAS = {"sanitize": "debug", "coverage": "debug"}
 POOL_GROW_SECONDS = 10.0
 POOL_SPAWN_TIMEOUT = 120.0      # a spawned worker that has not collected by then is written off
 POOL_WORKER_PRIOR = 0.25 * 10**9
+# A worker with nothing running for this long is drained: when its held test starts it gets
+# the shutdown marker instead of a successor, and it exits after that test.  A held test
+# cannot be recalled, so this is the only way to take a worker out without losing its test.
+POOL_IDLE_SECONDS = 60.0
+# The pool never goes below this share of the one it started with.  Holding the starting pool
+# kept 32 workers through the tail of a release run while 2 to 13 tests ran: 19 to 30 idle
+# workers, 0.25-0.5 GB of heap each, in the stretch where the heaviest dtests were swapping.
+# If the work comes back, the pool grows again.
+POOL_FLOOR_FRACTION = 0.25
 # Admission gates on measured headroom: what the machine has available, minus what the
 # tests admitted recently have not taken yet, minus this reserve.  Reservations alone were
 # blind to memory no test owns -- workers growing from 0.2 to 0.5 GB each over a run, module
@@ -757,7 +768,11 @@ class BudgetScheduling:
         self._spawning_ids: set[str] = set()      # workers this scheduler started that have not collected yet
         self._last_spawn = -math.inf
         self._idle_mem: dict[str, float] = {}     # worker id -> what its cgroup held when its last test started
+        self._idle_since: dict[WorkerController, float] = {}    # worker -> since when nothing runs on it
         self._last_file_done: dict[WorkerController, str] = {}  # worker -> file of the last test it finished
+        self._draining: set[WorkerController] = set()          # workers to shut down after their held test
+        self._pool_floor = 0                      # fewest workers the pool keeps: a share of its start
+        self._pool_start = 0                      # workers the run started with
         self.cpu_target_frac = float(opt("--budget-cpu-target"))
         self.cpu_target = self.cpu_target_frac * self.ncpus
         self.cpu_target_floor = 0.5 * self.ncpus
@@ -855,6 +870,7 @@ class BudgetScheduling:
         self._first_run: dict[str, int] = {}            # key -> the index measuring it for the others
         self._first_run_done: set[str] = set()
         self._last_pressure_cut = -math.inf
+        self._last_retire = -math.inf
         self._psi = (0.0, 0.0)
         self.stats = defaultdict(int)
         self._tick_timer: threading.Timer | None = None
@@ -917,7 +933,9 @@ class BudgetScheduling:
     def remove_node(self, node: WorkerController) -> str | None:
         queued = self.node2pending.pop(node, [])
         self._idle_mem.pop(node.gateway.id, None)
+        self._idle_since.pop(node, None)
         self._last_file_done.pop(node, None)
+        self._draining.discard(node)
         self.node_file.pop(node, None)
         was_shutdown = node in self.shutdown_sent
         self.shutdown_sent.discard(node)
@@ -1009,6 +1027,8 @@ class BudgetScheduling:
             self._log(f"{len(self.node2pending)} workers up, {free_now / GB:.1f}G still free; memory budget "
                       f"{old_target / GB:.1f}G -> {self.mem_target / GB:.1f}G")
         self.collection = next(iter(self.node2collection.values()))
+        self._pool_start = len(self.node2pending)
+        self._pool_floor = max(2, int(POOL_FLOOR_FRACTION * self._pool_start))
         for idx in range(len(self.collection)):
             self._add_pending(idx)
         self._log(f"scheduling {len(self.collection)} tests over {len(self.node2pending)} workers; "
@@ -1026,6 +1046,7 @@ class BudgetScheduling:
         self.live.refresh(n.gateway.id for n in nodes)
         self._refresh_measurement()
         self._refresh_forecasts()
+        self._maybe_shrink_pool()
         pressure = self._pressure_guard()
         was = self.hold_for
         self.hold_for = self._critical_test()
@@ -1088,6 +1109,14 @@ class BudgetScheduling:
                         else:
                             self.stats["held_waiting"] += 1
                             break
+                    if held is not None and node in self._draining:
+                        # Draining: shutdown is the successor, so the held test runs and the worker exits.
+                        self._commit(held, node)
+                        admitted_any = True
+                        node.shutdown()
+                        self.shutdown_sent.add(node)
+                        self._draining.discard(node)
+                        break
                     cand = self._pick(node)
                     if cand is None:
                         if held is not None:
@@ -1356,6 +1385,33 @@ class BudgetScheduling:
         self._fc_mean += cost
         self._log(f"pool: {len(live)} -> {len(live) + 1} workers (all busy, load {self._estimate_now(now):.1f}/"
                   f"{self.cpu_target:.1f} cores, {headroom / GB:.1f}G headroom, a worker holds {cost / GB:.2f}G)")
+
+    def _maybe_shrink_pool(self) -> None:
+        """Drain one worker that has had nothing running for POOL_IDLE_SECONDS, while the pool is above its start."""
+        now = self.now()
+        live = self._live_workers()
+        for node in live:
+            if self._committed(node):
+                self._idle_since.pop(node, None)
+            else:
+                self._idle_since.setdefault(node, now)
+        if self.max_workers <= 0 or now - self._last_retire < RETIRE_COOLDOWN:
+            return
+        if len(live) - len(self._draining) <= self._pool_floor:
+            return
+        idle = [n for n in live if n not in self._draining and now - self._idle_since.get(n, now) >= POOL_IDLE_SECONDS]
+        if not idle:
+            return
+        node = min(idle, key=lambda n: self._idle_since[n])
+        self._draining.add(node)
+        self._last_retire = now
+        self.stats["pool_drained"] += 1
+        self._log(f"pool: draining {node.gateway.id} (nothing running for {now - self._idle_since[node]:.0f}s); "
+                  f"{len(live) - len(self._draining)} workers will remain")
+        if self._held(node) is None:
+            node.shutdown()
+            self.shutdown_sent.add(node)
+            self._draining.discard(node)
 
     def _spawn_xdist_worker(self) -> str | None:
         """Start one more xdist worker, the way xdist replaces a crashed one; return its id."""
@@ -1705,7 +1761,7 @@ class BudgetScheduling:
         # run whose worker died, which now measures for the rest.
         self._claim_first_run(idx)
         fc_mean = self._forecast_new(idx, node)
-        # Committed behind a running test (the end of a run,
+        # Committed behind a running test (a drained worker, the end of a run,
         # --budget-depth > 1) it starts when that test ends, and its clocks with it.
         behind = any(i in self.committed_at for i in self.node2pending.get(node, ()) if i != idx)
         self.committed_at[idx] = self.now()

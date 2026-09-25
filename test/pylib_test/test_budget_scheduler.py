@@ -515,6 +515,46 @@ def test_a_worker_that_is_starting_is_charged_to_the_forecast(tmp_path):
     assert sched._mem_headroom() != starting
 
 
+def test_the_pool_floor_is_a_quarter_of_its_start(tmp_path):
+    """Idle workers hold their heaps; the pool may drain to a quarter of its start, never under two."""
+    for start, floor in ((32, 8), (8, 2), (4, 2)):
+        (tmp_path / str(start)).mkdir()
+        sched, *_ = make_pool_sched(tmp_path / str(start), {"t": 0.0}, {"v": 40 * GB}, n_start=start, n_tests=4 * start)
+        assert sched._pool_floor == floor, start
+
+
+def test_the_pool_shrinks_back_when_workers_sit_idle(tmp_path):
+    """Workers with nothing running for POOL_IDLE_SECONDS are drained, one per cooldown, down to the start size."""
+    clock, avail = {"t": 0.0}, {"v": 40 * GB}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, n_start=2, max_workers=6, n_tests=60)
+    for _ in range(20):                                  # grow to 6 workers, each arriving as it is spawned
+        if len(sched._live_workers()) == 6:
+            break
+        clock["t"] += 11.0
+        if sched._spawning:
+            arrive(sched, nodes, col)
+        sched.check_schedule()
+    assert len(sched._live_workers()) == 6 and len(spawned) == 4
+    # memory runs short: the running tests finish and nothing more fits, so the workers idle
+    avail["v"] = 3.5 * GB
+    for node in nodes:
+        for idx in [i for i in sched.node2pending[node] if i in sched.committed_at]:
+            sched.mark_test_complete(node, idx)
+    assert len(committed(sched)) <= 1, "only the progress rule's one test keeps running"
+    clock["t"] += 30.0
+    sched.check_schedule()
+    assert sched.stats["pool_drained"] == 0, "not idle long enough yet"
+    for _ in range(10):
+        clock["t"] += 61.0
+        sched.check_schedule()
+    assert len(sched._draining) + sum(n._shutdown_sent for n in nodes) == 4, "down to the two it started with"
+    # memory comes back: a draining worker runs its held test and exits
+    avail["v"] = 40 * GB
+    sched.check_schedule()
+    draining_done = [n for n in nodes if n._shutdown_sent]
+    assert draining_done and all(any(i in sched.committed_at for i in sched.node2pending[n]) for n in draining_done)
+
+
 def test_a_module_cluster_kept_for_the_next_test_is_not_worker_overhead(tmp_path):
     """After a test of the same file the worker still holds that module's cluster, which the next test reuses."""
     clock, avail, live = {"t": 0.0}, {"v": 40 * GB}, {}

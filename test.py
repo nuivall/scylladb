@@ -244,7 +244,7 @@ def parse_cmd_line() -> argparse.Namespace:
         if args.cpu_aware:
             # One worker per CPU to start with; the budget scheduler adds workers while every
             # one of them is busy and the machine has CPU and memory to spare, up to three per
-            # CPU.  It measures what a worker costs, so memory is its call.
+            # CPU, and drains idle ones.  It measures what a worker costs, so memory is its call.
             args.jobs = max(1, int(nr_cpus * args.threads_multiplier))
             args.max_workers = max(args.jobs, int(3 * nr_cpus * args.threads_multiplier))
         else:
