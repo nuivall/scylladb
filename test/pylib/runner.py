@@ -98,16 +98,23 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                      help="Cores,memory assumed for a test with no profile and no static hint")
     parser.addoption("--budget-k-sigma", action="store", type=float, default=0.5,
                      help="Safety margin in standard deviations added to the predicted cores")
+    parser.addoption("--budget-sys-limit", action="store", type=float, default=0.0,
+                     help="Never admit a test while machine-wide CPU usage is above this fraction of the CPUs "
+                          "(0 = off; the scheduler budgets the load the tests cause and assumes little else runs)")
     parser.addoption("--budget-cpu-overcommit", action="store", type=float, default=1.5,
                      help="Hard ceiling for CPU reservations as a multiple of the CPU count; above 1.0 only with measured slack")
     parser.addoption("--budget-burst", action="store", type=float, default=0.05,
                      help="How fast CPU reservations may grow, as a fraction of the CPU count per second "
                           "(0 = no ramp); stops the run from committing every held test before the first "
                           "measurement exists")
+    parser.addoption("--budget-max-runnable", action="store", type=float, default=0.0,
+                     help="Keep the runnable threads of the running tests within this multiple of the CPU count (0 = off)")
     parser.addoption("--budget-psi-cpu", action="store", type=float, default=25.0,
                      help="/proc/pressure/cpu 'some avg10' percentage above which admission pauses and the CPU target shrinks")
     parser.addoption("--budget-psi-mem", action="store", type=float, default=5.0,
                      help="/proc/pressure/memory 'some avg10' percentage above which admission pauses")
+    parser.addoption("--budget-psi-only", action=BooleanOptionalAction, default=False,
+                     help="Ablation: admit on pressure feedback alone, with no CPU or RAM budget")
     parser.addoption('--random-seed', action="store",
                      help="Random number generator seed to be used by boost tests")
 

@@ -31,8 +31,9 @@ the last couple of seconds that the measurement cannot show yet, and admits the
 next test only if that plus the test's own cost stays under the target.  A test
 is predicted from its average parallelism over its whole run: per-test CPU curves
 were measured against it and bought nothing.  A kernel pressure-stall (PSI) guard shrinks the target
-when the machine is oversubscribed and grows it back when calm, and one test is
-always allowed to start when nothing is running so a run can never dead-lock.
+when the machine is oversubscribed and grows it back when calm, an optional
+machine-wide gate can cap total CPU, and one test is always allowed to start
+when nothing is running so a run can never dead-lock.
 """
 
 from __future__ import annotations
@@ -433,6 +434,16 @@ class CostModel:
         return {"cores": 1.0, "mem": self.static_mem("py", STATIC_MEM_PY, mode),
                 "wall": 1.0, "source": "static-python"}
 
+    def static_threads(self, nodeid: str) -> int | None:
+        """Shard count of a C++ test from its custom args (-cN), if known."""
+        key = profile_key(nodeid)
+        base = key.split("|", 1)[1]
+        path = base.split("::", 1)[0]
+        if not path.endswith(".cc"):
+            return None
+        static = self._static_cpp(path.split("/", 1)[0], path, base)
+        return int(static["cores"]) if static.get("cores") else None
+
     def _static_cpp(self, suite: str, path: str, base: str, mode: str | None = None) -> dict[str, Any]:
         test_name = Path(path).stem
         case = base.split("::", 1)[1] if "::" in base else ""
@@ -477,6 +488,17 @@ def _ema(old: float | None, new: float, n: int) -> float:
 # ---------------------------------------------------------------------------
 # Live machine readings
 # ---------------------------------------------------------------------------
+
+def read_procs_running() -> float | None:
+    """Instantaneous number of runnable tasks (the CPU run queue including running ones)."""
+    try:
+        with open("/proc/stat") as f:
+            for line in f:
+                if line.startswith("procs_running"):
+                    return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def read_psi(kind: str, path: Path | None = None) -> float:
@@ -629,7 +651,11 @@ class BudgetScheduling:
         self._mem_charged_workers = False
         self.psi_cpu_limit = float(opt("--budget-psi-cpu"))
         self.psi_mem_limit = float(opt("--budget-psi-mem"))
+        self.psi_only = bool(opt("--budget-psi-only"))
+        sys_limit = float(opt("--budget-sys-limit"))
+        self.sys_limit = sys_limit * self.ncpus if sys_limit > 0 else math.inf
         self.measured_load = 0.0       # test-attributable cores, smoothed
+        self.runnable = 0.0            # machine-wide runnable tasks, smoothed
         # Reservations: acquired when a test is admitted (committed), released on
         # completion or worker loss.  Invariant: sum(res_cpu) <= ncpus * cpu_overcommit at
         # every point after admission.  Memory is not reserved -- admission checks it against
@@ -652,6 +678,8 @@ class BudgetScheduling:
         # their first half-minute collecting, and the ramp must start when the first
         # test could actually be admitted.
         self._ceiling_t: float | None = None
+        max_runnable = float(opt("--budget-max-runnable"))
+        self.max_runnable = max_runnable * self.ncpus if max_runnable > 0 else math.inf
         self._services_path = None
         base = cgroup_tests if cgroup_tests is not None else _cgroup_tests_path()
         if base is not None and base.exists():
@@ -685,6 +713,7 @@ class BudgetScheduling:
         self.committed_at: dict[int, float] = {}        # index -> monotonic time of commit
         self._costs: dict[int, Cost] = {}
         self._costs_by_file: dict[str, set[int]] = defaultdict(set)   # file -> indices with a cached cost
+        self._threads: dict[int, float] = {}
         self._keys: dict[int, str] = {}                 # index -> profile key
         self._last_pressure_cut = -math.inf
         self._psi = (0.0, 0.0)
@@ -697,8 +726,9 @@ class BudgetScheduling:
         self._log(f"budget scheduler v8.2 (reservations, work-domain phases): ncpus={self.ncpus} cpu_target={self.cpu_target:.1f} "
                   f"mem_target={self.mem_target / GB:.1f}G (of {total / GB:.0f}G total, "
                   f"{free_now / GB:.0f}G free at start) depth={self.depth} "
-                  f"cpu_ceiling={self.cpu_ceiling:.1f} psi_cpu_limit={self.psi_cpu_limit:.0f} "
-                  f"profile_entries={len(self.model.tests)}")
+                  f"cpu_ceiling={self.cpu_ceiling:.1f} max_runnable={self.max_runnable:.0f} psi_cpu_limit={self.psi_cpu_limit:.0f} "
+                  f"profile_entries={len(self.model.tests)}"
+                  + (" psi_only" if self.psi_only else ""))
 
     # -- protocol: properties ----------------------------------------------
 
@@ -949,6 +979,12 @@ class BudgetScheduling:
         (low PSI and measured utilization below target, counting what was just
         admitted and is not visible yet).  Above the ceiling, never.
         """
+        if self.psi_only:
+            # Ablation: no budget at all.  Keep loading the machine until it complains.
+            if pressure:
+                self.stats["rejected_pressure"] += 1
+                return False
+            return True
         cost = self._costs_for(idx)
         now = self.now()
         # --- RAM: the running tests' forecast growth plus this test must fit what is free --
@@ -992,6 +1028,13 @@ class BudgetScheduling:
             if self._estimate_now(now) + req > self.cpu_target:
                 self.stats["rejected_cpu_band"] += 1
                 return False
+        # run-queue guard: threads the running tests can put on the queue (off by default)
+        if self.max_runnable != math.inf and self._committed_threads(now) + self._threads_for(idx) > self.max_runnable:
+            self.stats["rejected_threads"] += 1
+            return False
+        if self._system_busy_cores() > self.sys_limit:
+            self.stats["rejected_sys"] += 1
+            return False
         return True
 
     def _hold_reservation(self, idx: int | None) -> tuple[float, float]:
@@ -1083,6 +1126,12 @@ class BudgetScheduling:
             # no cgroup data (unit tests, foreign environment): fall back to per-node readings
             cores = sum((self.live.cores(n.gateway.id) or 0.0) for n in self.node2pending)
         self.measured_load = 0.5 * self.measured_load + 0.5 * cores
+        runnable = read_procs_running()
+        if runnable is not None:
+            # subtract ourselves: the controller thread reading /proc/stat is running
+            runnable = max(0.0, runnable - 1)
+            self.runnable = runnable if not getattr(self, "_runnable_seen", False) else 0.5 * self.runnable + 0.5 * runnable
+            self._runnable_seen = True
 
     def _predict_running(self, idx: int, elapsed: float, tau: float = 0.0) -> float:
         """Cores a running test is expected to use `tau` seconds from now."""
@@ -1093,6 +1142,39 @@ class BudgetScheduling:
 
     def _inflight_pred(self, now: float, idx: int) -> float:
         return self._predict_running(idx, now - self.committed_at[idx])
+
+    def _threads_for(self, idx: int) -> float:
+        """Runnable threads a test can put on the run queue while it is busy.
+
+        boost: its shard count (-cN); python tests: one driver thread plus the
+        cores its node(s) burn in its busiest second, rounded up.  Cached per test.
+        """
+        cached = self._threads.get(idx)
+        if cached is not None:
+            return cached
+        nodeid = self.collection[idx]
+        c = self.model.predict_at(nodeid, 0.0)
+        threads = float(max(1, math.ceil(c - 0.05)))
+        if nodeid.split("::", 1)[0].endswith(".cc"):
+            shards = self.model.static_threads(nodeid)
+            if shards:
+                threads = float(shards)
+        self._threads[idx] = threads
+        return threads
+
+    def _committed_threads(self, now: float) -> float:
+        """Threads of tests that are running or about to (busy at their average, or just admitted)."""
+        total = 0.0
+        for i, t in self.committed_at.items():
+            elapsed = now - t
+            if elapsed < 1.0:
+                total += self._threads_for(i)          # start-up: assume all its threads are busy
+                continue
+            # afterwards its average: a 2-shard process that averages 0.8 cores puts
+            # about one thread on the queue
+            busy_cores = self._predict_running(i, elapsed)
+            total += min(self._threads_for(i), max(0.25, math.ceil(busy_cores - 0.1)))
+        return total
 
     def _ramp_weight(self, now: float, idx: int) -> float:
         """1 right after admission, fading to 0 as the measurement catches up.
@@ -1112,6 +1194,19 @@ class BudgetScheduling:
         """Measured load plus the not-yet-visible part of what was just admitted."""
         inflight = sum(self._inflight_pred(now, i) * self._ramp_weight(now, i) for i in self._inflight(now))
         return self.measured_load + inflight
+
+    def _system_busy_cores(self) -> float:
+        now = self.now()
+        last = getattr(self, "_sys_sample", None)
+        if last is None or now - last[0] >= 0.5:
+            try:
+                pct = psutil.cpu_percent(interval=None)   # since the previous call
+            except Exception:
+                pct = 0.0
+            if last is None:
+                pct = 0.0   # the first call of psutil.cpu_percent is meaningless
+            self._sys_sample = (now, pct * self.ncpus / 100.0)
+        return self._sys_sample[1]
 
     def _pressure_guard(self) -> bool:
         # CPU pressure of the tests' own cgroup tree when available: on a pinned or
@@ -1137,7 +1232,7 @@ class BudgetScheduling:
             self.cpu_target = max(self.cpu_target_floor, self.cpu_target * 0.9)
             self._last_pressure_cut = now
             self.stats["pressure_cuts"] += 1
-            self._log(f"pressure: psi cpu={psi_cpu:.1f}% mem={psi_mem:.1f}%; "
+            self._log(f"pressure: psi cpu={psi_cpu:.1f}% mem={psi_mem:.1f}% runnable={self.runnable:.0f}; "
                       f"cpu target {old:.1f} -> {self.cpu_target:.1f}")
         return True
 

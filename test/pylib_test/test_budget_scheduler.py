@@ -59,7 +59,10 @@ class FakeConfig:
             "--budget-cpu-target": 0.9,
             "--budget-psi-cpu": 1e9,     # pressure guard off unless a test lowers it
             "--budget-psi-mem": 1e9,
+            "--budget-psi-only": False,
             "--mode": ["release"],
+            "--budget-sys-limit": 1e9,   # machine-wide gate off: unit tests run on a busy box
+            "--budget-max-runnable": 0,  # run-queue gate off for the same reason
             "--budget-cpu-overcommit": 1.5,
     "--budget-burst": 0.0,          # ramp off by default in tests; one test exercises it
 
@@ -471,6 +474,22 @@ def test_a_test_is_predicted_at_its_average_parallelism(tmp_path):
     assert model.predict_at("f.py::t.dev.1", 0.5) == pytest.approx(2.0)
     assert model.predict_at("f.py::t.dev.1", 5.0) == pytest.approx(2.0)
     assert model.predict_at("f.py::t.dev.1", 30.0, future=True) == 0.0           # long past its wall
+
+
+def test_thread_budget(tmp_path):
+    """Four 1.5-core tests on 4 CPUs: the thread budget allows two at a time even if CPU would allow more."""
+    col = [f"a.py::t{i}.dev.1" for i in range(8)]
+    # 1.5 cores -> 2 threads each; with the CPU target set to 8 cores the CPU check would
+    # admit all four, the 4-thread budget allows two
+    model = make_model(tmp_path, 4, {profile_key(n): (1.5, 1e8, 3.0) for n in col})
+    sched = BudgetScheduling(FakeConfig(tmp_path, 4, **{"--budget-max-runnable": 1.0, "--budget-cpu-target": 2.0}),
+                             model=model, ncpus=4, mem_total=20 * GB, cgroup_tests=NO_CGROUP, available_fn=lambda: 20 * GB)
+    nodes = [FakeNode(f"gw{i}") for i in range(4)]
+    for n in nodes:
+        sched.add_node(n); sched.add_node_collection(n, col)
+    sched.schedule()
+    assert len(committed(sched)) == 2
+    assert sched.stats["rejected_threads"] >= 1
 
 
 def test_a_just_started_test_counts_at_its_forecast_not_what_it_holds(tmp_path):
