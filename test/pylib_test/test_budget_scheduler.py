@@ -22,6 +22,8 @@ import pytest
 from test.pylib.budget_scheduler import (
     EVICT_ENV,
     HELD_FORCE_SECONDS,
+    MEM_RESERVE,
+    MEM_STALL_LIMIT,
     STATIC_MEM_CPP,
     STATIC_MEM_GDB,
     GB,
@@ -276,11 +278,10 @@ def test_headroom_counts_the_tests_admitted_earlier_in_the_same_pass(tmp_path):
 
     Checking each test against the same MemAvailable let 35 tests in within one pass on the
     full release suite, each seeing 4.7 GB free for its 0.6 GB.  Here the budget (18 GB free
-    at start) would hold six 3 GB tests on paper; the reserve (1 GB on a 20 GB machine) leaves
-    room for five.
+    at start) would hold six 3 GB tests on paper; the 512 MiB reserve leaves room for five.
     """
     sched, _ = make_mem_sched(tmp_path, 8, 3 * GB, {"v": 18 * GB}, {"t": 0.0})
-    assert sched.mem_reserve == pytest.approx(1 * GB)
+    assert sched.mem_reserve == MEM_RESERVE == 512 * 2**20
     assert len(committed(sched)) == 5
     assert sched.stats["rejected_mem"] >= 1
 
@@ -306,21 +307,21 @@ def test_a_started_test_stops_counting_what_it_holds_and_fades_once_settled(tmp_
     And a test that has settled below its forecast releases the rest over time: holding
     every settled test at its peak for all its life starves the run.
     """
-    avail, clock, live = {"v": 10 * GB}, {"t": 0.0}, {}
+    avail, clock, live = {"v": 9 * GB + MEM_RESERVE}, {"t": 0.0}, {}
     sched, nodes = make_mem_sched(tmp_path, 4, 3 * GB, avail, clock, live)
-    assert len(committed(sched)) == 3                   # 10 - 1 reserve = 9 GB: three 3 GB tests
+    assert len(committed(sched)) == 3                   # 9 GB past the reserve: three 3 GB tests
     assert sched._mem_headroom() == pytest.approx(0.0)
     running = [n for n in nodes if any(i in sched.committed_at for i in sched.node2pending[n])]
     # each running test's worker has grown by its whole forecast, and the machine shows it
     for node in running:
         live[node.gateway.id] = 3 * GB
-    avail["v"] = 1 * GB
+    avail["v"] = MEM_RESERVE
     sched._refresh_forecasts()
     assert sched._mem_headroom() == pytest.approx(0.0), "the grown part must not count twice"
     # settled at 1 GB instead: 2 GB each still to come while they may be growing ...
     for node in running:
         live[node.gateway.id] = 1 * GB
-    avail["v"] = 7 * GB
+    avail["v"] = 6 * GB + MEM_RESERVE
     sched._refresh_forecasts()
     assert sched._mem_headroom() == pytest.approx(0.0)
     # ... and after five plateau half-lives only a thirty-second of it
@@ -500,60 +501,55 @@ def test_the_pool_grows_one_worker_at_a_time_while_every_worker_is_busy(tmp_path
 
 
 def test_the_pool_does_not_grow_without_memory_for_a_worker_and_a_test(tmp_path):
-    clock, avail = {"t": 0.0}, {"v": 4.5 * GB}       # 1.3 GB after the 3.2 GB reserve: two 0.5 GB tests, no worker
+    clock, avail = {"t": 0.0}, {"v": 1.3 * GB + MEM_RESERVE}   # two 0.5 GB tests fit, a worker and a third do not
     sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail)
     assert len(committed(sched)) == 2
     assert spawned == [], "no room for a worker and the test it would run"
 
 
-def test_the_tests_swap_counts_as_memory_they_hold(tmp_path):
-    """Swapped-out test memory comes back the moment it is touched: it is not free RAM.
+def test_swap_is_not_counted_either_way(tmp_path):
+    """The kernel pages cold memory out as ordinary reclaim, with gigabytes free.
 
-    Measured without this: the kernel kept MemAvailable at 3-7 GB by paging the tests out,
-    admission read that as room, and swap filled from 28 GB to all 32.
+    Measured on a healthy debug run: the tests' swap grew 0.3-0.8 GB in ten seconds five
+    times while 8.5-18 GB was available.  Admission reads MemAvailable and nothing else.
+    """
+    clock, avail = {"t": 0.0}, {"v": 40 * GB}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, max_workers=0)
+    assert sched._available() == 40 * GB
+    assert not hasattr(sched, "tests_swap")
+
+
+def test_the_tests_stalling_on_memory_stops_admission_until_it_falls_back(tmp_path):
+    """memory.pressure "full" of the tests' own cgroup: all of them stalled on memory at once.
+
+    The healthy run peaked at 4.6% for seconds; the run that filled swap sat at 15-21%.
     """
     cg = tmp_path / "tests"; cg.mkdir()
     (cg / "cpu.stat").write_text("usage_usec 0\n")
-    (cg / "memory.swap.current").write_text(str(5 * GB))
-    col = ["a.py::t0.dev.1"]
-    model = make_model(tmp_path, 8, {profile_key(col[0]): (0.5, GB, 5.0)})
+    pressure = cg / "memory.pressure"
+    pressure.write_text("some avg10=20.00 avg60=5.00 avg300=1.00 total=1\n"
+                        "full avg10=4.60 avg60=1.00 avg300=0.50 total=1\n")
+    col = [f"a.py::t{i}.dev.1" for i in range(4)]
+    model = make_model(tmp_path, 8, {profile_key(c): (0.5, GB, 5.0) for c in col})
     sched = BudgetScheduling(FakeConfig(tmp_path, 2), model=model, ncpus=8, mem_total=64 * GB,
-                             cgroup_tests=cg, available_fn=lambda: 20 * GB)
-    assert CgroupReader.swap_of(cg) == 5 * GB
+                             cgroup_tests=cg, available_fn=lambda: 30 * GB)
+    nodes = [FakeNode(f"gw{i}") for i in range(2)]
+    for n in nodes:
+        sched.add_node(n); sched.add_node_collection(n, col)
+    sched.schedule()
+    assert sched.mem_stall == pytest.approx(4.6), "full, not some"
+    held = next(i for n in nodes if (i := sched._held(n)) is not None and i not in sched.committed_at)
+    node = next(n for n in nodes if sched._held(n) == held)
+    assert sched._fits(held, node, pressure=False), "4.6% is a busy machine, not a short one"
+    pressure.write_text("some avg10=40.00 avg60=5.00 avg300=1.00 total=1\n"
+                        f"full avg10={MEM_STALL_LIMIT:.2f} avg60=1.00 avg300=0.50 total=1\n")
     sched._refresh_measurement()
-    assert sched.tests_swap == 5 * GB
-    assert sched._available() == pytest.approx(15 * GB)
-
-
-def test_the_tests_swap_growing_stops_admission_until_it_is_quiet(tmp_path):
-    clock, avail = {"t": 0.0}, {"v": 40 * GB}
-    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, max_workers=0)
-    running = len(committed(sched))
-    sched._swap_guard()                                # baseline
-    clock["t"] = 10.0
-    sched.tests_swap = 1 * GB                          # our pages are going out
-    sched._swap_guard()
-    held = next(i for n in nodes if (i := sched._held(n)) is not None)
-    assert not sched._fits(held, nodes[0], pressure=False)
-    assert sched.stats["rejected_swapping"] >= 1
-    clock["t"] = 20.0                                  # steady since: but not yet quiet for long enough
-    sched._swap_guard()
-    assert not sched._fits(held, nodes[0], pressure=False)
-    clock["t"] = 31.0
-    sched._swap_guard()
-    assert sched._fits(held, nodes[0], pressure=False), "quiet for SWAP_QUIET_SECONDS: admit again"
-    assert len(committed(sched)) == running
-
-
-def test_swap_already_out_and_steady_is_not_a_signal(tmp_path):
-    clock, avail = {"t": 0.0}, {"v": 40 * GB}
-    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, max_workers=0)
-    sched.tests_swap = 2 * GB                          # paged out long ago
-    sched._swap_window = (float("-inf"), 0.0)          # the guard first sees it already out
-    for _ in range(6):
-        sched._swap_guard()
-        clock["t"] += 10.0
-    assert sched._swap_rising_until == float("-inf")
+    assert not sched._fits(held, node, pressure=False)
+    assert sched.stats["rejected_mem_stall"] >= 1 and sched.stats["mem_stalls"] == 1
+    pressure.write_text("some avg10=3.00 avg60=5.00 avg300=1.00 total=1\n"
+                        "full avg10=2.00 avg60=1.00 avg300=0.50 total=1\n")
+    sched._refresh_measurement()
+    assert sched._fits(held, node, pressure=False), "fallen back: admit again"
 
 
 def test_the_pool_does_not_grow_while_the_tests_stall_on_memory(tmp_path):
@@ -562,19 +558,17 @@ def test_the_pool_does_not_grow_while_the_tests_stall_on_memory(tmp_path):
     Measured: the pool went from 12 to 33 workers in four minutes on 1-5 cores of load
     while swap filled.
     """
-    for stalled in ("swap", "psi"):
-        clock, avail = {"t": 0.0}, {"v": 40 * GB}
-        sub = tmp_path / stalled; sub.mkdir()
-        sched, nodes, col, spawned = make_pool_sched(sub, clock, avail)
-        arrive(sched, nodes, col)
-        before = len(spawned)
-        if stalled == "swap":
-            sched._swap_rising_until = clock["t"] + 100.0
-        else:
-            sched._psi = (0.0, 0.5)
-        clock["t"] = 30.0
-        sched._maybe_grow_pool(pressure=False)
-        assert len(spawned) == before, f"{stalled}: all busy, but stalled on memory"
+    clock, avail = {"t": 0.0}, {"v": 40 * GB}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail)
+    arrive(sched, nodes, col)
+    before = len(spawned)
+    sched.mem_stall = MEM_STALL_LIMIT
+    clock["t"] = 30.0
+    sched._maybe_grow_pool(pressure=False)
+    assert len(spawned) == before, "all busy, but stalled on memory"
+    sched.mem_stall = MEM_STALL_LIMIT - 1.0
+    sched._maybe_grow_pool(pressure=False)
+    assert len(spawned) == before + 1, "below the limit it grows as before"
 
 
 def test_a_worker_that_is_starting_is_charged_to_the_forecast(tmp_path):
@@ -610,7 +604,7 @@ def test_the_pool_shrinks_back_when_workers_sit_idle(tmp_path):
         sched.check_schedule()
     assert len(sched._live_workers()) == 6 and len(spawned) == 4
     # memory runs short: the running tests finish and nothing more fits, so the workers idle
-    avail["v"] = 3.5 * GB
+    avail["v"] = 0.3 * GB + MEM_RESERVE
     for node in nodes:
         for idx in [i for i in sched.node2pending[node] if i in sched.committed_at]:
             sched.mark_test_complete(node, idx)
@@ -1027,7 +1021,7 @@ def test_file_affinity_and_longest_first(tmp_path):
 def test_pressure_guard_shrinks_target(tmp_path, monkeypatch):
     import test.pylib.budget_scheduler as bs
     col = [f"a.py::t{i}.dev.1" for i in range(4)]
-    monkeypatch.setattr(bs, "read_psi", lambda kind: 50.0 if kind == "cpu" else 0.0)
+    monkeypatch.setattr(bs, "read_psi", lambda kind, path=None, line_kind="some": 50.0 if kind == "cpu" else 0.0)
     sched, nodes = make_sched(tmp_path, col, {n: (0.5, 1e8, 1.0) for n in col}, nodes=2, ncpus=4,
                               **{"--budget-psi-cpu": 20.0})
     assert sched.stats["pressure_cuts"] == 1
@@ -1041,7 +1035,7 @@ def test_target_recovers_after_pressure(tmp_path, monkeypatch):
     col = [f"a.py::t{i}.dev.1" for i in range(4)]
     clock = {"t": 1000.0}
     psi = {"cpu": 50.0}
-    monkeypatch.setattr(bs, "read_psi", lambda kind: psi["cpu"] if kind == "cpu" else 0.0)
+    monkeypatch.setattr(bs, "read_psi", lambda kind, path=None, line_kind="some": psi["cpu"] if kind == "cpu" else 0.0)
     model = make_model(tmp_path, 4, {profile_key(n): (0.5, 1e8, 1.0) for n in col})
     sched = BudgetScheduling(FakeConfig(tmp_path, 1, **{"--budget-psi-cpu": 20.0}), model=model, ncpus=4,
                              mem_total=20 * GB, cgroup_tests=NO_CGROUP, now=lambda: clock["t"])

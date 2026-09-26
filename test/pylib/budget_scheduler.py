@@ -141,19 +141,16 @@ STATIC_MEM_MODE_ALIAS = {"sanitize": "debug", "coverage": "debug"}
 # is available, idle workers -- each holding its last module's cluster -- are sent home,
 # one per this many seconds, so that one retirement is visible before the next.
 RETIRE_COOLDOWN = 10.0
-# RAM alone cannot see the machine running short.  When it does, the kernel pages the tests'
-# memory out to keep MemAvailable up, admission reads that as room and admits more, and more
-# goes out: measured on a debug run, MemAvailable held at 3-7 GB while swap filled from 28 GB
-# to all 32, reservations reached 37 GB against a 21.6 GB budget, and the machine stalled for
-# a quarter of an hour.  So what the tests hold in swap counts as memory they hold -- it comes
-# back into RAM the moment they touch it -- and swap growing at all means the machine is
-# short: admission stops until it has been quiet for SWAP_QUIET_SECONDS.  Both readings are
-# the tests' own cgroups, never the machine's swap, which counts the desktop too.  Growth is
-# judged over SWAP_WINDOW_SECONDS, against a noise floor of SWAP_NOISE_SHARE of what the tests
-# hold: the kernel ages a few idle pages out now and then on a calm machine.
-SWAP_WINDOW_SECONDS = 10.0
-SWAP_QUIET_SECONDS = 20.0
-SWAP_NOISE_SHARE = 0.02
+# Admission checks every test against the RAM the machine reports, and swap is not read at
+# all: the kernel pages cold anonymous memory out as ordinary reclaim, with gigabytes free.
+# Measured on a healthy debug run, the tests' swap grew by 0.3-0.8 GB in ten seconds five
+# times while 8.5-18 GB was available.  What does mark the machine short is the tests losing
+# time to memory: their cgroup's memory.pressure "full" -- the share of time every runnable
+# task of theirs was stalled on reclaim, swap-in or refaults at once.  At MEM_STALL_LIMIT
+# percent over ten seconds nothing more is admitted, forced or spawned until it falls back.
+# The healthy run peaked at 4.6% for seconds; the run that filled swap and stalled the
+# machine sat at 15-21% for a quarter of an hour.
+MEM_STALL_LIMIT = 10.0
 # An idle worker already holds the next test it will run, and xdist cannot take a test back:
 # the shutdown that sends the worker home is also what starts that test.  So the controller
 # first leaves a flag in this directory, one file per worker naming the held test, and the
@@ -187,14 +184,10 @@ POOL_IDLE_SECONDS = 60.0
 # If the work comes back, the pool grows again.
 POOL_FLOOR_FRACTION = 0.25
 # Admission gates on measured headroom: what the machine has available, minus what the
-# tests admitted recently have not taken yet, minus this reserve.  Reservations alone were
-# blind to memory no test owns -- workers growing from 0.2 to 0.5 GB each over a run, module
-# fixtures, containers -- and the full release suite reached 25 GB of the tests' own swap
-# with 20 GB reserved against 42 GB held.  The reserve keeps admission from spending the
-# last of MemAvailable, which is where the kernel starts reclaiming the tests themselves.
-MEM_RESERVE_FRACTION = 0.05
-MEM_RESERVE_MIN = 1 * 10**9
-MEM_RESERVE_MAX = 4 * 10**9
+# tests admitted recently have not taken yet, minus this reserve.  The reserve only keeps
+# admission from spending the very last of MemAvailable; a real shortage shows up as the
+# tests stalling on memory (MEM_STALL_LIMIT), not as a number to hold back in advance.
+MEM_RESERVE = 512 * 2**20
 # Admission forecasts each test's peak instead of trusting one price for it.  A test's
 # memory is known only once it has taken it, and by then it cannot be recalled, so what
 # admission needs is where the running tests are going, not where they are.  Measured over
@@ -659,14 +652,14 @@ def read_procs_running() -> float | None:
     return None
 
 
-def read_psi(kind: str, path: Path | None = None) -> float:
-    """Return the ``some avg10`` percentage from /proc/pressure/<kind>, or from a
-    cgroup's own <path>/<kind>.pressure when a path is given (the stalls of *our*
+def read_psi(kind: str, path: Path | None = None, line_kind: str = "some") -> float:
+    """Return the ``some`` (or ``full``) ``avg10`` percentage from /proc/pressure/<kind>, or
+    from a cgroup's own <path>/<kind>.pressure when a path is given (the stalls of *our*
     tests, not of everything else on the machine), or 0 if unavailable."""
     try:
         with open(path / f"{kind}.pressure" if path is not None else f"/proc/pressure/{kind}") as f:
             for line in f:
-                if line.startswith("some"):
+                if line.startswith(line_kind):
                     for tok in line.split():
                         if tok.startswith("avg10="):
                             return float(tok[6:])
@@ -736,14 +729,6 @@ class CgroupReader:
             return None
         return None
 
-    @staticmethod
-    def swap_of(path: Path) -> float | None:
-        """Bytes of a cgroup's memory (hierarchical) the kernel has paged out."""
-        try:
-            return float((path / "memory.swap.current").read_text())
-        except (OSError, ValueError):
-            return None
-
     def memory(self, wid: str) -> float | None:
         """A worker's anonymous memory, the containers it started included.
 
@@ -795,9 +780,7 @@ class BudgetScheduling:
 
         self.ncpus = ncpus or len(os.sched_getaffinity(0))
         self._machine_available = available_fn or (lambda: psutil.virtual_memory().available)
-        self.tests_swap = 0.0                          # the tests' own memory the kernel has paged out
-        self._swap_window: tuple[float, float] = (-math.inf, 0.0)
-        self._swap_rising_until = -math.inf
+        self.mem_stall = 0.0                           # the tests' memory.pressure "full avg10", percent
         opt = config.getoption
         self.depth = max(1, int(opt("--budget-depth")))
         self.max_workers = int(opt("--budget-max-workers"))
@@ -824,7 +807,7 @@ class BudgetScheduling:
         # A first cut, before the workers exist; replaced by a measurement once they do.
         free_now = self._available()
         self.mem_target = max(1 * GB, free_now)
-        self.mem_reserve = min(MEM_RESERVE_MAX, max(MEM_RESERVE_MIN, MEM_RESERVE_FRACTION * total))
+        self.mem_reserve = MEM_RESERVE
         self._mem_at_commit: dict[int, float] = {}     # index -> its worker's firm memory when it started
         self._mem_track: dict[int, list[float]] = {}   # index -> [most it has held, when that last grew]
         self._started_at: dict[int, float] = {}        # index -> when it started running (not just committed)
@@ -1109,7 +1092,6 @@ class BudgetScheduling:
         self.live.refresh(n.gateway.id for n in nodes)
         self._refresh_measurement()
         self._refresh_forecasts()
-        self._swap_guard()
         self._ram_guard()
         self._recycle_bloated_worker()
         self._maybe_shrink_pool()
@@ -1163,7 +1145,7 @@ class BudgetScheduling:
                         # may dip into half the reserve, only while the machine shows no
                         # memory pressure at all, and only one at a time, so each forced
                         # test shows what it takes before the next one goes.
-                        mem_ok = (self.now() >= self._swap_rising_until
+                        mem_ok = (not self._stalled()
                                   and self._forecast_need(held, node) + self._hold_reservation(held)[1]
                                   <= self._available() - 0.5 * self.mem_reserve
                                   and self._psi[1] == 0.0
@@ -1244,10 +1226,10 @@ class BudgetScheduling:
         (low PSI and measured utilization below target, counting what was just
         admitted and is not visible yet).  Above the ceiling, never.
         """
-        if self.now() < self._swap_rising_until:
-            # The tests' memory is going out to swap as we speak: another test only adds to
-            # it.  The progress rule still starts one when nothing runs at all.
-            self.stats["rejected_swapping"] += 1
+        if self._stalled():
+            # The tests are losing time to memory already: another test only adds to it.
+            # The progress rule still starts one when nothing runs at all.
+            self.stats["rejected_mem_stall"] += 1
             return False
         if self.psi_only:
             # Ablation: no budget at all.  Keep loading the machine until it complains.
@@ -1446,7 +1428,7 @@ class BudgetScheduling:
         # Low CPU load is not idle capacity when the tests are stalled on memory: a test
         # waiting for its pages to come back from swap burns no CPU.  Measured, the pool grew
         # from 12 to 33 workers in four minutes on a load of 1-5 cores while swap filled.
-        if self._psi[1] > 0.0 or now < self._swap_rising_until:
+        if self._stalled():
             return
         head = next((lst[0] for lst in self.files.values() if lst and not self._waits_for_first_run(lst[0])), None)
         if head is None:
@@ -1559,21 +1541,15 @@ class BudgetScheduling:
     def _refresh_measurement(self) -> None:
         """Test-attributable load: all worker cgroups (hierarchical) plus the services cgroup."""
         cores = None
-        swap = None
         if self.live.base is not None:
             tests_rate = self.live.rate(self.live.base)
             if tests_rate is not None:
                 cores = tests_rate
-            swap = CgroupReader.swap_of(self.live.base)
             if self._services_path is not None:
                 svc = self.live.rate(self._services_path)
                 if svc is not None:
                     cores = (cores or 0.0) + svc
-                svc_swap = CgroupReader.swap_of(self._services_path)
-                if svc_swap is not None:
-                    swap = (swap or 0.0) + svc_swap
-        if swap is not None:
-            self.tests_swap = swap
+            self._set_mem_stall(read_psi("memory", self.live.base, "full"))
         if cores is None:
             # no cgroup data (unit tests, foreign environment): fall back to per-node readings
             cores = sum((self.live.cores(n.gateway.id) or 0.0) for n in self.node2pending)
@@ -1665,29 +1641,21 @@ class BudgetScheduling:
         return self._sys_sample[1]
 
     def _available(self) -> float:
-        """What the machine has available for tests, less what the tests hold in swap (see SWAP_WINDOW_SECONDS)."""
-        return self._machine_available() - self.tests_swap
+        """What the machine has available for tests (MemAvailable); swap is not counted either way."""
+        return self._machine_available()
 
-    def _swap_guard(self) -> None:
-        """Mark the machine short while the tests' own swap grows: admission and pool growth stop."""
-        now = self.now()
-        start, swap0 = self._swap_window
-        if start == -math.inf:
-            self._swap_window = (now, self.tests_swap)
-            return
-        if now - start < SWAP_WINDOW_SECONDS:
-            return
-        self._swap_window = (now, self.tests_swap)
-        grew = self.tests_swap - swap0
-        held = (memory_stat(self.live.base, "anon") or 0.0) if self.live.base is not None else 0.0
-        if grew <= SWAP_NOISE_SHARE * held:
-            return
-        if now >= self._swap_rising_until:
-            self._log(f"memory: the tests' swap grew {grew / GB:.2f}G in {now - start:.0f}s to "
-                      f"{self.tests_swap / GB:.2f}G; no admissions until it has been quiet for "
-                      f"{SWAP_QUIET_SECONDS:.0f}s")
-        self._swap_rising_until = now + SWAP_QUIET_SECONDS
-        self.stats["swap_rising"] += 1
+    def _stalled(self) -> bool:
+        """The tests are losing time to memory (see MEM_STALL_LIMIT)."""
+        return self.mem_stall >= MEM_STALL_LIMIT
+
+    def _set_mem_stall(self, stall: float) -> None:
+        was = self._stalled()
+        self.mem_stall = stall
+        if self._stalled() != was:
+            self.stats["mem_stalls"] += int(not was)
+            self._log(f"memory: the tests stall on memory {stall:.1f}% of the time"
+                      + ("; nothing more is admitted until it falls below "
+                         f"{MEM_STALL_LIMIT:.0f}%" if not was else "; admitting again"))
 
     def _ram_guard(self) -> None:
         """Send home an idle worker while the run is stalled on memory.
