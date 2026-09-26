@@ -26,6 +26,7 @@ from test.pylib.budget_scheduler import (
     STATIC_MEM_GDB,
     GB,
     BudgetScheduling,
+    CgroupReader,
     CostModel,
     parse_seastar_args,
     profile_key,
@@ -503,6 +504,77 @@ def test_the_pool_does_not_grow_without_memory_for_a_worker_and_a_test(tmp_path)
     sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail)
     assert len(committed(sched)) == 2
     assert spawned == [], "no room for a worker and the test it would run"
+
+
+def test_the_tests_swap_counts_as_memory_they_hold(tmp_path):
+    """Swapped-out test memory comes back the moment it is touched: it is not free RAM.
+
+    Measured without this: the kernel kept MemAvailable at 3-7 GB by paging the tests out,
+    admission read that as room, and swap filled from 28 GB to all 32.
+    """
+    cg = tmp_path / "tests"; cg.mkdir()
+    (cg / "cpu.stat").write_text("usage_usec 0\n")
+    (cg / "memory.swap.current").write_text(str(5 * GB))
+    col = ["a.py::t0.dev.1"]
+    model = make_model(tmp_path, 8, {profile_key(col[0]): (0.5, GB, 5.0)})
+    sched = BudgetScheduling(FakeConfig(tmp_path, 2), model=model, ncpus=8, mem_total=64 * GB,
+                             cgroup_tests=cg, available_fn=lambda: 20 * GB)
+    assert CgroupReader.swap_of(cg) == 5 * GB
+    sched._refresh_measurement()
+    assert sched.tests_swap == 5 * GB
+    assert sched._available() == pytest.approx(15 * GB)
+
+
+def test_the_tests_swap_growing_stops_admission_until_it_is_quiet(tmp_path):
+    clock, avail = {"t": 0.0}, {"v": 40 * GB}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, max_workers=0)
+    running = len(committed(sched))
+    sched._swap_guard()                                # baseline
+    clock["t"] = 10.0
+    sched.tests_swap = 1 * GB                          # our pages are going out
+    sched._swap_guard()
+    held = next(i for n in nodes if (i := sched._held(n)) is not None)
+    assert not sched._fits(held, nodes[0], pressure=False)
+    assert sched.stats["rejected_swapping"] >= 1
+    clock["t"] = 20.0                                  # steady since: but not yet quiet for long enough
+    sched._swap_guard()
+    assert not sched._fits(held, nodes[0], pressure=False)
+    clock["t"] = 31.0
+    sched._swap_guard()
+    assert sched._fits(held, nodes[0], pressure=False), "quiet for SWAP_QUIET_SECONDS: admit again"
+    assert len(committed(sched)) == running
+
+
+def test_swap_already_out_and_steady_is_not_a_signal(tmp_path):
+    clock, avail = {"t": 0.0}, {"v": 40 * GB}
+    sched, nodes, col, spawned = make_pool_sched(tmp_path, clock, avail, max_workers=0)
+    sched.tests_swap = 2 * GB                          # paged out long ago
+    sched._swap_window = (float("-inf"), 0.0)          # the guard first sees it already out
+    for _ in range(6):
+        sched._swap_guard()
+        clock["t"] += 10.0
+    assert sched._swap_rising_until == float("-inf")
+
+
+def test_the_pool_does_not_grow_while_the_tests_stall_on_memory(tmp_path):
+    """A test waiting for its pages burns no CPU; low load then is not spare capacity.
+
+    Measured: the pool went from 12 to 33 workers in four minutes on 1-5 cores of load
+    while swap filled.
+    """
+    for stalled in ("swap", "psi"):
+        clock, avail = {"t": 0.0}, {"v": 40 * GB}
+        sub = tmp_path / stalled; sub.mkdir()
+        sched, nodes, col, spawned = make_pool_sched(sub, clock, avail)
+        arrive(sched, nodes, col)
+        before = len(spawned)
+        if stalled == "swap":
+            sched._swap_rising_until = clock["t"] + 100.0
+        else:
+            sched._psi = (0.0, 0.5)
+        clock["t"] = 30.0
+        sched._maybe_grow_pool(pressure=False)
+        assert len(spawned) == before, f"{stalled}: all busy, but stalled on memory"
 
 
 def test_a_worker_that_is_starting_is_charged_to_the_forecast(tmp_path):
