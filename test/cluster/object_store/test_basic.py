@@ -441,6 +441,14 @@ async def test_create_keyspace_after_config_update(manager: ScyllaClusterManager
     await manager.server_update_config(server.server_id, 'object_storage_endpoints', updated_objconf)
     await wait_for_config(manager, server, 'object_storage_endpoints', {updated_ep['name']: updated_expected_conf})
 
+    if updated_ep['type'] == 's3':
+        # 'updated-region' is made up, so the server now rejects everything the
+        # client sends, and a failed flush aborts the node. Switch back to the
+        # real region before writing.
+        print('Reconfigure the live object_storage_client back to the server region')
+        await manager.server_update_config(server.server_id, 'object_storage_endpoints', objconf)
+        await wait_for_config(manager, server, 'object_storage_endpoints', {ep['name']: expected_conf})
+
     print('Verify the reconfigured client still works: insert more data and flush')
     await cql.run_async(f"INSERT INTO random_ks.test (name, value) VALUES ('after_reconfig', 456);")
     await manager.api.flush_keyspace(server.ip_addr, 'random_ks')
