@@ -34,6 +34,7 @@
 #include "db/view/view_consumer.hh"
 #include "mutation/canonical_mutation.hh"
 #include "replica/database.hh"
+#include "utils/exceptions.hh"
 #include "keys/clustering_bounds_comparator.hh"
 #include "cql3/cql_config.hh"
 #include "cql3/util.hh"
@@ -2142,9 +2143,19 @@ future<> view_update_generator::mutate_MV(
                 memory_units = nullptr;
                 _proxy.local().update_view_update_backlog();
                 if (f.failed()) {
+                    auto ep = f.get_exception();
+                    // The update reaches the shard owning it only once that shard has committed every
+                    // schema change this one had (see global_schema_ptr::get()), so a view missing there
+                    // has been dropped, possibly while this shard is still committing the drop. Such an
+                    // update is moot: it must neither fail the base write nor be reported as an error.
+                    if (try_catch<replica::no_such_column_family>(ep)) {
+                        tracing::trace(tr_state, "Ignoring local view update for {}: the view was dropped", my_address);
+                        vlogger.debug("Ignoring view update to {} (view: {}.{}, base token: {}, view token: {}) of a dropped view: {:t}",
+                                my_address, s->ks_name(), s->cf_name(), base_token, view_token, ep);
+                        return make_ready_future<>();
+                    }
                     ++stats.view_updates_failed_local;
                     ++cf_stats.total_view_updates_failed_local;
-                    auto ep = f.get_exception();
                     tracing::trace(tr_state, "Failed to apply local view update for {}", my_address);
                     vlogger.error("Error applying view update to {} (view: {}.{}, base token: {}, view token: {}): {:t}",
                             my_address, s->ks_name(), s->cf_name(), base_token, view_token, ep);
