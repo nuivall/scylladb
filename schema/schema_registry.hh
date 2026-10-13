@@ -183,9 +183,20 @@ schema_registry& local_schema_registry();
 // const&. Useful for ensuring that schema version obtained on one shard is
 // automatically propagated to other shards, no matter how long the processing
 // chain will last.
+//
+// Schema changes are committed shard by shard (see schema_applier::commit()), so the schema may
+// reach a shard which hasn't committed the change it comes from yet. get() waits for that shard
+// to catch up, comparing the schema commit generations of the two shards.
 class global_schema_ptr {
     schema_ptr _ptr;
     unsigned _cpu_of_origin;
+    // The commit generation of the origin shard and whether _ptr was synced there.
+    uint64_t _origin_gen;
+    bool _origin_synced;
+
+    // Returns the schema registered on the current shard, which must not be the origin.
+    schema_ptr get_on_this_shard() const;
+    future<schema_ptr> wait_and_get(db::timeout_clock::time_point timeout) const;
 public:
     // Note: the schema_ptr must come from the current shard and can't be nullptr.
     global_schema_ptr(const schema_ptr&);
@@ -196,4 +207,10 @@ public:
     // May be invoked across shards. Always returns an engaged pointer.
     schema_ptr get() const;
     operator schema_ptr() const { return get(); }
+    // May be invoked across shards. Always returns an engaged pointer.
+    // On a shard other than the origin, first waits until the shard has committed every schema
+    // change the origin had committed when this object was created, failing with timed_out_error
+    // at `timeout`. Then the returned schema is synced if it was synced on the origin.
+    // Resolves immediately on the origin shard, or when no wait is needed.
+    future<schema_ptr> get(db::timeout_clock::time_point timeout) const;
 };
