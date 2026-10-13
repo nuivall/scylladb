@@ -584,7 +584,7 @@ future<> read_context::lookup_readers(db::timeout_clock::time_point timeout) noe
     try {
         return _db.invoke_on_all([this, cmd = &_cmd, ranges = &_ranges, gs = global_schema_ptr(_schema),
                 gts = tracing::global_trace_state_ptr(_trace_state), timeout] (replica::database& db) mutable -> future<> {
-            auto schema = gs.get();
+            auto schema = co_await gs.get(timeout);
             auto& table = db.find_column_family(schema);
             auto& semaphore = this->semaphore();
             auto shard = this_shard_id();
@@ -821,8 +821,9 @@ future<foreign_ptr<lw_shared_ptr<typename ResultBuilder::result_type>>> do_query
     locator::tablet_range_splitter_for_reads range_splitter{s, tablets, this_node_id, ranges};
     while (auto range_opt = range_splitter()) {
         auto& r = *results.emplace_back(co_await db.invoke_on(range_opt->shard,
-                    [&result_builder, gs = global_schema_ptr(s), &query_cmd, &range_opt, gts = tracing::global_trace_state_ptr(trace_state), timeout] (replica::database& db) {
-            return result_builder.query(db, gs, query_cmd, range_opt->range, gts, timeout);
+                    [&result_builder, gs = global_schema_ptr(s), &query_cmd, &range_opt, gts = tracing::global_trace_state_ptr(trace_state), timeout] (replica::database& db)
+                -> future<foreign_ptr<lw_shared_ptr<typename ResultBuilder::result_type>>> {
+            co_return co_await result_builder.query(db, co_await gs.get(timeout), query_cmd, range_opt->range, gts, timeout);
         }));
 
         // Subtract result from limit, watch for underflow
