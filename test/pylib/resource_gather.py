@@ -405,6 +405,17 @@ def setup_worker_cgroup() -> None:
         logger.warning(f"Could not move worker process to cgroup {worker_cgroup_path_default}: {e}")
 
 
+def read_psi_avg10(path: Path) -> float | None:
+    """The "some" avg10 percentage of a pressure file, or None if unreadable."""
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith("some"):
+                return float(line.split("avg10=")[1].split()[0])
+    except (OSError, IndexError, ValueError):
+        pass
+    return None
+
+
 class SystemResourceMonitor:
     """Continuously monitors CPU and memory utilization."""
     def __init__(self, tmpdir: Path):
@@ -435,6 +446,9 @@ class SystemResourceMonitor:
                     memory_inactive=vm.inactive,
                     memory_buffers=vm.buffers,
                     timestamp=datetime.now(),
+                    psi_cpu=read_psi_avg10(CGROUP_TESTS / "cpu.pressure"),
+                    psi_cpu_system=read_psi_avg10(Path("/proc/pressure/cpu")),
+                    psi_mem=read_psi_avg10(Path("/proc/pressure/memory")),
                 )
                 sqlite_writer.write_row(timeline_record, SYSTEM_RESOURCE_METRICS_TABLE)
         finally:
