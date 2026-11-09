@@ -84,6 +84,9 @@ create_table = [
         memory_inactive INTEGER,
         memory_buffers INTEGER,
         timestamp DATETIME,
+        psi_cpu REAL,
+        psi_cpu_system REAL,
+        psi_mem REAL,
         FOREIGN KEY(host_id) REFERENCES {HOST_INFO_TABLE}(host_id)
     );
     ''',

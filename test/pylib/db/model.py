@@ -53,6 +53,11 @@ class SystemResourceMetric:
     memory_inactive: int
     memory_buffers: int
     timestamp: datetime
+    # PSI "some" avg10, %: the tests' cgroup tree's CPU (as the dynamic
+    # scheduler reads it), the machine's CPU, and the machine's memory.
+    psi_cpu: float = None
+    psi_cpu_system: float = None
+    psi_mem: float = None
 
 
 @define
