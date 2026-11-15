@@ -15,6 +15,7 @@
 #include "db/consistency_level_type.hh"
 #include "db/system_keyspace.hh"
 #include "schema/schema.hh"
+#include "utils/error_injection.hh"
 #include <iterator>
 #include <seastar/core/abort_source.hh>
 #include <seastar/coroutine/maybe_yield.hh>
@@ -102,6 +103,10 @@ future<permission_set> cache::load_permissions(const role_or_anonymous& role, co
         co_return it->second;
     }
     auto perms = co_await _permission_loader(role, r);
+    if (auto& injector = utils::get_local_injector();
+            role.name && injector.inject_parameter("auth_cache_load_permissions_pause", "role") == std::string_view(*role.name)) {
+        co_await injector.inject("auth_cache_load_permissions_pause", utils::wait_for_message(std::chrono::minutes(2)));
+    }
     add_permissions(*perms_cache, r, perms);
     co_return perms;
 }
