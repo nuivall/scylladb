@@ -493,19 +493,28 @@ future<> tablet_sstable_streamer::stream(shared_ptr<stream_progress> progress) {
                        return _tablet_map.get_token_range(tid);
                    }) | std::ranges::to<std::vector>());
 
-    for (auto& [tablet_range, sstables_fully_contained, sstables_partially_contained] : classified_sstables) {
-        auto per_tablet_progress = make_shared<per_tablet_stream_progress>(
-            progress,
-            sstables_fully_contained.size() + sstables_partially_contained.size());
-        auto tablet_pr = dht::to_partition_range(tablet_range);
-        if (!sstables_partially_contained.empty()) {
-            llog.debug("Streaming {} partially contained SSTables.",sstables_partially_contained.size());
-            co_await stream_sstables(tablet_pr, std::move(sstables_partially_contained), per_tablet_progress, defer_unlinking::yes);
+    // TEST-ONLY candidate fix: a failure leaves the partially contained sstables, marked
+    // after an earlier tablet streamed, in place: the tablets after it weren't streamed.
+    try {
+        for (auto& [tablet_range, sstables_fully_contained, sstables_partially_contained] : classified_sstables) {
+            auto per_tablet_progress = make_shared<per_tablet_stream_progress>(
+                progress,
+                sstables_fully_contained.size() + sstables_partially_contained.size());
+            auto tablet_pr = dht::to_partition_range(tablet_range);
+            if (!sstables_partially_contained.empty()) {
+                llog.debug("Streaming {} partially contained SSTables.",sstables_partially_contained.size());
+                co_await stream_sstables(tablet_pr, std::move(sstables_partially_contained), per_tablet_progress, defer_unlinking::yes);
+            }
+            if (!sstables_fully_contained.empty()) {
+                llog.debug("Streaming {} fully contained SSTables.",sstables_fully_contained.size());
+                co_await stream_fully_contained_sstables(tablet_pr, std::move(sstables_fully_contained), per_tablet_progress);
+            }
         }
-        if (!sstables_fully_contained.empty()) {
-            llog.debug("Streaming {} fully contained SSTables.",sstables_fully_contained.size());
-            co_await stream_fully_contained_sstables(tablet_pr, std::move(sstables_fully_contained), per_tablet_progress);
+    } catch (...) {
+        for (auto& sst : _sstables) {
+            sst->unmark_for_deletion();
         }
+        throw;
     }
 
     co_await unlink_marked_sstables();
