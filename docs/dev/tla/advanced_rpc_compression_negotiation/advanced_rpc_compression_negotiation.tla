@@ -1,5 +1,5 @@
 
----------------------------- MODULE compression ----------------------------
+-------------- MODULE advanced_rpc_compression_negotiation --------------
 
 EXTENDS Integers, Sequences, TLC
 

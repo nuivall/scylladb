@@ -239,7 +239,7 @@ The receiver just communicates its preferences in its COMMIT, and the sender
 unilaterally sets the parameters based on these preferences.
 
 There is a TLA specification of the algorithm in
-[advanced_rpc_compression_negotiation.tla](advanced_rpc_compression_negotiation.tla).
+[advanced_rpc_compression_negotiation.tla](tla/advanced_rpc_compression_negotiation/advanced_rpc_compression_negotiation.tla).
 
 ### Usage
 
