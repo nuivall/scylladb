@@ -3556,3 +3556,49 @@ async def test_object_storage_backup_tag_validation(manager: ScyllaClusterManage
                                                           object_storage.address, object_storage.bucket_name,
                                                           'backup_prefix', tables=[cf])
             assert not snapshot_catalog_sstable_rows(cql, 'bad/tag', ks, cf, servers)
+
+
+@pytest.mark.parametrize("topology", [topo(rf = 1, nodes = 2, racks = 1, dcs = 1)])
+async def test_restore_tablets_twice_from_one_snapshot(manager: ScyllaClusterManager, s3_storage, topology):
+    '''A second tablet-aware restore of the same snapshot must restore the data again.
+
+    A restore marks each sstable it attached as downloaded in system_distributed.snapshot_sstables,
+    and skips the sstables marked so, to make a retried restore not download them again. Nothing
+    resets the flag and the manifest's INSERT doesn't write it, so for the 3 days the entries
+    live a second restore of the snapshot -- after the table was truncated, say -- skips every
+    sstable and restores nothing, reporting success.
+    '''
+    servers, host_ids = await create_cluster(topology, manager, logger, s3_storage)
+    cql = manager.get_cql()
+    num_keys = 10
+
+    async with new_test_keyspace(manager, f"WITH replication = {{'class': 'NetworkTopologyStrategy', 'replication_factor': {topology.rf}}}") as ks:
+        await cql.run_async(f"CREATE TABLE {ks}.src ( pk text primary key, value int ) WITH tablets = {{'min_tablet_count': 2}};")
+        await asyncio.gather(*(cql.run_async(f"INSERT INTO {ks}.src (pk, value) VALUES ('{i}', {i})") for i in range(num_keys)))
+        snap_name, _ = await take_snapshot(ks, servers, manager, logger)
+        prefix = f'restore-twice/{snap_name}'
+        await asyncio.gather(*(do_backup(s, snap_name, f'{prefix}/{s.server_id}/src', ks, 'src', s3_storage, manager, logger) for s in servers))
+
+        await cql.run_async(f"CREATE TABLE {ks}.dst ( pk text primary key, value int );")
+        locations = [{
+            "datacenter": servers[0].datacenter,
+            "endpoint": s3_storage.address,
+            "bucket": s3_storage.bucket_name,
+            "prefix": prefix,
+            "manifests": [f'{s.server_id}/src/manifest.json' for s in servers],
+        }]
+
+        async def restore() -> None:
+            tid = await manager.api.restore_tablets_multidc(servers[0].ip_addr, ks, 'dst', snap_name, locations)
+            status = await manager.api.wait_task(servers[0].ip_addr, tid)
+            assert status is not None and status['state'] == 'done', f"restore failed: {status}"
+
+        await restore()
+        assert len(await cql.run_async(f"SELECT pk FROM {ks}.dst")) == num_keys
+
+        await cql.run_async(f"TRUNCATE {ks}.dst")
+        assert not await cql.run_async(f"SELECT pk FROM {ks}.dst")
+
+        await restore()
+        rows = await cql.run_async(f"SELECT pk FROM {ks}.dst")
+        assert len(rows) == num_keys, f"the second restore of snapshot {snap_name} restored {len(rows)} of {num_keys} rows"
