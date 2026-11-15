@@ -2675,6 +2675,15 @@ future<db::large_data_violation_type> database::do_apply(schema_ptr s, const fro
             co_await coroutine::exception(std::move(ex));
         }
     }
+    // Test-only: hold the write between taking its replay position and reaching the memtable.
+    co_await utils::get_local_injector().inject("database_apply_after_commitlog_add", [&s] (auto& handler) -> future<> {
+        if (s->ks_name() != handler.get("ks_name") || s->cf_name() != handler.get("cf_name")) {
+            co_return;
+        }
+        dblog.info("database_apply_after_commitlog_add: waiting");
+        co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::minutes{5});
+        dblog.info("database_apply_after_commitlog_add: released");
+    });
     auto f = co_await coroutine::as_future(
         this->apply_in_memory(m, s, std::move(h), timeout, std::move(guardrails), &violations));
     if (f.failed()) {
