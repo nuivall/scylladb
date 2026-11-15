@@ -1638,6 +1638,12 @@ table::perform_component_rewrite(
         for (auto* view : cg->all_views()) {
             auto per_view = co_await cm.perform_component_rewrite(
                     *view, info, filter, component, modifier, update_id);
+            // Test-only: hold the rewrite after a view in which it replaced sstables, before it
+            // stops the compactions of the next one.
+            if (!per_view.empty()) {
+                co_await utils::get_local_injector().inject("component_rewrite_pause_after_view",
+                        utils::wait_for_message(std::chrono::minutes(5)));
+            }
             rewritten.insert(per_view.begin(), per_view.end());
         }
     }

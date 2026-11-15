@@ -534,8 +534,23 @@ future<compaction_result> compaction_task_executor::compact_sstables(compaction_
         // but a garbage collected sstable gets a run identifier of its own.
         on_replace.on_addition(added);
         auto old_sstables = desc.old_sstables;
+        bool attached_gc = !desc.new_gc_sstables.empty();
         _cm.on_compaction_completion(t, std::move(desc), offstrategy).get();
         on_replace.on_removal(old_sstables);
+        // Test-only: hold the compaction once garbage collected sstables it will release
+        // later are in the sstable set.
+        if (attached_gc && !is_system_keyspace(t.schema()->ks_name())) {
+            units.return_all();
+            utils::get_local_injector().inject("compaction_pause_after_gc_sstables_attached",
+                    [this] (auto& handler) -> future<> {
+                try {
+                    co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::minutes(5),
+                            &_compaction_data.abort);
+                } catch (const abort_requested_exception&) {
+                    cmlog.info("compaction_pause_after_gc_sstables_attached: aborted");
+                }
+            }).get();
+        }
     };
 
     // retrieve owned_ranges if_required

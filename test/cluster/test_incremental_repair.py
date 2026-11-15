@@ -10,7 +10,7 @@ from test.pylib.repair import load_tablet_sstables_repaired_at, load_tablet_repa
 from test.pylib.tablets import get_all_tablet_replicas
 from test.cluster.tasks.task_manager_client import TaskManagerClient
 from test.cluster.util import reconnect_driver, get_topology_coordinator, ensure_group0_leader_on, new_test_keyspace, new_test_table, trigger_stepdown, create_new_test_keyspace
-from test.pylib.util import wait_for_cql_and_get_hosts
+from test.pylib.util import wait_for, wait_for_cql_and_get_hosts
 from test.pylib.rest_client import read_barrier
 
 from cassandra.query import ConsistencyLevel, SimpleStatement
@@ -2288,3 +2288,108 @@ async def test_full_incremental_repair_with_repaired_view_compaction_leaves_no_t
         raise repair_error
 
     assert deleted_while_held, "no captured sstable was deleted: the repaired-view compaction did not run"
+
+
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+async def test_incremental_repair_during_repaired_compaction_with_gc_sstables(manager: ScyllaClusterManager):
+    """Verify that an incremental repair doesn't take over the garbage collected sstables of a
+    compaction still running on the repaired set.
+
+    An incremental compaction attaches garbage collected (GC) sstables to the compaction group's
+    sstable set while it runs, registered as compacting, and removes them when it releases them.
+    The GC writer doesn't set repaired_at, so the GC sstables of a compaction of repaired sstables
+    have repaired_at=0 and are classified unrepaired: they show up in the unrepaired view, while
+    the compaction that owns them runs on the repaired view. Incremental repair disables
+    compaction on the unrepaired view only, takes every sstable that isn't repaired, GC sstables
+    included, and marks them repaired by rewriting their statistics, which replaces them in the
+    sstable set. When the compaction then releases its GC sstables, they are not in the set any
+    more: "Unable to remove input SSTable" (SCYLLADB-5896).
+
+    Scenario:
+      - R1: a run of several fragments holding expired tombstones, and R2: an sstable of about the
+        same size, both repaired, so that the tombstones are GC-eligible and a minor compaction
+        takes R1 and R2 together.
+      - The minor compaction is paused after it attached its first GC sstables.
+      - An incremental repair takes the GC sstables, and marks them by rewriting them on the
+        repairing view; it is paused before it stops the compactions of the repaired view.
+      - The compaction resumes and releases its GC sstables: they must still be where it put them.
+
+    Found with the TLA+ model in docs/dev/tla/compaction_groups.
+    """
+    servers, cql, hosts, ks, table_id, logs = await _setup_tombstone_gc_cluster(
+        manager, tablets=1, extra_cmdline=['--logger-log-level', 'compaction=debug', '--enable-commitlog', '0'])
+    await cql.run_async(f"ALTER TABLE {ks}.test ADD v text")
+    # Uncompressed, so that the data is as large on disk as it is written, and R1 spans several
+    # 1MB fragments.
+    await cql.run_async(f"ALTER TABLE {ks}.test WITH compaction = "
+                        "{'class': 'IncrementalCompactionStrategy', 'min_threshold': 2, 'sstable_size_in_mb': 1} "
+                        "AND compression = {}")
+    for s in servers:
+        await manager.api.disable_autocompaction(s.ip_addr, ks, "test")
+
+    insert = cql.prepare(f"INSERT INTO {ks}.test (pk, c, v) VALUES (?, 0, ?)")
+    insert.consistency_level = ConsistencyLevel.ALL
+    delete = cql.prepare(f"DELETE FROM {ks}.test WHERE pk = ?")
+    delete.consistency_level = ConsistencyLevel.ALL
+
+    async def run_all(stmt, keys):
+        keys = list(keys)
+        for i in range(0, len(keys), 500):
+            await asyncio.gather(*(cql.run_async(stmt, [k] if stmt is delete else [k, random.randbytes(500).hex()])
+                                   for k in keys[i:i + 500]))
+
+    # R1: 3/4 of the keys deleted, compacted into a run of 1MB fragments before any repair, so that
+    # the tombstones are kept.
+    nkeys = 16000
+    await run_all(insert, range(nkeys))
+    await run_all(delete, (k for k in range(nkeys) if k % 4))
+    for s in servers:
+        await manager.api.flush_keyspace(s.ip_addr, ks)
+    for s in servers:
+        await manager.api.keyspace_compaction(s.ip_addr, ks, "test")
+    # R2: live data of about R1's size.
+    await run_all(insert, range(100000, 100000 + nkeys // 4))
+    for s in servers:
+        await manager.api.flush_keyspace(s.ip_addr, ks)
+
+    # Both are repaired, and the tombstones become GC-eligible.
+    await asyncio.sleep(1)
+    await manager.api.tablet_repair(servers[0].ip_addr, ks, "test", "all", incremental_mode='incremental')
+
+    # The minor compaction of R1 and R2 on the repaired set stops once it attached GC sstables.
+    marks = [await log.mark() for log in logs]
+    for s in servers:
+        await manager.api.enable_injection(s.ip_addr, "compaction_pause_after_gc_sstables_attached", one_shot=True)
+        await manager.api.enable_autocompaction(s.ip_addr, ks, "test")
+    for s in servers:
+        await manager.api.wait_for_injection_enter(s.ip_addr, "compaction_pause_after_gc_sstables_attached")
+
+    # The repair takes the GC sstables (repaired_at=0) and marks them by rewriting them on the
+    # repairing view; it is held before it stops the compactions of the repaired view.
+    for s in servers:
+        await manager.api.enable_injection(s.ip_addr, "component_rewrite_pause_after_view", one_shot=True)
+    response = await manager.api.tablet_repair(servers[0].ip_addr, ks, "test", "all", await_completion=False,
+                                               incremental_mode='incremental')
+    # With GC sstables marked repaired like their inputs, the repair has nothing unrepaired to
+    # rewrite and never reaches the pause; that is the fixed behaviour.
+    for s in servers:
+        try:
+            await manager.api.wait_for_injection_enter(s.ip_addr, "component_rewrite_pause_after_view",
+                                                       deadline=time.time() + 30)
+        except Exception as e:
+            logger.info("the repair didn't rewrite any sstable on %s: %s", s.ip_addr, e)
+
+    # The compaction resumes: it releases its GC sstables, which the repair replaced. Without the fix,
+    # every node aborts here, so the logs are checked before anything else talks to them.
+    for s in servers:
+        await manager.api.message_injection(s.ip_addr, "compaction_pause_after_gc_sstables_attached")
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        for log, mark in zip(logs, marks):
+            matches = await log.grep(r"Unable to remove input SSTable", from_mark=mark)
+            assert not matches, f"a compaction lost track of its garbage collected sstables: {matches[0][0]}"
+        await asyncio.sleep(1)
+
+    for s in servers:
+        await manager.api.message_injection(s.ip_addr, "component_rewrite_pause_after_view")
+    await manager.api.wait_task(servers[0].ip_addr, response['tablet_task_id'])
