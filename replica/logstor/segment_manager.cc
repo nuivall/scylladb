@@ -508,6 +508,8 @@ public:
         // The full segments that fit no single compaction group of this shard. Their records are
         // separated one by one.
         uint64_t separated_segments{0};
+        // TEST-ONLY candidate fix: the records written before the last TRUNCATE of their table.
+        uint64_t truncated_records{0};
     };
 
     // Indexes the records of a segment received from another node, and places the segment.
@@ -1994,9 +1996,9 @@ future<recovery_summary> segment_manager_impl::recovery::run() {
     _summary.dropped_records = _stats.dropped_records;
     _summary.separated_segments = _stats.separated_segments;
     logstor_logger.info("Recovery complete: {} live records in {} used segments, {} free segments, {} found segments, "
-            "{} dropped records, {} full segments to separate, next segment sequence {}",
+            "{} dropped records, {} truncated records, {} full segments to separate, next segment sequence {}",
             _sm._stats.live_record_count, _summary.used_segments, _summary.free_segments, _summary.found_segments,
-            _summary.dropped_records, _summary.separated_segments, _summary.next_segment_seq);
+            _summary.dropped_records, _stats.truncated_records, _summary.separated_segments, _summary.next_segment_seq);
     co_return _summary;
 }
 
@@ -2099,6 +2101,13 @@ segment_manager_impl::index_resolver segment_manager_impl::make_index_resolver(r
         if (!cg) {
             ++stats.dropped_records;
             logstor_logger.trace("Dropping record of table {} key {}: its token has no compaction group on this shard", header.table, header.key);
+            return nullptr;
+        }
+        // TEST-ONLY candidate fix: TRUNCATE leaves the table's records in mixed segments on disk,
+        // so skip the records written before the table's last TRUNCATE.
+        if (catalog.is_truncated(header.table, header.timestamp)) {
+            ++stats.truncated_records;
+            logstor_logger.trace("Dropping record of table {} key {} ts {}: the table was truncated after it", header.table, header.key, header.timestamp);
             return nullptr;
         }
         return index;

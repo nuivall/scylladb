@@ -10,6 +10,7 @@
 #include <seastar/core/sstring.hh>
 
 #include "dht/token.hh"
+#include "mutation/timestamp.hh"
 #include "schema/schema_fwd.hh"
 
 namespace replica::logstor {
@@ -40,6 +41,13 @@ public:
     virtual target find(table_id, dht::token first, dht::token last) = 0;
 
     virtual sstring table_name(table_id) = 0;
+
+    // TEST-ONLY candidate fix: whether a record of the table with this write timestamp was
+    // written before the last TRUNCATE of the table. TRUNCATE frees mixed segments without
+    // zeroing them, so their records of the table stay on disk and the scan must skip them.
+    virtual bool is_truncated(table_id, api::timestamp_type) {
+        return false;
+    }
 };
 
 } // namespace replica::logstor

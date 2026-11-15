@@ -1017,6 +1017,22 @@ public:
         return t ? target{&t->logstor_index(), t->maybe_get_logstor_group(first, last)} : target{};
     }
 
+    // TEST-ONLY candidate fix: the truncation time is loaded from system.truncated before the
+    // logstor recovery runs (populate_keyspace()), and a record is truncated when its write
+    // timestamp is at or below it, compared in db_clock units like the batchlog replay does.
+    bool is_truncated(table_id id, api::timestamp_type ts) override {
+        auto t = logstor_table(id);
+        if (!t) {
+            return false;
+        }
+        const auto truncated_at = t->get_truncation_time();
+        if (truncated_at == db_clock::time_point::min()) {
+            return false;
+        }
+        const auto written_at = db_clock::time_point(std::chrono::duration_cast<db_clock::duration>(std::chrono::microseconds(ts)));
+        return written_at <= truncated_at;
+    }
+
     sstring table_name(table_id id) override {
         auto t = _db.get_tables_metadata().get_table_if_exists(id);
         return t ? seastar::format("{}.{}", t->schema()->ks_name(), t->schema()->cf_name()) : seastar::format("{}", id);
