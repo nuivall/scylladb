@@ -976,9 +976,9 @@ future<> groups_manager::handle_migration_rpc(const char* verb, rpc::opt_time_po
         const auto server = co_await gm.acquire_server(tablet.table, group_id, aoe.abort_source());
 
         // Supersedes the migration RPC still running on the group, if any, before `method`
-        // first reads the group's state. A sync that is superseded proposes nothing more,
-        // so a later sync doesn't need a barrier to fence an earlier one; see sc_rollback
-        // in the topology coordinator.
+        // first reads the group's state. A sync that is superseded proposes nothing more.
+        // This fences an earlier sync on this replica only: one still running on another
+        // replica is fenced by a barrier; see sc_rollback in the topology coordinator.
         auto& state = server._state;
         if (state.migration_rpc_as) {
             state.migration_rpc_as->request_abort();

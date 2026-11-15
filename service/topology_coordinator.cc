@@ -2772,8 +2772,8 @@ class topology_coordinator : public endpoint_lifecycle_subscriber
             // configuration change is done. The barrier runs first when the change needs
             // requests drained: a promotion, of requests whose serving set lacks the
             // promoted replica, and a removal, of requests that may still be inside the
-            // removed replica's raft server. An older sync of this migration that is still
-            // running needs no barrier; see sc_rollback.
+            // removed replica's raft server - or when an older sync of this migration
+            // could still propose something; see sc_rollback.
             auto transition_to_with_config_sync = [&] (locator::tablet_transition_stage stage, with_barrier needs_barrier) {
                 if ((!needs_barrier || do_barrier()) && do_config_sync()) {
                     transition_to(stage);
@@ -3171,21 +3171,19 @@ class topology_coordinator : public endpoint_lifecycle_subscriber
                     // set of every stage a live request can have here, so no request can
                     // see it named leader without being able to forward to it.
                     //
-                    // A sync of sc_become_voter may still be running on the group's leader,
-                    // and needs no barrier either. This sync reaches every replica that can
-                    // lead, and succeeds only once each of them reports. On each replica,
-                    // before this sync's handler first reads the configuration, the older
-                    // handler's abort source is cancelled: by the guard, when the replica
-                    // applies this stage, and by this handler superseding it. The older
-                    // handler checks its abort source and appends its change with no
-                    // suspension in between (sync_raft_group_config()). So either it saw the
-                    // cancellation and proposes nothing more, or its change is already in
-                    // this replica's log, where this handler sees it and reverts it before
-                    // reporting.
+                    // The barrier is for the sync of sc_become_voter: it may still run on
+                    // the group's leader, if that hasn't applied this stage yet, and land its
+                    // change after the other replicas judged this stage's configuration
+                    // converged - they find it in place, since that change never landed.
+                    // Superseding the older handler doesn't cover this: it happens on the
+                    // leader only once this sync reaches it, after the others may have
+                    // reported. The barrier waits for every replica to apply this stage,
+                    // which cancels the older handler, and for that handler to finish, as
+                    // its tablet_metadata_guard holds the older map.
                     //
                     // Retried until it succeeds: unlike the forward path there is
                     // nothing further to fall back to.
-                    transition_to_with_config_sync(locator::tablet_transition_stage::sc_remove_pending, with_barrier::no);
+                    transition_to_with_config_sync(locator::tablet_transition_stage::sc_remove_pending, with_barrier::yes);
                     break;
                 case locator::tablet_transition_stage::sc_remove_pending:
                     // Views of sc_rollback let the pending replica serve, so the barrier
