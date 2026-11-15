@@ -3512,20 +3512,12 @@ future<> database::truncate(db::system_keyspace& sys_ks, column_family& cf, std:
         dblog.warn("Data in table {}.{} is written after truncation time and was incorrectly truncated. truncated_at: {} low_mark: {} rp: {}",
                     cf.schema()->ks_name(), cf.schema()->cf_name(), truncated_at, st.low_mark, rp);
     }
-    if (rp == db::replay_position()) {
-        // If this shard had no mutations, st.low_mark will be an empty, default constructed
-        // replay_position. This is a problem because an empty replay_position has the shard_id
-        // part of segment_id set to 0, even though we may be running on a shard other than
-        // shard 0. In that case, we will save the empty low_mark as a replay position into
-        // system.truncated with an incorrect shard number, which could overwrite the replay
-        // position of the actual shard 0. So, we fix the problem by creating a replay position
-        // with the correct shard_id and 0 for base_id and position
-        if (st.low_mark == db::replay_position()) {
-            rp = db::replay_position(this_shard_id(), 0, 0);
-        } else {
-            rp = st.low_mark;
-        }
-    }
+    // TEST-ONLY candidate fix: the record is the low mark, the highest position this
+    // table applied in this run, which covers every write made before the truncate,
+    // whether flushed or cleared. The discarded sstables' positions can be below it
+    // (cleared memtables, no flush) or in an older id space (sstables flushed before
+    // a machine reboot, when segment ids restart at the uptime).
+    rp = st.low_mark != db::replay_position() ? st.low_mark : db::replay_position(this_shard_id(), 0, 0);
     co_await coroutine::parallel_for_each(views, [&sys_ks, &st, truncated_at] (lw_shared_ptr<replica::table> v) -> future<> {
             db::replay_position rp = co_await v->discard_sstables(truncated_at);
             if (st.persist_truncation_record) {
