@@ -82,6 +82,9 @@ private:
     semaphore _permission_loader_sem; // protects against reload storms on a single role change
     metrics::metric_groups _metrics;
     size_t _cached_permissions_count = 0;
+    // TEST-ONLY candidate fix (SCYLLADB-4206): bumped by every clear of cached permissions;
+    // a lookup stores its result only if no clear ran while it loaded.
+    uint64_t _permissions_epoch = 0;
 
     future<lw_shared_ptr<role_record>> fetch_role(const role_name_t& role) const;
     future<> prune_all() noexcept;

@@ -102,12 +102,15 @@ future<permission_set> cache::load_permissions(const role_or_anonymous& role, co
     if (auto it = perms_cache->find(r); it != perms_cache->end()) {
         co_return it->second;
     }
+    const auto epoch = _permissions_epoch;
     auto perms = co_await _permission_loader(role, r);
     if (auto& injector = utils::get_local_injector();
             role.name && injector.inject_parameter("auth_cache_load_permissions_pause", "role") == std::string_view(*role.name)) {
         co_await injector.inject("auth_cache_load_permissions_pause", utils::wait_for_message(std::chrono::minutes(2)));
     }
-    add_permissions(*perms_cache, r, perms);
+    if (epoch == _permissions_epoch) {
+        add_permissions(*perms_cache, r, perms);
+    }
     co_return perms;
 }
 
@@ -314,6 +317,7 @@ bool cache::includes_table(const table_id& id) noexcept {
 }
 
 void cache::add_role(const role_name_t& name, lw_shared_ptr<role_record> role) {
+    ++_permissions_epoch;
     if (auto it = _roles.find(name); it != _roles.end()) {
         _cached_permissions_count -= it->second->cached_permissions.size();
     }
@@ -333,6 +337,7 @@ void cache::remove_role(roles_map::iterator it) {
 }
 
 void cache::clear_role_permissions(const role_name_t& name) {
+    ++_permissions_epoch;
     if (auto it = _roles.find(name); it != _roles.end()) {
         _cached_permissions_count -= it->second->cached_permissions.size();
         it->second->cached_permissions.clear();
@@ -346,6 +351,7 @@ void cache::add_permissions(std::unordered_map<resource, permission_set>& cache,
 }
 
 void cache::remove_permissions(std::unordered_map<resource, permission_set>& cache, const resource& r) {
+    ++_permissions_epoch;
     _cached_permissions_count -= cache.erase(r);
 }
 
