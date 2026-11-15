@@ -459,6 +459,20 @@ static future<db::all_batches_replayed> process_batch(
                 // Test-only: hold the replay between the table checks above and the send.
                 co_await utils::get_local_injector().inject("batchlog_replay_before_send", utils::wait_for_message(std::chrono::minutes(2)));
                 co_await limiter.reserve(size, deadline);
+                // The waits above yield: a table may have been dropped or truncated since the
+                // checks at decode time. Check again, per mutation, so that a dropped table
+                // doesn't fail (and so drop) the whole batch, and a truncated one doesn't get
+                // its pre-truncate mutations back.
+                {
+                    utils::chunked_vector<mutation> kept;
+                    for (auto& m : mutations) {
+                        const auto tbl = qp.db().try_find_table(m.schema()->id());
+                        if (tbl && written_at > tbl->get_truncation_time()) {
+                            kept.push_back(std::move(m));
+                        }
+                    }
+                    mutations = std::move(kept);
+                }
                 stats.write_attempts += mutations.size();
                 auto timeout = std::min(db::timeout_clock::now() + write_timeout, deadline);
                 if (cleanup) {
