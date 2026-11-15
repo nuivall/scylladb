@@ -456,6 +456,8 @@ static future<db::all_batches_replayed> process_batch(
                 // FIXME: verify that the above is reasonably true.
                 // Neither the rate limiter nor the write may wait past the
                 // deadline: the caller has given us until then to finish.
+                // Test-only: hold the replay between the table checks above and the send.
+                co_await utils::get_local_injector().inject("batchlog_replay_before_send", utils::wait_for_message(std::chrono::minutes(2)));
                 co_await limiter.reserve(size, deadline);
                 stats.write_attempts += mutations.size();
                 auto timeout = std::min(db::timeout_clock::now() + write_timeout, deadline);
