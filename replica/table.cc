@@ -4302,7 +4302,17 @@ void table::update_effective_replication_map(locator::effective_replication_map_
 
 void table::update_tombstone_gc_rf_one() {
     auto& st = _compaction_manager.get_shared_tombstone_gc_state();
-    if (_erm && _erm->get_replication_factor() == 1) {
+    bool rf_one = _erm && _erm->get_replication_factor() == 1;
+    // TEST-ONLY candidate fix: the strategy's RF lags the tablets during a multi-step RF
+    // change (the old options stay until it completes), so a tablet may already have
+    // replicas in another DC; the table is RF=1 only if every tablet has one replica.
+    if (rf_one && uses_tablets()) {
+        const auto& tmap = _erm->get_token_metadata().tablets().get_tablet_map(_schema->id());
+        rf_one = !tmap.has_transitions() && std::ranges::all_of(tmap.tablets(), [] (const locator::tablet_info& info) {
+            return info.replicas.size() <= 1;
+        });
+    }
+    if (rf_one) {
         st.set_table_rf_one(_schema->id());
     } else {
         st.set_table_rf_n(_schema->id());
