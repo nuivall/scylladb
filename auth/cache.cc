@@ -250,6 +250,16 @@ future<> cache::load_all() {
         c._current_version = _current_version;
         co_await c.prune_all();
     });
+    // A lookup between two of the replacements above may have computed its
+    // permissions from a mix of new and old records; drop them all.
+    co_await container().invoke_on_all([] (cache& c) -> future<> {
+        for (auto& [name, role] : c._roles) {
+            c._cached_permissions_count -= role->cached_permissions.size();
+            role->cached_permissions.clear();
+            ++c._permissions_epoch;
+            co_await coroutine::maybe_yield();
+        }
+    });
 }
 
 future<> cache::gather_inheriting_roles(std::unordered_set<role_name_t>& roles, lw_shared_ptr<cache::role_record> role, const role_name_t& name) {
