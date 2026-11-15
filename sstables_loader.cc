@@ -1047,8 +1047,12 @@ future<> sstables_loader::download_tablet_sstables(locator::global_tablet_id tid
 
     // Skip sstables either not uploaded (de-duplicated by backup) or a previous restore attempt 
     // already fetched so a re-entered or retried restore doesn't re-download what's already in place.
-    auto pending = sst_infos | std::views::filter([] (const auto& si) { 
-        return si.state >= db::snapshot_state::remote_and_local && si.downloaded == db::is_downloaded::no; 
+    // TEST-ONLY candidate fix: the downloaded flag is shared by every replica in the rack
+    // (no replica identity in the key) and outlives the restore (a second restore of the
+    // snapshot, e.g. after a TRUNCATE, would skip everything). Don't skip on it: a retried
+    // restore downloads again what it already has, which is only a duplicate.
+    auto pending = sst_infos | std::views::filter([] (const auto& si) {
+        return si.state >= db::snapshot_state::remote_and_local;
     });
     auto [ fully, partially ] = co_await get_sstables_for_tablet(pending, tablet_range, [] (const auto& si) { return si.first_token; }, [] (const auto& si) { return si.last_token; });
     if (!partially.empty()) {
