@@ -2833,6 +2833,13 @@ compaction_group::do_update_sstable_sets_on_compaction_completion(compaction::co
     utils::get_local_injector().inject("update_sstable_sets_on_compaction_completion_fail", [] {
         throw std::runtime_error{"update_sstable_sets_on_compaction_completion_fail error injection"};
     });
+    // Test-only: the same, once, for the tables of the keyspace given in ks_name.
+    if (auto ks = utils::get_local_injector().inject_parameter<std::string_view>(
+                "update_sstable_sets_on_compaction_completion_fail_once", "ks_name");
+            ks && _t.schema()->ks_name() == *ks) {
+        utils::get_local_injector().disable("update_sstable_sets_on_compaction_completion_fail_once");
+        throw std::runtime_error{"update_sstable_sets_on_compaction_completion_fail_once error injection"};
+    }
 
     // make sure all old sstables belong *ONLY* to current shard before we proceed to their deletion.
     for (auto& sst : desc.old_sstables) {
