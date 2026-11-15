@@ -3747,6 +3747,17 @@ private:
             auto natural_replicas = erm->get_natural_replicas(end_token);
             replicas = std::unordered_set<locator::host_id>(natural_replicas.begin(), natural_replicas.end());
         }
+        // TEST-ONLY candidate fix: a vnode repair's participants are the natural replicas,
+        // so the pending replicas of a bootstrap or decommission take no part, and recording
+        // the range would let the others purge tombstones they may lack. Checked for the
+        // whole token ring change (a repaired range can contain a joining token, so its end
+        // token can't tell), with or without the small table optimization. Tablet tables
+        // have no pending vnode replicas: their transitions don't overlap their repair.
+        if (!_is_tablet && erm->get_token_metadata().get_topology_change_info()) {
+            rlogger.debug("repair[{}]: Skipped to update system.repair_history of range {}, a topology change is in progress",
+                    _rstate.global_repair_id.uuid(), _range);
+            co_return;
+        }
         auto repaired_nodes = std::unordered_set<locator::host_id>(_all_live_peer_nodes.begin(), _all_live_peer_nodes.end());
         repaired_nodes.insert(my_address);
         if (replicas != repaired_nodes) {
