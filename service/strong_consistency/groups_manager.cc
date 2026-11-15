@@ -1010,6 +1010,16 @@ future<> groups_manager::sync_raft_group_config(global_tablet_id tablet, raft::g
 
     auto retry = exponential_backoff_retry(10ms, 1s);
     while (true) {
+        // Test-only: hold a handler on the group's leader before it reads the
+        // configuration, as if it were scheduled late. It is before the abort check
+        // below, so a handler that is superseded, outlives its stage on this host, or
+        // passes its deadline while held proposes nothing once released: the pause only
+        // widens a window the code already has.
+        if (server.server().is_leader()) {
+            co_await utils::get_local_injector().inject("sc_config_sync_pause_on_leader",
+                    utils::wait_for_message(std::chrono::minutes(5)));
+        }
+
         const auto config = server.server().get_configuration();
         auto [to_add, to_del] = diff_config(expected_config, config.current);
         // In a joint configuration the delta against C_new is already empty, but the
