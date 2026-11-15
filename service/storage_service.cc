@@ -5105,6 +5105,8 @@ future<raft_topology_cmd_result> storage_service::raft_topology_cmd_handler(raft
                             // Bootstrap did not complete yet, but streaming did
                             utils::get_local_injector().inject("stop_after_streaming",
                                 [] { std::raise(SIGSTOP); });
+                            co_await utils::get_local_injector().inject("bootstrap_pause_after_streaming",
+                                utils::wait_for_message(std::chrono::minutes(5)));
                         } else {
                             auto replaced_id = std::get<replace_param>(_topology_state_machine._topology.req_param[id]).replaced_id;
                             co_await do_streaming_operation(_bootstrap_result, streaming::stream_reason::replace, parent_info,
