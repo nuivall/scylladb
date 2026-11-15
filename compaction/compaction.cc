@@ -765,6 +765,10 @@ protected:
     }
 
     void stop_gc_compaction_writer(compaction_writer* c_writer) {
+        // TEST-ONLY candidate fix: a GC sstable of a compaction of repaired sstables holds
+        // repaired data; with repaired_at=0 incremental repair marking (and scrub) take it
+        // as unrepaired while the owning compaction still runs.
+        c_writer->writer.set_repaired_at(_output_repaired_at);
         c_writer->writer.consume_end_of_stream();
         auto sst = c_writer->sst;
         sst->open_data().get();
