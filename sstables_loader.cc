@@ -182,6 +182,8 @@ protected:
     std::vector<sstables::shared_sstable> _sstables;
     const primary_replica_only _primary_replica_only;
     const unlink_sstables _unlink_sstables;
+    // Test-only: batches streamed so far, for load_and_stream_fail_after_a_batch.
+    size_t _batches_streamed = 0;
     const stream_scope _stream_scope;
 public:
     sstable_streamer(netw::messaging_service& ms, replica::database& db, ::table_id table_id, locator::effective_replication_map_ptr erm,
@@ -524,12 +526,18 @@ future<> sstable_streamer::stream_sstables(const dht::partition_range& pr, std::
             | std::ranges::to<std::vector>();
         sstables.erase(sstables.end() - batch_sst_nr, sstables.end());
 
+        if (_batches_streamed > 0) {
+            utils::get_local_injector().inject("load_and_stream_fail_after_a_batch", [] {
+                throw std::runtime_error("load_and_stream_fail_after_a_batch");
+            });
+        }
         auto ops_uuid = streaming::plan_id{utils::make_random_uuid()};
         llog.info("load_and_stream: started ops_uuid={}, process [{}-{}] out of {} sstables=[{}]",
             ops_uuid, nr_sst_current, nr_sst_current + sst_processed.size(), nr_sst_total,
             fmt::join(sst_processed | std::views::transform([] (auto sst) { return sst->get_filename(); }), ", "));
         nr_sst_current += sst_processed.size();
         co_await stream_sstable_mutations(ops_uuid, pr, std::move(sst_processed), defer);
+        ++_batches_streamed;
         if (progress) {
             progress->advance(batch_sst_nr);
         }
