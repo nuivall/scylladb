@@ -391,6 +391,9 @@ public:
      * replay position, i.e. skip segments that have top position <= rp_filter
      */
     gc_clock::time_point min_gc_time(const cf_id_type&, const db::replay_position& rp_filter = {}) const;
+    // TEST-ONLY: the start of the oldest segment still holding unflushed (or in-flight) writes
+    // of the table, or an empty position when there is none.
+    replay_position min_dirty_position(const cf_id_type&) const;
 
     // Return the lowest possible replay position across all existing or future commitlog segments.
     // In other words, only positions greater or equal to min_position() can

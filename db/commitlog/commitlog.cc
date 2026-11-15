@@ -505,6 +505,7 @@ public:
     future<std::vector<sstring>> get_segments_to_replay() const;
 
     gc_clock::time_point min_gc_time(const cf_id_type&, const db::replay_position&) const;
+    replay_position min_dirty_position(const cf_id_type&) const;
 
     flush_handler_id add_flush_handler(flush_handler h) {
         auto id = ++_flush_ids;
@@ -2141,6 +2142,15 @@ future<std::vector<sstring>> db::commitlog::segment_manager::get_segments_to_rep
         }
     }
     co_return segments_to_replay;
+}
+
+db::replay_position db::commitlog::segment_manager::min_dirty_position(const cf_id_type& id) const {
+    for (auto& s : _segments) {
+        if (s->_cf_dirty.contains(id)) {
+            return replay_position(s->_desc.id, 0);
+        }
+    }
+    return {};
 }
 
 gc_clock::time_point db::commitlog::segment_manager::min_gc_time(const cf_id_type& id, const db::replay_position& rp) const {
@@ -4072,6 +4082,10 @@ future<std::vector<sstring>> db::commitlog::list_existing_segments(const sstring
         });
         return make_ready_future<std::vector<sstring>>(std::move(paths));
     });
+}
+
+db::replay_position db::commitlog::min_dirty_position(const cf_id_type& id) const {
+    return _segment_manager->min_dirty_position(id);
 }
 
 gc_clock::time_point db::commitlog::min_gc_time(const cf_id_type& id, const db::replay_position& rp) const {

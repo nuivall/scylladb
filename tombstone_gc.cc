@@ -20,6 +20,7 @@
 #include "data_dictionary/data_dictionary.hh"
 #include "gms/feature_service.hh"
 #include "compaction/compaction_manager.hh"
+#include "db/commitlog/commitlog.hh"
 #include <seastar/coroutine/maybe_yield.hh>
 
 extern logging::logger dblog;
@@ -312,6 +313,15 @@ future<> shared_tombstone_gc_state::flush_pending_repair_time_update(sharded<rep
                     db::replay_position high_rp;
                     if (t) {
                         high_rp = t->highest_flushed_replay_position(update.range);
+                        // TEST-ONLY candidate fix: a write's position is taken at the
+                        // commitlog add, before it reaches a memtable, so a later write
+                        // may be flushed first; keep the record below every write of the
+                        // table that isn't in an sstable yet (in a memtable or in flight).
+                        if (auto* cl = t->commitlog(); cl && high_rp != db::replay_position()) {
+                            if (auto dirty = cl->min_dirty_position(table); dirty != db::replay_position() && dirty < high_rp) {
+                                high_rp = dirty;
+                            }
+                        }
                     }
                     co_await local_sys_ks.save_commitlog_cleanup_record(table, update.range, high_rp);
                     do_update_repair_time(*shard_maps, table, update.range, update.time, high_rp);
