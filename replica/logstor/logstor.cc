@@ -160,6 +160,9 @@ future<> logstor::do_write(const schema& s, dht::decorated_key dk, api::timestam
 
     auto& cg = *target.cg;
     primary_index_key key(dk);
+    // TEST-ONLY candidate fix: computed before the value moves into the record.
+    const auto tiebreak = record_tiebreak(value, ts);
+
     auto writer = log_record_writer(log_record{
         .header = {
             .key = std::move(dk),
@@ -174,6 +177,7 @@ future<> logstor::do_write(const schema& s, dht::decorated_key dk, api::timestam
 
     cg.logstor_index().insert(key, index_entry{
         .location = location,
+        .tiebreak = tiebreak,
         .timestamp = ts,
     });
     count_failure.cancel();

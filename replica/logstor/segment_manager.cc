@@ -55,6 +55,7 @@
 #include "utils/error_injection.hh"
 #include "utils/serialized_action.hh"
 #include "replica/logstor/recovery_catalog.hh"
+#include "replica/logstor/record_value.hh"
 
 namespace replica::logstor {
 
@@ -2178,7 +2179,12 @@ future<> segment_manager_impl::index_segment_records(log_segment_id segment_id, 
         const auto& header = record.header;
         logstor_logger.trace("Recovery: read record at {} key {} ts {}", record.location, header.key, header.timestamp);
         if (auto* index = resolve(header)) {
-            index->insert(header.index_key(), index_entry{.location = record.location, .timestamp = header.timestamp}, cmp);
+            // TEST-ONLY candidate fix: the same tiebreak as the write path, from the value in the
+            // chunk that the scan already holds.
+            index->insert(header.index_key(), index_entry{
+                    .location = record.location,
+                    .tiebreak = record_tiebreak(record.bytes.value, header.timestamp),
+                    .timestamp = header.timestamp}, cmp);
         }
         return make_ready_future<>();
     });

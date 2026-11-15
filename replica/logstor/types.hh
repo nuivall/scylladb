@@ -46,10 +46,16 @@ struct primary_index_key {
 
 struct index_entry {
     record_location location;
+    // TEST-ONLY candidate fix: which of two records of the same timestamp wins, as
+    // record_tiebreak() in record_value.hh computes it from the record. It sits in the padding
+    // between location and timestamp, so the entry does not grow.
+    uint32_t tiebreak = 0;
     api::timestamp_type timestamp;
 
     bool operator==(const index_entry& other) const noexcept = default;
 };
+// TEST-ONLY candidate fix: the tiebreak costs no memory.
+static_assert(sizeof(index_entry) == sizeof(record_location) + sizeof(uint32_t) + sizeof(api::timestamp_type));
 
 struct record_header {
     dht::decorated_key key;
