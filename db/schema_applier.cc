@@ -34,6 +34,7 @@
 #include "cdc/cdc_partitioner.hh"
 #include "view_info.hh"
 #include "replica/database.hh"
+#include "replica/exceptions.hh"
 #include "replica/tablets.hh"
 #include "db/config.hh"
 #include "lang/manager.hh"
@@ -1255,7 +1256,15 @@ future<> schema_applier::destroy() {
 
 static future<> execute_do_merge_schema(sharded<service::storage_proxy>& proxy, schema_applier& ap, utils::chunked_vector<mutation> mutations) {
     co_await ap.prepare(mutations);
-    co_await proxy.local().get_db().local().apply(freeze(mutations), db::no_timeout);
+    try {
+        // TEST-ONLY candidate fix: apply() may fail after it wrote the mutations to the
+        // commitlog; a retry then diffs persisted against persisted state and never
+        // updates the in-memory schema, so report this the same way. A failure before
+        // that persisted nothing and is left to the caller's retry.
+        co_await proxy.local().get_db().local().apply(freeze(mutations), db::no_timeout);
+    } catch (const replica::mutations_persisted_but_not_applied&) {
+        std::throw_with_nested(schema_persisted_but_not_applied());
+    }
     try {
         co_await ap.update();
     } catch (...) {

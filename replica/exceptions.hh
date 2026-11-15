@@ -16,6 +16,8 @@
 #include <seastar/core/format.hh>
 #include <seastar/core/sstring.hh>
 
+#include <stdexcept>
+
 namespace replica {
 
 // A marker indicating that the exception_variant holds an unknown exception.
@@ -78,6 +80,14 @@ public:
     }
 
     virtual const char* what() const noexcept override { return _message.c_str(); }
+};
+
+// TEST-ONLY candidate fix: thrown, with the original exception nested, when
+// database::apply() of several mutations fails after it wrote them to the
+// commitlog: they will be replayed, so they count as persisted.
+class mutations_persisted_but_not_applied : public std::runtime_error {
+public:
+    mutations_persisted_but_not_applied() : std::runtime_error("mutations were written to the commitlog, but not applied") {}
 };
 
 class large_data_exception final : public replica_exception {
