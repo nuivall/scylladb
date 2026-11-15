@@ -2999,6 +2999,11 @@ compaction_group::update_sstable_sets_on_compaction_completion(compaction::compa
     // (finish() already moved them out of the compaction, and they are sealed so ~sstable()
     // won't unlink them either), so a failure here would otherwise leak them on disk forever.
     auto new_sstables = desc.all_new_sstables();
+    // TEST-ONLY candidate fix: the split bypass and off-strategy pass an input as an
+    // output (it is moved, not rewritten); unlinking it would delete live data.
+    std::erase_if(new_sstables, [&desc] (const sstables::shared_sstable& sst) {
+        return std::ranges::find(desc.old_sstables, sst) != desc.old_sstables.end();
+    });
     bool attached = false;
     std::exception_ptr ex;
     try {
