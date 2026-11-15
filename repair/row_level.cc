@@ -919,6 +919,8 @@ private:
     std::unique_ptr<const locator::token_metadata> _small_table_optimization_tm;
     seastar::semaphore _small_table_optimization_tm_sem{1};
     bool _small_table_optimization_tm_calculated = false;
+    // TEST-ONLY: whether read_rows_from_disk() is skipping a partition this node doesn't own.
+    bool _skip_unowned_partition = false;
     optimized_optional<seastar::abort_source::subscription> _session_abort_sub;
     const bool _is_eligible_to_repair_rejection;
 private:
@@ -1514,6 +1516,17 @@ private:
                 _rs.get_config().repair_multishard_reader_buffer_hint_size(),
                 bool(_rs.get_config().repair_multishard_reader_enable_read_ahead()));
         }
+        // TEST-ONLY candidate fix: a peer reads its whole sstables, including ranges it no
+        // longer owns and hasn't cleaned up (vnodes, after a bootstrap); with the small table
+        // optimization the repair range is the whole ring, so such stale rows would be sent
+        // to the owners. Read only the partitions this node owns (or is about to own),
+        // skipping the others while filling the buffer, so an unowned stretch doesn't come
+        // back as an empty buffer that looks like the end of the data.
+        auto& table = _db.local().find_column_family(_schema->id());
+        locator::effective_replication_map_ptr erm;
+        if (!table.uses_tablets()) {
+            erm = table.get_effective_replication_map();
+        }
         try {
             while (cur_size < _max_row_buf_size) {
                 _gate.check();
@@ -1521,6 +1534,15 @@ private:
                 if (!mfopt) {
                     co_await _repair_reader->on_end_of_stream();
                     break;
+                }
+                if (erm && mfopt->is_partition_start()) {
+                    const auto& token = mfopt->as_partition_start().key().token();
+                    const auto me = erm->get_topology().my_host_id();
+                    _skip_unowned_partition = !std::ranges::contains(erm->get_natural_replicas(token), me)
+                            && !std::ranges::contains(erm->get_pending_replicas(token), me);
+                }
+                if (_skip_unowned_partition) {
+                    continue;
                 }
                 handle_mutation_fragment(*mfopt, cur_size, new_rows_size, cur_rows);
             }
