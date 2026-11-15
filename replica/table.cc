@@ -4213,13 +4213,18 @@ void tablet_storage_group_manager::update_effective_replication_map(
         const bool tombstone_gc_enabled = !is_pending_replica;
 
         // construct a counter id for use in local counter updates.
-        // there is a single replica in a rack, so we can reuse a single counter id for all replicas
-        // in a rack. replicas in different racks use different counter ids.
-        // during migration there are two active counter replicas in a rack, then the pending
-        // replica uses a variation of the rack's counter id, so there are at most two distinct
-        // counter ids per rack.
-        auto rack_uuid = erm.get_topology().get_rack_uuid();
-        auto my_counter_uuid = is_pending_replica ? utils::UUID_gen::negate(rack_uuid) : rack_uuid;
+        // TEST-ONLY candidate fix: the rack's id (b71762d5daa) is unique only with one replica
+        // per rack, which nothing enforces (rf_rack_valid_keyspaces is off by default), and a
+        // migration hands it to the new replica, which continues the shard from a copy that
+        // may lack the leaving replica's last increments, reusing logical clocks already
+        // written. Use an id of this replica's own: its host's id, mixed with the shard so
+        // that an intra-node migration doesn't hand an id over either (shard 0 keeps the
+        // host's id). The pending replica of a migration uses a variation of it. More
+        // counter shards over migrations than with the rack's id.
+        const auto host_uuid = this_replica.host.uuid();
+        const utils::UUID replica_uuid(host_uuid.get_most_significant_bits(),
+                host_uuid.get_least_significant_bits() ^ int64_t(this_replica.shard));
+        auto my_counter_uuid = is_pending_replica ? utils::UUID_gen::negate(replica_uuid) : replica_uuid;
         counter_id my_counter_id(my_counter_uuid);
 
         sg.for_each_compaction_group([tombstone_gc_enabled, my_counter_id] (const compaction_group_ptr& cg_ptr) {

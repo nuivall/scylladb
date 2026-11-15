@@ -97,6 +97,7 @@ async def test_counter_updates_during_tablet_migration(manager: ScyllaClusterMan
 
         assert actual_count == total_updates, f"Counter value mismatch: expected {total_updates}, got {actual_count}"
 
+@pytest.mark.xfail(reason="the TEST-ONLY counter id fix gives each replica its own id instead of the rack's", strict=True)
 async def test_counter_ids_reuse_in_single_rack(manager: ScyllaClusterManager, storage_config: FeatureConfig):
     """
     Migrate a single counter tablet between 3 nodes in a single rack, performing counter updates on each node,
