@@ -8,7 +8,7 @@ from cassandra.cluster import Session, ConsistencyLevel
 from test.pylib.scylla_cluster_manager import ScyllaClusterManager
 from test.pylib.util import wait_for_cql_and_get_hosts, start_writes
 from test.pylib.tablets import get_tablet_replica, get_all_tablet_replicas
-from test.cluster.util import new_test_keyspace, FeatureConfig
+from test.cluster.util import new_test_keyspace, FeatureConfig, get_topology_coordinator, reconnect_driver
 
 
 import pytest
@@ -181,3 +181,69 @@ async def test_cross_shard_migration(manager: ScyllaClusterManager, storage_conf
         assert len(rows) == key_count
         for r in rows:
             assert r.c == r.pk
+
+
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+@pytest.mark.parametrize("restart", [False, True])
+async def test_restart_after_intranode_streaming_keeps_data(manager: ScyllaClusterManager, restart: bool):
+    """Verify that an intra-node migration doesn't lose the tablet's data if the node restarts after
+    streaming, before the coordinator moves the tablet to write_both_read_new.
+
+    The streaming loads the sstables of the tablet into the pending shard and returns; the coordinator
+    moves the tablet to write_both_read_new in a later iteration. A node that boots in the streaming
+    stage loads every sstable of the tablet into the shard serving reads, i.e. the leaving one, so the
+    pending shard comes up empty. If the coordinator then moves on with the response it got before the
+    restart, reads go to the empty pending shard and cleanup deletes the leaving shard's sstables.
+
+    The test holds the coordinator between the response and the stage change, restarts the replica
+    there (or, as a control, doesn't), lets the migration finish and reads every row back.
+    """
+    cmdline = ['--logger-log-level', 'raft_topology=debug']
+    servers = await manager.servers_add(2, cmdline=cmdline)
+    await manager.disable_tablet_balancing()
+    cql = manager.get_cql()
+
+    coordinator = await manager.find_server_by_host_id(servers, await get_topology_coordinator(manager))
+    replica_server = next(s for s in servers if s.server_id != coordinator.server_id)
+    replica_host = await manager.get_host_id(replica_server.server_id)
+
+    async with new_test_keyspace(manager, "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 1} "
+                                          "AND tablets = {'initial': 1}") as ks:
+        await cql.run_async(f"CREATE TABLE {ks}.t (pk int PRIMARY KEY, v int)")
+        token = 0  # Any: there is one tablet.
+        host, shard = await get_tablet_replica(manager, coordinator, ks, 't', token)
+        if host != replica_host:
+            await manager.api.move_tablet(coordinator.ip_addr, ks, 't', host, shard, replica_host, 0, token)
+            shard = 0
+
+        keys = range(100)
+        for pk in keys:
+            await cql.run_async(f"INSERT INTO {ks}.t (pk, v) VALUES ({pk}, {pk})")
+        # In sstables, so that commitlog replay at the restart doesn't bring the rows back.
+        await manager.api.keyspace_flush(replica_server.ip_addr, ks, 't')
+
+        replica_log = await manager.server_open_log(replica_server.server_id)
+        coordinator_log = await manager.server_open_log(coordinator.server_id)
+        mark = await replica_log.mark()
+        coordinator_mark = await coordinator_log.mark()
+        await manager.api.enable_injection(replica_server.ip_addr, "intranode_migration_streaming_done_wait", one_shot=True)
+        migration = asyncio.create_task(manager.api.move_tablet(coordinator.ip_addr, ks, 't',
+                                                                replica_host, shard, replica_host, shard ^ 1, token))
+
+        # The pending shard has the sstables; hold the coordinator, then let the streaming respond.
+        await replica_log.wait_for("intranode_migration_streaming_done_wait: waiting", from_mark=mark, timeout=60)
+        await manager.api.enable_injection(coordinator.ip_addr, "stream_tablet_wait", one_shot=False)
+        await manager.api.message_injection(replica_server.ip_addr, "intranode_migration_streaming_done_wait")
+        await coordinator_log.wait_for("streaming for tablet .* resolved", from_mark=coordinator_mark, timeout=60)
+
+        if restart:
+            await manager.server_stop_gracefully(replica_server.server_id)
+            await manager.server_start(replica_server.server_id)
+        await manager.api.disable_injection(coordinator.ip_addr, "stream_tablet_wait")
+        await migration
+
+        cql = await reconnect_driver(manager)
+        await wait_for_cql_and_get_hosts(cql, servers, time.time() + 60)
+        rows = await cql.run_async(f"SELECT pk FROM {ks}.t")
+        missing = set(keys) - {r.pk for r in rows}
+        assert not missing, f"{len(missing)} of {len(keys)} rows lost by the intra-node migration across a restart"

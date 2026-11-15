@@ -5665,6 +5665,11 @@ future<> storage_service::stream_tablet(locator::global_tablet_id tablet) {
             rtlogger.info("Starting intra-node streaming of tablet {} from shard {} to {}", tablet, leaving_replica->shard, pending_replica->shard);
             co_await clone_locally_tablet_storage(tablet, *leaving_replica, *pending_replica);
             rtlogger.info("Finished intra-node streaming of tablet {} from shard {} to {}", tablet, leaving_replica->shard, pending_replica->shard);
+            co_await utils::get_local_injector().inject("intranode_migration_streaming_done_wait", [] (auto& handler) -> future<> {
+                rtlogger.info("intranode_migration_streaming_done_wait: waiting");
+                co_await handler.wait_for_message(std::chrono::steady_clock::now() + std::chrono::minutes(5));
+                rtlogger.info("intranode_migration_streaming_done_wait: released");
+            });
         } else {
             if (leaving_replica && leaving_replica->host == tm->get_my_id()) {
                 throw std::runtime_error(fmt::format("Cannot stream within the same node using regular migration, tablet: {}, shard {} -> {}",
