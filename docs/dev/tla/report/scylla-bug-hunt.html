@@ -1,0 +1,307 @@
+<title>ScyllaDB Correctness Hunt</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@500;700&display=swap">
+<style>
+/* Layout: a summary band, a severity-ranked ledger, then one entry per bug, like an incident log. */
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --fg: #17202b; --muted: #5a6573; --line: #dde2e8; --accent: #2f5fd0;
+  --crit: #b3261e; --crit-bg: #fbe9e7; --high: #b35c00; --high-bg: #fdf0e1; --med: #7a6400; --med-bg: #f7f1d6; --low: #3b6e4b; --low-bg: #e6f2ea;
+  --ok: #2e7d4f; --warn: #a15c00; --code-bg: #eef1f5;
+  --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f141a; --surface: #161d26; --fg: #e6ebf1; --muted: #9aa6b4; --line: #2a3442; --accent: #7ea2f5;
+  --crit: #ff8a80; --crit-bg: #3a1c1a; --high: #ffb870; --high-bg: #3a2a16; --med: #e5cf6a; --med-bg: #322d14; --low: #8fd0a4; --low-bg: #16301f;
+  --ok: #7fd3a0; --warn: #f0b060; --code-bg: #1d2633; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f141a; --surface: #161d26; --fg: #e6ebf1; --muted: #9aa6b4; --line: #2a3442; --accent: #7ea2f5;
+  --crit: #ff8a80; --crit-bg: #3a1c1a; --high: #ffb870; --high-bg: #3a2a16; --med: #e5cf6a; --med-bg: #322d14; --low: #8fd0a4; --low-bg: #16301f;
+  --ok: #7fd3a0; --warn: #f0b060; --code-bg: #1d2633; color-scheme: dark; }
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 1080px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 32px 64px; display: grid; gap: 32px; }
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+h1 { font-size: 2rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.35rem; }
+h3 { font-size: 1.05rem; }
+p { margin: 0; max-width: 72ch; }
+code, .mono { font-family: var(--mono); font-size: 0.86em; }
+code { background: var(--code-bg); padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere; }
+.lede { display: grid; gap: 10px; }
+.eyebrow { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.stat { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; display: grid; gap: 2px; }
+.stat b { font-family: var(--display); font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+.stat span { color: var(--muted); font-size: 0.85rem; }
+.legend { display: grid; gap: 8px; }
+.legend-row { display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: start; }
+.sev { display: inline-block; font-family: var(--mono); font-size: 0.72rem; font-weight: 500; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.sev.critical { color: var(--crit); background: var(--crit-bg); }
+.sev.high { color: var(--high); background: var(--high-bg); }
+.sev.medium { color: var(--med); background: var(--med-bg); }
+.sev.low { color: var(--low); background: var(--low-bg); }
+.table-box { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+table { border-collapse: collapse; width: 100%; min-width: 820px; font-size: 0.9rem; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-family: var(--mono); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 500; }
+td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+tr:last-child td { border-bottom: none; }
+td a { color: var(--accent); text-decoration: none; }
+td a:hover, td a:focus-visible { text-decoration: underline; }
+.status { font-family: var(--mono); font-size: 0.78rem; white-space: nowrap; }
+.status.pass { color: var(--ok); }
+.status.part { color: var(--warn); }
+.status.none { color: var(--muted); }
+.bugs { display: grid; gap: 16px; }
+.bug { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--line); border-radius: 6px; padding: 16px 18px; display: grid; gap: 10px; min-width: 0; }
+.bug.critical { border-left-color: var(--crit); }
+.bug.high { border-left-color: var(--high); }
+.bug.medium { border-left-color: var(--med); }
+.bug.low { border-left-color: var(--low); }
+.bug-head { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: baseline; }
+.bug-head .id { font-family: var(--mono); color: var(--muted); }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { font-family: var(--mono); font-size: 0.72rem; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
+dl { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; margin: 0; }
+dt { font-family: var(--mono); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); padding-top: 2px; }
+dd { margin: 0; min-width: 0; }
+@media (max-width: 640px) { dl { grid-template-columns: 1fr; } dt { padding-top: 6px; } .legend-row { grid-template-columns: 1fr; gap: 4px; } }
+.note { border: 1px dashed var(--line); border-radius: 6px; padding: 12px 14px; display: grid; gap: 6px; color: var(--muted); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+
+<div class="wrap">
+  <header class="lede">
+    <div class="eyebrow">TLA+ / Veil verification experiment · branch name-tla-verification-experiment · 2026-11-15</div>
+    <h1>ScyllaDB Correctness Hunt</h1>
+    <p>Twenty-five correctness bugs in ScyllaDB found by modelling (TLA+, then Veil) and by targeted code reading, with a cluster reproducer, a candidate fix, and a severity rating for each. Severity weighs the damage (silent data loss or resurrection ranks highest) against how likely the trigger is in production. Nothing here has been filed: every Jira ticket is a draft in <code>docs/dev/tla/drafts/</code>.</p>
+  </header>
+
+  <section class="stats" id="stats" aria-label="Summary"></section>
+
+  <section class="legend" aria-label="Severity scale">
+    <h2>Severity scale</h2>
+    <div class="legend-row"><span class="sev critical">Critical</span><p>Silent data loss or resurrection reachable in a default configuration through ordinary operations (scale-out, repair, rebuild, RF change, restore, truncate). No error tells the operator.</p></div>
+    <div class="legend-row"><span class="sev high">High</span><p>Silent loss, resurrection or a security hole that needs a rarer trigger: a crash at the wrong moment, a failure mid-operation, a non-default but allowed topology.</p></div>
+    <div class="legend-row"><span class="sev medium">Medium</span><p>Loud failures (crash, stuck node), inconsistencies that heal on restart, or experimental features.</p></div>
+    <div class="legend-row"><span class="sev low">Low</span><p>Wrong but harmless or self-correcting state, or an anomaly whose damaging effect is fenced on a real cluster.</p></div>
+  </section>
+
+  <section aria-label="Ledger">
+    <h2>Ledger, by severity</h2>
+    <div class="table-box"><table>
+      <thead><tr><th>#</th><th>Severity</th><th>Bug</th><th>Effect</th><th>Status</th><th>Reproducer</th><th>Candidate fix</th></tr></thead>
+      <tbody id="ledger"></tbody>
+    </table></div>
+  </section>
+
+  <section class="note" aria-label="Method">
+    <h3>How to read the reproducer and fix columns</h3>
+    <p>"Fails 5/5" means the cluster test failed on all five runs on the bench (dev build) with the bug present, and its control variant passed. "Passes 3/3" in the fix column means the same test passed three times with the TEST-ONLY candidate fix applied; related existing test suites were run once with the fixes in (213, 107 and 134 tests passed; the one failure, <code>test_counter_ids_reuse_in_single_rack</code>, pins the design the #11/#17 fix replaces and is marked xfail). After a code review, the #1, #11/#17, #23 and #25 fixes were revised and re-run locally: the affected reproducers passed 3/3 and the regression tests passed. The reproducers of #2, #6 and #7, whose fixes are upstream, are marked xfail. Final sweep: without fixes, every reproducer failed 5/5 (149 failures) and every control passed (96); with all fixes, every reproducer passed 3/3 (138) except #2, #6 and #7, whose fixes are upstream PRs. Candidate fixes are proofs of concept on the experiment branch, each marked TEST-ONLY, not reviewed patches.</p>
+  </section>
+
+  <section class="bugs" id="bugs" aria-label="Bug entries"></section>
+</div>
+
+<script>
+const BUGS = [
+ {n:17, sev:"critical", title:"Counter replicas in one rack share a counter id", area:"counters, tablets",
+  effect:"About 28% of acknowledged counter increments silently lost (641-695 of 2,400 at QUORUM, 8 clients, no injection).",
+  trigger:"RF greater than the rack count, which rf_rack_valid_keyspaces (off by default) allows; also accepted by the vnodes-to-tablets migration with a warning.",
+  why:"A tablet replica's counter id is its rack's (b71762d5daa). Two leaders in one rack read the same shard and write the same id with the same next clock; the merge keeps one.",
+  status:"new", repro:"test/cluster/test_counters_single_rack_rf3.py: fails 5/5; three racks pass.", reproS:"pass",
+  fix:"A counter id of the replica's own (host id mixed with the shard); passes 3/3. Shared fix with #11.", fixS:"pass",
+  found:"Rack-keyed identity audit, after #19."},
+ {n:23, sev:"critical", title:"Vnode repair during a bootstrap lets deleted rows come back", area:"repair, tombstone GC, vnodes",
+  effect:"Deleted rows resurrected: 38-88 of 200 in the test.",
+  trigger:"A user repair overlapping a streaming bootstrap or decommission, with a replica that missed a delete. Repair-mode tombstone GC is the default for vnode tables too.",
+  why:"Repair picks only natural replicas and records the range as repaired; the joining node streamed the range from the node losing it and never gets the tombstones the repair delivers to that node.",
+  status:"new", repro:"test/cluster/test_repair_during_vnode_bootstrap_gc.py (test-only pause after streaming): fails 5/5; repair after the bootstrap passes.", reproS:"pass",
+  fix:"Record no repair history for vnode tables during a token ring change, with or without the small table optimization; passes 3/3. A check of the range's end token only is not enough (4-30 rows still came back). Does not cover a change that starts mid-repair.", fixS:"part",
+  found:"Subagent review of when repair times are recorded."},
+ {n:25, sev:"critical", title:"Repair-based rebuild resurrects deleted rows from uncleaned nodes", area:"repair, rebuild, vnodes",
+  effect:"Deleted rows resurrected on every owner: 38-97 of 200.",
+  trigger:"Default config: rebuild after a bootstrap on a table under 1 GiB, while an old owner's stale sstables are not yet compacted (no automatic cleanup after bootstrap).",
+  why:"Since cb52178d5d3 the small-table optimization repairs the whole ring with every node as a peer; each peer sends its unowned copies and only receivers filter by ownership.",
+  status:"new", repro:"test/cluster/test_rebuild_small_table_stale_data.py: fails 5/5; optimization off passes.", reproS:"pass",
+  fix:"The vnode repair reader skips partitions the node neither owns nor is about to own while filling its buffer; passes 3/3, existing repair tests pass.", fixS:"pass",
+  found:"Subagent review of row-level repair data movement."},
+ {n:20, sev:"critical", title:"RF=1 tombstone GC shortcut during a multi-step RF change", area:"tombstone GC, tablets, RF change",
+  effect:"Tombstones purged at once on replicas of an RF=1 keyspace being extended to a new DC; a replica that missed the delete resurrects the row.",
+  trigger:"Adding a DC to an RF=1 keyspace (rack-list RF change, 0 to N), for the whole, possibly long, change.",
+  why:"The RF=1 registry reads the strategy's RF, which keeps the old options until the change completes, while tablets already have replicas in both DCs.",
+  status:"new (adjacent to SCYLLADB-4629)", repro:"test/cluster/test_rf_one_gc_during_multi_rf_change.py: fails 5/5; after the change passes.", reproS:"pass",
+  fix:"RF=1 only when every tablet has one replica and none is in transition; passes 3/3.", fixS:"pass",
+  found:"Boot-vs-runtime derived state review."},
+ {n:12, sev:"critical", title:"Second restore of a snapshot restores nothing and reports success", area:"backup/restore, tablets",
+  effect:"0 of 10 rows restored, task state done.",
+  trigger:"Restoring the same snapshot again within 3 days, e.g. after a TRUNCATE or a bad first restore.",
+  why:"The downloaded flag in system_distributed.snapshot_sstables is never reset and outlives the restore; the restore skips flagged sstables.",
+  status:"new", repro:"test_restore_tablets_twice_from_one_snapshot in test/cluster/object_store/test_backup.py: fails 5/5.", reproS:"pass",
+  fix:"Don't skip on the flag (a retry re-downloads, which only duplicates); passes 3/3, test_backup.py passes. Shared fix with #19.", fixS:"pass",
+  found:"Code reading of the restore path."},
+ {n:21, sev:"critical", title:"TRUNCATE without a flush: truncated rows come back after a crash", area:"commitlog, truncate",
+  effect:"All truncated rows that were in memtables come back after a crash (100 of 100).",
+  trigger:"auto_snapshot: false, or any table on object storage (never flushes), plus an unclean stop before the segment is recycled.",
+  why:"The truncation record is the discarded sstables' highest replay position, below the cleared memtable's commitlog entries; PR #7005 removed the assert that caught this (#6995).",
+  status:"new", repro:"test/cluster/test_truncate_without_flush_record.py: fails 5/5; no prior flush passes.", reproS:"pass",
+  fix:"Record the low mark (highest position applied this run); passes 3/3, database_test (67 cases) passes. Covers the base table only, not its views and indexes. Shared fix with #22.", fixS:"part",
+  found:"Subagent commitlog review."},
+ {n:2, sev:"critical", title:"Tablet merge takes the later repair time", area:"tombstone GC, tablets",
+  effect:"Tombstones of the less recently repaired half purged too early; deleted rows come back.",
+  trigger:"Any tablet merge after repairs at different times; merges are routine.",
+  why:"merge_tablet_info() takes the max repair_time of the merged tablets.",
+  status:"known: SCYLLADB-6091, fix PR #32897", repro:"test/cluster/test_tombstone_gc_tablet_merge.py: fails 5/5.", reproS:"pass",
+  fix:"Upstream PR #32897 (the earlier time); proved in Veil; not on this branch.", fixS:"none", found:"TLA+ model of repair-based tombstone GC."},
+ {n:10, sev:"high", title:"Cleanup record skips a write applied after a later one", area:"commitlog, repair",
+  effect:"A write acknowledged at CL=ALL lost on every replica after a crash.",
+  trigger:"A yield between the commitlog add and the memtable apply (large mutations, dirty-memory waits) during a tablet repair, then a crash.",
+  why:"The repair's commitlog cleanup record is the highest flushed position, which a later write flushed first can raise above an earlier write still in flight.",
+  status:"new (same family as SCYLLADB-6071)", repro:"test/cluster/test_commitlog_cleanup_record_reordered_write.py: fails 5/5.", reproS:"pass",
+  fix:"Cap the record below the oldest commitlog segment holding unflushed writes of the table; passes 3/3. Table-wide: another tablet's memtable can pull a range's record low, replaying data whose tombstone may be purged.", fixS:"part",
+  found:"TLA+ model of commitlog cleanup; fix proved in Veil."},
+ {n:22, sev:"high", title:"TRUNCATE after a machine reboot loses later writes on a crash", area:"commitlog, truncate",
+  effect:"Every write to the table after the TRUNCATE skipped by replay after a crash (100 of 100).",
+  trigger:"Machine reboot (segment ids restart at the uptime), then TRUNCATE, then a crash before the table's next flush.",
+  why:"The truncation record takes pre-reboot sstables' positions, in a higher id space than every position of the current run.",
+  status:"new (SCYLLADB-5134 is the SC analogue)", repro:"test/cluster/test_truncate_after_reboot_record.py: fails 5/5.", reproS:"pass",
+  fix:"Same as #21 (low mark only); passes 3/3. Views and indexes still record their sstables' positions.", fixS:"part", found:"Second subagent commitlog review."},
+ {n:11, sev:"high", title:"Counter increment lost across an in-rack tablet migration", area:"counters, tablets",
+  effect:"Acknowledged increment lost permanently on all replicas (6 after 7 increments).",
+  trigger:"A migration within a rack, with an increment whose write to the new replica failed (CL below ALL).",
+  why:"The new replica inherits the rack's counter id and continues from its own stale copy, reusing a logical clock.",
+  status:"new", repro:"test/cluster/test_counter_tablet_migration_stale_shard.py: fails 5/5.", reproS:"pass",
+  fix:"Per-replica counter ids (host and shard); passes 3/3. More counter shards over migrations; test_counter_ids_reuse_in_single_rack, which pins the rack-shared ids, is marked xfail.", fixS:"pass",
+  found:"TLA+ model of counters on tablets."},
+ {n:6, sev:"high", title:"Intra-node migration restart reads the empty pending shard", area:"tablets, intra-node migration",
+  effect:"Tablet data lost on the replica (100 of 100 rows).",
+  trigger:"A restart between the streaming response and write_both_read_new.",
+  why:"The node boots with sstables on the leaving shard; reads go to the empty pending shard and cleanup deletes the leaving one.",
+  status:"known: SCYLLADB-6226, fix PR #33027", repro:"test_restart_after_intranode_streaming_keeps_data[True]: fails 5/5.", reproS:"pass",
+  fix:"Upstream PR #33027; proved in Veil; not on this branch.", fixS:"none", found:"TLA+ (found independently)."},
+ {n:19, sev:"high", title:"Restore's downloaded flag shared by replicas in one rack", area:"backup/restore, tablets",
+  effect:"After a retried restore, keys on 1 of 2 replicas.",
+  trigger:"RF above the rack count plus a failed first restore.",
+  why:"The flag is keyed by rack, not replica; once one replica marks an sstable the other skips it.",
+  status:"new", repro:"test/cluster/object_store/test_restore_two_replicas_one_rack.py: fails 5/5 (S3, GCS); two racks pass.", reproS:"pass",
+  fix:"Same as #12; passes 3/3.", fixS:"pass", found:"Rack-keyed identity audit."},
+ {n:4, sev:"high", title:"Failed split bypass deletes the live sstable", area:"compaction, tablet split",
+  effect:"200 of 200 rows lost after a restart.",
+  trigger:"A failure in compaction completion (e.g. bad_alloc) during a split bypass or off-strategy.",
+  why:"9cbab949b4d unlinks outputs on a failed completion; the bypass passes the input as its own output.",
+  status:"new; maybe SCYLLADB-6108", repro:"test/cluster/test_split_bypass_failure.py: fails 5/5.", reproS:"pass",
+  fix:"Don't unlink outputs that are also inputs; passes 3/3.", fixS:"pass", found:"TLA+ model of tablet storage."},
+ {n:24, sev:"high", title:"Failed refresh deletes upload sstables not yet streamed", area:"load-and-stream, tablets",
+  effect:"The loaded data of later tablets lost: a retry loads 46 of 200 rows.",
+  trigger:"Any stream failure after the first tablet of nodetool refresh --load-and-stream.",
+  why:"The sstable is marked for deletion after the first tablet's batch; the mark survives the failure and the file is unlinked on close.",
+  status:"new", repro:"test/cluster/test_refresh_failure_keeps_upload_sstables.py: fails 5/5.", reproS:"pass",
+  fix:"Unmark on failure; passes 3/3.", fixS:"pass", found:"Subagent review of import paths."},
+ {n:14, sev:"high", title:"Auth cache load_all() keeps a revoked superuser's permissions", area:"auth, group 0 snapshot",
+  effect:"A member of a role that lost superuser keeps all permissions on that node.",
+  trigger:"A node catching up through a group 0 snapshot while lookups run.",
+  why:"load_all() replaces role records one at a time and clears no cached permissions.",
+  status:"new", repro:"test/cluster/auth_cluster/test_auth_cache_load_all_race.py: fails 5/5.", reproS:"pass",
+  fix:"Clear cached permissions after load_all(); passes 3/3; proved in Veil.", fixS:"pass", found:"Veil model of the auth cache."},
+ {n:18, sev:"high", title:"Batchlog replay racing DROP or TRUNCATE", area:"batchlog",
+  effect:"DROP: the batch's other table never gets its row although the client was promised it; TRUNCATE: truncated rows come back.",
+  trigger:"A replay of a logged batch concurrent with DDL on one of its tables.",
+  why:"Tables are checked when the batch is decoded and not again before the send, after the rate limiter.",
+  status:"new", repro:"test/cluster/test_batchlog_replay_table_race.py: fails 5/5 (drop: 4 of 4 runs that started in the final sweep).", reproS:"pass",
+  fix:"Re-check the tables right before the send; passes 6/6.", fixS:"pass", found:"Check-then-await audit."},
+ {n:1, sev:"medium", title:"Schema persisted but not applied on a joining node", area:"group 0, schema",
+  effect:"The joiner re-creates system_distributed with SimpleStrategy RF=3.",
+  trigger:"An exception from the schema apply after mutations were persisted.",
+  why:"Only schema_persisted_but_not_applied stops group 0; other exceptions let raft retry against persisted state.",
+  status:"new", repro:"test_joining_node_stops_group0_on_schema_persist_failure: fails 5/5.", reproS:"pass",
+  fix:"Report a failure after the commitlog write as persisted-but-not-applied (earlier failures are retried); passes 3/3.", fixS:"pass", found:"TLA+ model of the group 0 state machine."},
+ {n:3, sev:"medium", title:"GC sstables of repaired compactions taken by incremental repair", area:"compaction, incremental repair",
+  effect:"Node abort: Unable to remove input SSTable (root cause of SCYLLADB-5896).",
+  trigger:"Incremental repair during a compaction of repaired sstables that writes GC sstables.",
+  why:"GC sstables get repaired_at=0 and land in the unrepaired view.",
+  status:"root cause of open SCYLLADB-5896", repro:"test_incremental_repair_during_repaired_compaction_with_gc_sstables: fails 5/5.", reproS:"pass",
+  fix:"GC sstables inherit the compaction's repaired_at; passes 3/3.", fixS:"pass", found:"TLA+ model of compaction groups."},
+ {n:16, sev:"medium", title:"view_update_generator drops other tables of a failed pass", area:"materialized views",
+  effect:"View rows missing until a restart (one view at 0 of 1000).",
+  trigger:"A persistent error on one table's staging processing.",
+  why:"The failed pass re-queues only the failing table and drops the rest of its local map.",
+  status:"new", repro:"test/cluster/mv/test_mv_staging_failure_drops_others.py: fails 5/5.", reproS:"pass",
+  fix:"Re-queue the rest of the pass; passes 3/3.", fixS:"pass", found:"View-building review."},
+ {n:13, sev:"medium", title:"Auth cache lookup stores a set loaded across a clear", area:"auth",
+  effect:"A granted permission refused (or a revoked one honored) on one shard until the role changes again.",
+  trigger:"A permission lookup in flight while a GRANT/REVOKE to a parent role clears the member's cache.",
+  why:"The lookup stores the set it loaded before the clear.",
+  status:"known: SCYLLADB-4206", repro:"test/cluster/auth_cluster/test_auth_cache_lookup_across_clear.py (new, test-only pause): fails 5/5; without a GRANT during the lookup passes.", reproS:"pass",
+  fix:"An epoch bumped by every clear; a lookup stores only if unchanged; passes 3/3; proved in Veil.", fixS:"pass", found:"Veil model of the auth cache."},
+ {n:7, sev:"high", title:"Vnodes-to-tablets finalization trusts cached stats of a down node", area:"vnodes-to-tablets migration",
+  effect:"The finalization succeeds with the node down; when it boots, hundreds of its keys are missing (RF=1: data gone). The reading predicted a refused boot.",
+  trigger:"A node that went back to vnodes and went down within one load-stats refresh interval, re-marked for tablets without applying the mark, with the published-modes feature off (2026.3, or master migrations without published modes).",
+  why:"Finalization reads cached load stats and accepts a node it cannot reach.",
+  status:"known mechanism: open PR #31829", repro:"test/cluster/test_vnodes_to_tablets_finalize_down_node.py (new): fails 5/5; X up, or X still on tablets, pass.", reproS:"pass",
+  fix:"Upstream PR #31829 refuses finalization while a node is down; not tried on this branch.", fixS:"none", found:"TLA+ model of the migration."},
+ {n:8, sev:"medium", title:"Logstor TRUNCATE resurrected by recovery", area:"logstor (experimental)",
+  effect:"100 of 100 truncated rows back after a restart.",
+  trigger:"Restart after TRUNCATE of a logstor table.",
+  why:"Truncated records stay in mixed segments that are freed without zeroing; recovery has no truncation time.",
+  status:"new mechanism (SCYLLADB-5484 is the open task)", repro:"test_truncated_logstor_rows_stay_gone[True]: fails 5/5.", reproS:"pass",
+  fix:"Recovery skips records at or below the table's truncation time; passes 3/3, logstor unit tests pass. Trusts write timestamps (a write after the TRUNCATE with an older timestamp is dropped at restart).", fixS:"part",
+  found:"TLA+ model of logstor."},
+ {n:9, sev:"medium", title:"Logstor equal timestamps not reconciled like sstables", area:"logstor (experimental)",
+  effect:"A DELETE then INSERT at one timestamp leaves the row; the value can change across a restart.",
+  trigger:"Equal write timestamps (client timestamps, retries).",
+  why:"The index keeps the later arrival; recovery keeps the higher segment sequence.",
+  status:"runtime half known: SCYLLADB-6194", repro:"test/cluster/test_logstor_equal_timestamps.py (3 tests): fail 5/5.", reproS:"pass",
+  fix:"32-bit value-aware tie-break in the index entry (deletion wins, then the value's first 4 bytes); passes 3/3, logstor unit tests pass. Values sharing a 4-byte prefix still tie.", fixS:"part",
+  found:"TLA+ model of logstor."},
+ {n:15, sev:"low", title:"Snapshot reloads service levels before auth", area:"service levels, group 0 snapshot",
+  effect:"Wrong effective service level on the node until the next service level or role change.",
+  trigger:"A node catching up through a group 0 snapshot that attaches a service level.",
+  why:"reload_state() recomputes service levels before load_all().",
+  status:"new", repro:"test/cluster/auth_cluster/test_service_level_snapshot_order.py: fails 5/5.", reproS:"pass",
+  fix:"Swap the two calls; passes 3/3.", fixS:"pass", found:"Comparison of the snapshot and incremental paths, after #14."},
+ {n:5, sev:"low", title:"SC tablet rollback reports sync before the leader's late change lands", area:"strong consistency, tablets",
+  effect:"The model's invariant violation (an excluded replica leading again) is fenced on a real cluster by the messaging-layer ban; what remains is an ordering anomaly.",
+  trigger:"Rollback of an SC tablet migration with an excluded pending replica.",
+  why:"c59a1208f7e removed the sc_rollback barrier; superseding a sync handler only works on replicas the newer sync reaches.",
+  status:"new; damaging effect not reachable", repro:"test_sc_rollback_sync_fences_sync_of_sc_become_voter in test/cluster/test_strong_consistency.py (new, test-only pause): fails 5/5.", reproS:"pass",
+  fix:"Restore with_barrier::yes at sc_rollback; passes 3/3.", fixS:"pass", found:"TLA+ model of SC tablet migration."},
+];
+
+const order = {critical:0, high:1, medium:2, low:3};
+BUGS.sort((a,b) => order[a.sev]-order[b.sev] || a.n-b.n);
+const esc = s => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+const codeify = s => esc(s).replace(/(test\/[\w\/.\-\[\]]+|[a-z_]+\(\)|[a-z]+_[a-z_]+(?:\[[\w-]+\])?)/g, "<code>$1</code>");
+const label = {pass:"done", part:"partial", none:"upstream"};
+const sevName = s => s[0].toUpperCase()+s.slice(1);
+
+document.getElementById("ledger").innerHTML = BUGS.map(b => `<tr>
+  <td class="num"><a href="#bug-${b.n}">${b.n}</a></td>
+  <td><span class="sev ${b.sev}">${sevName(b.sev)}</span></td>
+  <td>${esc(b.title)}</td>
+  <td>${esc(b.effect)}</td>
+  <td>${esc(b.status)}</td>
+  <td><span class="status ${b.reproS}">${b.reproS==="pass"?"reliable":"see entry"}</span></td>
+  <td><span class="status ${b.fixS}">${label[b.fixS]}</span></td></tr>`).join("");
+
+document.getElementById("bugs").innerHTML = BUGS.map(b => `<article class="bug ${b.sev}" id="bug-${b.n}">
+  <div class="bug-head"><span class="id">#${b.n}</span><h3>${esc(b.title)}</h3><span class="sev ${b.sev}">${sevName(b.sev)}</span></div>
+  <div class="tags">${b.area.split(", ").map(t=>`<span class="tag">${esc(t)}</span>`).join("")}<span class="tag">${esc(b.status)}</span></div>
+  <dl>
+    <dt>Effect</dt><dd>${esc(b.effect)}</dd>
+    <dt>Trigger</dt><dd>${esc(b.trigger)}</dd>
+    <dt>Mechanism</dt><dd>${codeify(b.why)}</dd>
+    <dt>Reproducer</dt><dd>${codeify(b.repro)}</dd>
+    <dt>Candidate fix</dt><dd>${codeify(b.fix)}</dd>
+    <dt>Found by</dt><dd>${esc(b.found)}</dd>
+  </dl></article>`).join("");
+
+const count = s => BUGS.filter(b=>b.sev===s).length;
+const isNew = BUGS.filter(b=>b.status.startsWith("new")).length;
+document.getElementById("stats").innerHTML = [
+  [BUGS.length,"bugs"],[count("critical"),"critical"],[count("high"),"high"],[isNew,"new (not in Jira)"],
+  [BUGS.filter(b=>b.reproS==="pass").length,"reliable reproducers"],[BUGS.filter(b=>b.fixS==="pass").length,"fixes validated"]
+].map(([v,l])=>`<div class="stat"><b>${v}</b><span>${l}</span></div>`).join("");
+</script>
