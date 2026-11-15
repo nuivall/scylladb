@@ -555,11 +555,13 @@ future<> group0_state_machine::reload_state() {
     if (_feature_service.compression_dicts) {
         co_await _ss.compression_dictionary_updated_callback_all();
     }
-    co_await _ss.update_service_levels_cache(qos::update_both_cache_levels::yes, qos::query_context::group0);
     if (_feature_service.cdc_with_tablets) {
         co_await _ss.load_cdc_streams();
     }
     co_await _ss.auth_cache().load_all();
+    // The effective service levels are computed from the auth cache's role
+    // records, so they come after load_all().
+    co_await _ss.update_service_levels_cache(qos::update_both_cache_levels::yes, qos::query_context::group0);
     // State built from non-system table schemas belongs in
     // do_reload_schema_dependent_state(): on restart the state machine is
     // enabled before non-system keyspaces are loaded, and that state is
