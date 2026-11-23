@@ -437,8 +437,9 @@ async def test_viewbuildstatus_progress_unknown_flow(manager: ScyllaClusterManag
     tm.create_mv(tm.column_names_list[1], wait=False, select="*")
 
     proc = await nodetool(manager, random.choice(servers), "viewbuildstatus", tm.keyspace, tm.table_name, check=False)
-    if proc.returncode:
-        assert proc.stdout.count("UNKNOWN") == len(servers), f"wrong number of UNKNOWN host states in viewbuildstatus output: {proc.stdout}"
+    # nodetool exits 1 when any host has not built the view.
+    assert proc.returncode == 1, f"viewbuildstatus of the base table should fail: rc={proc.returncode} {proc.stdout} {proc.stderr}"
+    assert proc.stdout.count("UNKNOWN") == len(servers), f"wrong number of UNKNOWN host states in viewbuildstatus output: {proc.stdout}"
 
 
 # Ported from scylla-dtest materialized_views_test.py::TestMaterializedViews::test_base_column_in_view_pk_complex_timestamp.
