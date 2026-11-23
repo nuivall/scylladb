@@ -773,7 +773,7 @@ class ScyllaClusterManager:
                      port: int = 9042,
                      use_ssl: bool = False,
                      auth_provider: AuthProvider | None = None,
-                     load_balancing_policy: LoadBalancingPolicy = RoundRobinPolicy(),
+                     load_balancing_policy: LoadBalancingPolicy | None = None,
                      control_connection_fallback: bool = False,
                      queries_only_via_control_connection: bool = False) -> CassandraCluster:
         assert hosts, "python driver connection needs at least one host to connect to"
