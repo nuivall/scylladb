@@ -189,7 +189,8 @@ async def run_basic_migration_test(manager, version, dataset, row_content, compr
     if row_content is not None:
         result = get_all_rows_for_check(manager, node1)
         for k, error_string in [("key", "check partition key"), ("c1", "check column c1"), ("c2", "check column c2"),
-                                ("pk", "check partition key"), ("ck", "check clustering key"), ("v1", "check column v1")]:
+                                ("pk", "check partition key"), ("ck", "check clustering key"), ("ck1", "check clustering key"),
+                                ("v1", "check column v1")]:
             if k in row_content:
                 assert getattr(result[0], k) == row_content[k], error_string
 
