@@ -140,17 +140,34 @@ async def insert_rows(cql, rows: int) -> None:
     await asyncio.gather(*[cql.run_async(stmt, [str(uuid.uuid4()), f"lastname_{random.randint(1, 1000)}", random.randint(1, 100)]) for _ in range(rows)])
 
 
+# Keeps the two sstables which flushing before and after rewrite_rows()
+# gives each sstable set: STCS would compact them back into one.
+NO_COMPACTION = "{'class': 'SizeTieredCompactionStrategy', 'enabled': 'false'}"
+
+
+async def rewrite_rows(cql) -> None:
+    """Write every row again, at ALL so that each replica has it before the
+    next flush: with compaction off (NO_COMPACTION), a flush then gives each
+    sstable set which has an sstable a second one, so a read of the set goes
+    through the selector which traces "Reading partition range ... from
+    sstable" (a set of one sstable is read without it)."""
+    stmt = insert_statement(cql)
+    stmt.consistency_level = ConsistencyLevel.ALL
+    keys = [row.key for row in await cql.run_async("SELECT key FROM ks.cf")]
+    await asyncio.gather(*[cql.run_async(stmt, [key, f"lastname_{random.randint(1, 1000)}", random.randint(1, 100)]) for key in keys])
+
+
 async def verify_tracing_info(manager, output: str, server, table: str, element: str) -> None:
     """For each sstable of the table on the node, the trace shows it read
     (a partition range or a key) and its Data or Index file read by bulk
-    DMA reads, as the dtests' _verify_tracing_info() matched."""
+    DMA reads, on that node, as the dtests' _verify_tracing_info() matched."""
     addr = re.escape(server.ip_addr)
     for path in glob.glob(f"{await get_table_dir(manager, server, 'ks', table)}/*-Data.db"):
         sstable = os.path.basename(path)
-        assert re.search(rf"Reading {element} .* from sstable .*{sstable}.*| {addr} |", output), output
+        assert re.search(rf"Reading {element} .* from sstable .*{sstable}.*\|\s*{addr}\s*\|", output), output
         data_or_index = re.sub("Data", "(Data|Index)", sstable)
-        assert re.search(rf"{data_or_index}: scheduling bulk DMA read of size [\d]* at offset [\d]*.*| {addr} |", output), output
-        assert re.search(rf"{data_or_index}: finished bulk DMA read of size [\d]* at offset [\d]*, successfully read [\d]* bytes.*| {addr} |", output), output
+        assert re.search(rf"{data_or_index}: scheduling bulk DMA read of size [\d]* at offset [\d]*.*\|\s*{addr}\s*\|", output), output
+        assert re.search(rf"{data_or_index}: finished bulk DMA read of size [\d]* at offset [\d]*, successfully read [\d]* bytes.*\|\s*{addr}\s*\|", output), output
 
 
 # On three nodes (RF=3) with the cache enabled and trace probability 1,
@@ -158,10 +175,13 @@ async def verify_tracing_info(manager, output: str, server, table: str, element:
 # own sstables.
 @pytest.mark.skip_mode(mode=["dev", *DEBUG_MODES], reason="scylla-dtest gates on it in release mode only")
 async def test_tracing_info_for_sstables_on_each_node_from_replica_with_cache_enabled(manager: ScyllaClusterManager):
-    servers, cql = await prepare_tracing_table(manager, nodes=3, disable_cache=False)
+    servers, cql = await prepare_tracing_table(manager, nodes=3, disable_cache=False, compaction=NO_COMPACTION)
     await insert_rows(cql, 50)
     for s in servers:
         await run_nodetool(manager, s, "settraceprobability", "1.0")
+    for s in servers:
+        await run_nodetool(manager, s, "flush")
+    await rewrite_rows(cql)
     for s in servers:
         await run_nodetool(manager, s, "flush")
     for s in servers:
@@ -176,9 +196,12 @@ async def test_tracing_info_for_sstables_on_each_node_from_replica_with_cache_en
 # full scan coordinated by each node shows the reads of its own sstables.
 @pytest.mark.skip_mode(mode=["dev", *DEBUG_MODES], reason="scylla-dtest gates on it in release mode only")
 async def test_tracing_info_sstables_locally_on_each_node_from_replica(manager: ScyllaClusterManager):
-    servers, cql = await prepare_tracing_table(manager, nodes=3, rf=3)
+    servers, cql = await prepare_tracing_table(manager, nodes=3, rf=3, compaction=NO_COMPACTION)
     await insert_rows(cql, 50)
     await asyncio.gather(*(manager.api.set_trace_probability(s.ip_addr, 1.0) for s in servers))
+    for s in servers:
+        await run_nodetool(manager, s, "flush")
+    await rewrite_rows(cql)
     for s in servers:
         await run_nodetool(manager, s, "flush")
     for s in servers:
@@ -191,8 +214,10 @@ async def test_tracing_info_sstables_locally_on_each_node_from_replica(manager: 
 # reads of node1's flushed sstables.
 @pytest.mark.skip_mode(mode=["dev", *DEBUG_MODES], reason="scylla-dtest gates on it in release mode only")
 async def test_tracing_info_from_remote_sstables(manager: ScyllaClusterManager):
-    [node1, node2], cql = await prepare_tracing_table(manager, nodes=2, rf=1, simple_snitch=True)
+    [node1, node2], cql = await prepare_tracing_table(manager, nodes=2, rf=1, simple_snitch=True, compaction=NO_COMPACTION)
     await insert_rows(cql, 10)
+    await run_nodetool(manager, node1, "flush")
+    await rewrite_rows(cql)
     await run_nodetool(manager, node1, "flush")
     out = await cqlsh(node2, "TRACING ON; SELECT * FROM ks.cf")
     await verify_tracing_info(manager, out, node1, "cf", "partition range")
