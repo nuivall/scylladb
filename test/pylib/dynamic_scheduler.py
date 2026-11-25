@@ -312,10 +312,10 @@ START_CEILING = 2.0       # cores admissible in the very first pass, before anyt
 
 # Admission settings.  They are fixed, not options: the scheduler is
 # tuned to them.
-CPU_TARGET = 0.95          # share of the CPUs the tests' load is kept under
+CPU_TARGET = 1.0           # share of the CPUs the tests' load is kept under
 CPU_OVERCOMMIT = 1.5       # CPU bookings never exceed this many times the CPUs
 BURST = 0.05               # bookings grow by at most this share of the CPUs a second
-PSI_CPU_LIMIT = 25.0       # tests' CPU "some avg10" % above which admission pauses, target shrinks
+PSI_CPU_LIMIT = 50.0       # tests' CPU "some avg10" % above which admission pauses, target shrinks
 PSI_MEM_LIMIT = 5.0        # machine memory "some avg10" % above which admission pauses
 TARGET_KP = 0.006          # the CPU target moves this share of the CPUs per point of pressure off the limit...
 TARGET_KI = 0.00015        # ...and, integrated, this share per point and second it stays off (until tuned)
