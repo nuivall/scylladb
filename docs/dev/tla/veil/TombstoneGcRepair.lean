@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: locator/tablets.cc, replica/tablets.cc, tombstone_gc.cc, repair/repair.cc
+-- checked-against: 61d55c44f6a
+
 /-! # Tombstone GC in repair mode across a tablet merge (catalog #2)
 
 ../tombstone_gc_repair/tombstone_gc_repair.tla action for action.
@@ -121,12 +124,15 @@ safety [no_resurrection]
 #gen_spec
 
 -- MC_current.cfg: TLC finds NoResurrection violated.
+-- expect: violation no_resurrection
 #model_check compiled { tick := Fin 3, mergeMax := true, maxMerges := 1, maxWrites := 2, maxRepairs := 1, maxCompactions := 2 }
 
 -- MC_merge_min.cfg: TLC passes, 6,889 states.
+-- expect: pass
 #model_check compiled { tick := Fin 3, mergeMax := false, maxMerges := 1, maxWrites := 2, maxRepairs := 1, maxCompactions := 2 }
 
 -- MC_no_merge.cfg: TLC passes, 2,965 states.
+-- expect: pass
 #model_check compiled { tick := Fin 3, mergeMax := true, maxMerges := 0, maxWrites := 2, maxRepairs := 1, maxCompactions := 2 }
 
 end TombstoneGcRepair

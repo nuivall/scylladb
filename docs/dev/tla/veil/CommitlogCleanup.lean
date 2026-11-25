@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: db/commitlog/, db/system_keyspace.cc, repair/row_level.cc, replica/database.cc, tombstone_gc.cc
+-- checked-against: 61d55c44f6a
+
 /-! # Commitlog cleanup record vs a reordered write (catalog #10)
 
 A Veil model of ../commitlog_cleanup/commitlog_cleanup.tla. A write takes its
@@ -92,18 +95,22 @@ invariant [flushed_acked] flushed X → acked X
 #gen_spec
 
 -- The bug, for every instance: some execution of 7 steps loses a write.
+-- expect: pass
 sat trace [bug_trace] {
   any 7 actions
   assert (∃ w, lost w)
 }
 
 -- Explicit-state model checking: 2 writes, 4 positions.
+-- expect: violation no_lost_write
 #model_check interpreted { write := Fin 2, pos := Fin 4 }
 
 -- Random walks over the same instance.
+-- expect: violation no_lost_write
 #simulate { write := Fin 2, pos := Fin 4 } {} (numTraces := 2000) (maxSteps := 20) (seed := 42)
 
 -- Against the buggy code: a counterexample to induction for `no_lost_write`.
+-- expect: not inductive crash:no_lost_write
 #check_invariants
 
 end CommitlogCleanup
@@ -180,14 +187,17 @@ invariant [unflushed_above_record] hasRecord ∧ added X ∧ ¬ flushed X → (l
 #gen_spec
 
 -- With the fix, no execution of up to 8 steps loses a write, for every instance.
+-- expect: pass
 unsat trace [fixed_bounded] {
   any 8 actions
   assert (∃ w, lost w)
 }
 
+-- expect: pass
 #model_check interpreted { write := Fin 2, pos := Fin 4 }
 
 -- A proof for all instances and all executions.
+-- expect: pass
 #check_invariants
 
 end CommitlogCleanupFixed

@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: replica/table.cc, replica/compaction_group.hh, service/storage_service.cc, service/topology_coordinator.cc, compaction/compaction_manager.cc
+-- checked-against: 61d55c44f6a
+
 /-! # The sstables of a tablet across split, intra-node migration and restarts (catalog #4, #6)
 
 ../tablet_storage/tablet_storage.tla action for action. Encoding changes:
@@ -444,18 +447,26 @@ safety [w_restart_with_response] witness = 3 → ¬ (tst = stream ∧ tresp ∧ 
 #gen_spec
 
 -- MC_before_27d460758f3.cfg: TLC finds SplitAckHolds violated.
+-- expect: violation split_ack_holds
 #model_check compiled { fid := Fin 24, maxWrites := 2, maxOps := 2, maxRestarts := 0, maxFails := 0, maxMigrations := 1, bypassFailDeletesInput := false, cloneUnsealed := true, attachAtomic := false, restartKeepsResponse := false, witness := 0 }
 -- MC_before_48d243f32fc.cfg: TLC finds SplitAckHolds violated.
+-- expect: violation split_ack_holds
 #model_check compiled { fid := Fin 24, maxWrites := 2, maxOps := 2, maxRestarts := 1, maxFails := 0, maxMigrations := 1, bypassFailDeletesInput := false, cloneUnsealed := false, attachAtomic := true, restartKeepsResponse := false, witness := 0 }
 -- MC_current.cfg: TLC finds Durable violated.
+-- expect: violation durable
 #model_check compiled { fid := Fin 24, maxWrites := 2, maxOps := 2, maxRestarts := 1, maxFails := 1, maxMigrations := 1, bypassFailDeletesInput := true, cloneUnsealed := true, attachAtomic := true, restartKeepsResponse := true, witness := 0 }
 -- MC_fixed.cfg: TLC passes (555,966 states).
+-- expect: pass
 #model_check compiled { fid := Fin 24, maxWrites := 2, maxOps := 2, maxRestarts := 1, maxFails := 1, maxMigrations := 1, bypassFailDeletesInput := false, cloneUnsealed := true, attachAtomic := true, restartKeepsResponse := false, witness := 0 }
 -- MC_migration_restart.cfg: TLC finds Readable violated.
+-- expect: violation readable
 #model_check compiled { fid := Fin 24, maxWrites := 2, maxOps := 2, maxRestarts := 1, maxFails := 1, maxMigrations := 1, bypassFailDeletesInput := false, cloneUnsealed := true, attachAtomic := true, restartKeepsResponse := true, witness := 0 }
 -- The witnesses: TLC finds each reachable.
+-- expect: violation w_finalized
 #model_check compiled { fid := Fin 24, maxWrites := 2, maxOps := 2, maxRestarts := 0, maxFails := 0, maxMigrations := 0, bypassFailDeletesInput := false, cloneUnsealed := true, attachAtomic := true, restartKeepsResponse := false, witness := 1 }
+-- expect: violation w_migrated_after_split
 #model_check compiled { fid := Fin 24, maxWrites := 1, maxOps := 1, maxRestarts := 0, maxFails := 0, maxMigrations := 1, bypassFailDeletesInput := false, cloneUnsealed := true, attachAtomic := true, restartKeepsResponse := false, witness := 2 }
+-- expect: violation w_restart_with_response
 #model_check compiled { fid := Fin 24, maxWrites := 1, maxOps := 0, maxRestarts := 1, maxFails := 0, maxMigrations := 1, bypassFailDeletesInput := false, cloneUnsealed := true, attachAtomic := true, restartKeepsResponse := true, witness := 3 }
 
 end TabletStorage

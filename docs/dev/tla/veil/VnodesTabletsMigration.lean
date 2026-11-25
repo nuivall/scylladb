@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: service/storage_service.cc, service/topology_coordinator.cc, service/tablet_allocator.cc, db/system_keyspace.cc, main.cc
+-- checked-against: 61d55c44f6a
+
 /-! # The vnodes-to-tablets migration (catalog #7)
 
 A translation of ../vnodes_tablets_migration/vnodes_tablets_migration.tla,
@@ -214,18 +217,26 @@ safety [boot_ok] checkBootOk → ¬ stuck N
 #gen_spec
 
 -- MC_before_current_column.cfg: TLC finds LayoutMatches violated.
+-- expect: violation layout_matches
 #model_check compiled { wid := Fin 2, joiner := false, maxWrites := 2, maxRestarts := 4, maxStops := 4, maxLeaderChanges := 1, currentColumn := false, checkBootOk := true }
 
 -- MC_current.cfg: TLC passes, 288,498 states.
+-- expect: pass
 #model_check compiled { wid := Fin 2, joiner := false, maxWrites := 2, maxRestarts := 4, maxStops := 4, maxLeaderChanges := 1, currentColumn := true, checkBootOk := true }
 
 -- MC_topology_ops.cfg: TLC passes, 5,428,990 states.
+-- expect: pass
+-- cost: heavy
 #model_check compiled { wid := Fin 2, joiner := true, maxWrites := 2, maxRestarts := 3, maxStops := 3, maxLeaderChanges := 1, currentColumn := true, checkBootOk := false }
 
 -- MC_bench_bug_large.cfg: TLC finds LayoutMatches violated.
+-- expect: violation layout_matches
+-- cost: heavy
 #model_check compiled { wid := Fin 2, joiner := true, maxWrites := 2, maxRestarts := 4, maxStops := 4, maxLeaderChanges := 1, currentColumn := false, checkBootOk := false }
 
 -- MC_bench_fix_large.cfg: TLC passes, 17,430,982 states.
+-- expect: pass
+-- cost: heavy
 #model_check compiled { wid := Fin 2, joiner := true, maxWrites := 2, maxRestarts := 4, maxStops := 4, maxLeaderChanges := 1, currentColumn := true, checkBootOk := false }
 
 end VnodesTabletsMigration

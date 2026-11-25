@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: replica/table.cc, replica/compaction_group.hh, compaction/compaction_manager.cc, compaction/compaction.cc, repair/row_level.cc
+-- checked-against: 61d55c44f6a
+
 /-! # Compaction groups of a table's tablets on one shard (catalog #3)
 
 ../compaction_groups/compaction_groups.tla action for action. Encoding
@@ -401,14 +404,19 @@ safety [w_merged] witness → phase ≠ mergedDone
 #gen_spec
 
 -- MC_before_3f9d1c16c70.cfg: TLC finds InputsFound violated (7 states).
+-- expect: violation inputs_found
 #model_check compiled { sid := Fin 11, tid := Fin 4, selectHoldsLock := false, bypassTakesLock := true, gcPinned := true, maxRegular := 2, maxGc := 1, maxAdds := 1, maxRewrites := 1, maxIds := 9, witness := false }
 -- MC_before_7420f936bbc.cfg: TLC finds InputsFound violated (9 states).
+-- expect: violation inputs_found
 #model_check compiled { sid := Fin 11, tid := Fin 4, selectHoldsLock := true, bypassTakesLock := false, gcPinned := true, maxRegular := 2, maxGc := 1, maxAdds := 1, maxRewrites := 1, maxIds := 9, witness := false }
 -- MC_before_99d302fb483.cfg: TLC finds InputsFound violated (6 states).
+-- expect: violation inputs_found
 #model_check compiled { sid := Fin 11, tid := Fin 4, selectHoldsLock := true, bypassTakesLock := true, gcPinned := false, maxRegular := 2, maxGc := 1, maxAdds := 1, maxRewrites := 1, maxIds := 9, witness := false }
 -- MC_current.cfg: TLC finds InputsFound violated (12 states; catalog #3).
+-- expect: violation inputs_found
 #model_check compiled { sid := Fin 11, tid := Fin 4, selectHoldsLock := true, bypassTakesLock := true, gcPinned := true, maxRegular := 2, maxGc := 1, maxAdds := 1, maxRewrites := 1, maxIds := 9, witness := false }
 -- MC_witness_merged.cfg: TLC finds the merge completing (10 states).
+-- expect: violation w_merged
 #model_check compiled { sid := Fin 11, tid := Fin 3, selectHoldsLock := true, bypassTakesLock := true, gcPinned := true, maxRegular := 1, maxGc := 1, maxAdds := 1, maxRewrites := 1, maxIds := 9, witness := true }
 
 end CompactionGroups

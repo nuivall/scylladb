@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: db/commitlog/, db/system_keyspace.cc, repair/row_level.cc, replica/database.cc, tombstone_gc.cc
+-- checked-against: 61d55c44f6a
+
 set_option veil.smt.trust false
 
 /-! # Liveness and kernel-checked proof for the fixed commitlog cleanup record
@@ -102,10 +105,12 @@ temporal [acked_eventually_flushed_fair] (𝒲ℱ flush) → ∀ w, □ (⌜ ack
 
 #gen_spec
 
+-- expect: pass
 #temporal_check { write := Fin 2, pos := Fin 3 }
 
 -- The same inductive invariant, with the SMT proofs reconstructed and checked
 -- by the Lean kernel (veil.smt.trust is set at the top of the file).
+-- expect: pass
 #check_invariants
 
 end CommitlogCleanupTemporal

@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: service/raft/group0_state_machine.cc, service/raft/raft_group0_client.cc, db/schema_applier.cc, replica/database.cc
+-- checked-against: 61d55c44f6a
+
 /-! # The group 0 state machine of one node (catalog #1)
 
 ../group0_state_machine/group0_state_machine.tla action for action.
@@ -257,14 +260,19 @@ safety [mem_matches_disk] checkMem → (running ∧ inMem ∧ ¬ broken) → (me
 #gen_spec
 
 -- MC_before_02efd050634.cfg: TLC finds Linearizable violated (5 states).
+-- expect: violation linearizable
 #model_check compiled { sid := Fin 3, fixBreakMutexOnFailure := true, enableImmediately := false, modelGenericFailureAfterPersist := false, maxRemoteOps := 2, maxLocalOps := 1, maxFailures := 1, maxRestarts := 1, checkMem := false }
 -- MC_before_2f372ec9707.cfg: TLC finds Linearizable violated (6 states).
+-- expect: violation linearizable
 #model_check compiled { sid := Fin 3, fixBreakMutexOnFailure := false, enableImmediately := true, modelGenericFailureAfterPersist := false, maxRemoteOps := 2, maxLocalOps := 1, maxFailures := 1, maxRestarts := 1, checkMem := false }
 -- MC_current.cfg: TLC passes, 452 states.
+-- expect: pass
 #model_check compiled { sid := Fin 3, fixBreakMutexOnFailure := true, enableImmediately := true, modelGenericFailureAfterPersist := false, maxRemoteOps := 2, maxLocalOps := 1, maxFailures := 1, maxRestarts := 1, checkMem := true }
 -- MC_current_large.cfg: TLC passes, 11,068 states.
+-- expect: pass
 #model_check compiled { sid := Fin 5, fixBreakMutexOnFailure := true, enableImmediately := true, modelGenericFailureAfterPersist := false, maxRemoteOps := 3, maxLocalOps := 2, maxFailures := 2, maxRestarts := 2, checkMem := true }
 -- MC_generic_failure_after_persist.cfg: TLC finds Linearizable violated (6 states).
+-- expect: violation linearizable
 #model_check compiled { sid := Fin 3, fixBreakMutexOnFailure := true, enableImmediately := true, modelGenericFailureAfterPersist := true, maxRemoteOps := 2, maxLocalOps := 1, maxFailures := 1, maxRestarts := 1, checkMem := false }
 
 end Group0StateMachine

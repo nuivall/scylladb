@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: db/commitlog/, db/system_keyspace.cc, repair/row_level.cc, replica/database.cc, tombstone_gc.cc
+-- checked-against: 61d55c44f6a
+
 /-! # Invariant synthesis for the fixed commitlog cleanup record
 
 A Veil model of ../commitlog_cleanup/commitlog_cleanup.tla. A write takes its
@@ -89,6 +92,7 @@ safety [no_lost_write] ¬ lost X
 
 #gen_spec
 
+-- expect: pass
 #updr
 
 end CommitlogCleanupUpdr

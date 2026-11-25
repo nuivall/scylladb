@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: replica/table.cc, replica/database.cc, service/storage_proxy.cc, mutation/counters.hh, locator/topology.cc
+-- checked-against: 61d55c44f6a
+
 /-! # Counters across a tablet migration (catalog #11)
 
 A translation of ../counters_tablets/counters_tablets.tla (configs
@@ -113,9 +116,11 @@ safety [no_lost_increment]
 #gen_spec
 
 -- MC_no_migration.cfg: MaxIncs = 3, Migrate = FALSE; TLC: pass, 20 distinct states.
+-- expect: pass
 #model_check interpreted { maxIncs := 3, migrate := false }
 
 -- MC_migration.cfg: MaxIncs = 3, Migrate = TRUE; TLC: NoLostIncrement violated.
+-- expect: violation no_lost_increment
 #model_check interpreted { maxIncs := 3, migrate := true }
 
 end CountersTablets

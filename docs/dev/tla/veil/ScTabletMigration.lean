@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: service/strong_consistency/, service/topology_coordinator.cc
+-- checked-against: 61d55c44f6a
+
 /-! # Migration of one strongly-consistent tablet (catalog #5)
 
 ../sc_tablet_migration/sc_tablet_migration.tla action for action, with
@@ -534,39 +537,78 @@ safety [pids_left] ∃ p, ¬ pubd p
 #gen_spec
 
 -- Configs: Fin 12 indices for one migration, Fin 22 for two; one request slot.
+-- Each check explores up to about 110M states (15 GB), so all are heavy.
 -- MC_current.cfg: pass.
+-- expect: pass
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 1, maxElections := 2, maxRequests := 0, check := 0 }
 -- MC_excluded_alive_i1.cfg: I1_LeaderCoverage violated (catalog #5).
+-- expect: violation i1_leader_coverage
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := true, maxMigrations := 1, maxFailures := 1, maxElections := 2, maxRequests := 0, check := 1 }
 -- MC_excluded_alive_i1_rollback_barrier.cfg: pass.
+-- expect: pass
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := true, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := true, maxMigrations := 1, maxFailures := 1, maxElections := 2, maxRequests := 0, check := 1 }
 -- MC_excluded_alive.cfg: I2_Membership violated.
+-- expect: violation i2_membership
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := true, maxMigrations := 1, maxFailures := 1, maxElections := 2, maxRequests := 1, check := 0 }
 -- MC_current_requests.cfg: pass.
+-- expect: pass
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 1, maxElections := 0, maxRequests := 1, check := 0 }
 -- MC_current_two_migrations.cfg: pass.
+-- expect: pass
+-- cost: heavy
 #model_check compiled { pid := Fin 22, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 2, maxFailures := 1, maxElections := 1, maxRequests := 0, check := 0 }
 -- MC_ablate_become_voter_barrier.cfg: I1_LeaderCoverage violated.
+-- expect: violation i1_leader_coverage
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := true, skipStage := gbecome, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 0, maxElections := 1, maxRequests := 1, check := 0 }
 -- MC_ablate_end_migration_barrier.cfg: I5_StorageUnderServer violated.
+-- expect: violation i5_storage_under_server
+-- cost: heavy
 #model_check compiled { pid := Fin 22, rslot := Fin 1, skipOn := true, skipStage := gend, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 2, maxFailures := 0, maxElections := 0, maxRequests := 0, check := 0 }
 -- MC_ablate_remove_pending_barrier.cfg: pass.
+-- expect: pass
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := true, skipStage := gremove, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 1, maxElections := 0, maxRequests := 1, check := 0 }
 -- MC_ablate_revert_migration_barrier.cfg: I5_StorageUnderServer violated.
+-- expect: violation i5_storage_under_server
+-- cost: heavy
 #model_check compiled { pid := Fin 22, rslot := Fin 1, skipOn := true, skipStage := grevert, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 2, maxFailures := 1, maxElections := 0, maxRequests := 0, check := 0 }
 -- MC_ablate_use_new_barrier.cfg: I2_Membership violated.
+-- expect: violation i2_membership
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := true, skipStage := gusenew, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 0, maxElections := 1, maxRequests := 1, check := 0 }
 -- MC_ablate_sync_guard_and_supersede.cfg: pass.
+-- expect: pass
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := false, newerSyncSupersedes := false, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 1, maxElections := 2, maxRequests := 0, check := 0 }
 -- MC_ablate_sync_guard_and_supersede_alive.cfg: SyncedHolds violated.
+-- expect: violation synced_holds
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := false, newerSyncSupersedes := false, excludedPendingAlive := true, maxMigrations := 1, maxFailures := 1, maxElections := 2, maxRequests := 0, check := 2 }
 -- Witnesses: MC_witness_end, _remove_pending, _rollback, _rollback_after_promotion_alive
 -- (reachable), _rollback_after_promotion (not reachable: pass), _second_migration.
+-- expect: violation w_migration_ended
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 0, maxElections := 0, maxRequests := 0, check := 10 }
+-- expect: violation w_removed_pending
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 1, maxElections := 0, maxRequests := 0, check := 11 }
+-- expect: violation w_rolled_back
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 1, maxElections := 0, maxRequests := 0, check := 12 }
+-- expect: violation w_rolled_back_after_promotion
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := true, maxMigrations := 1, maxFailures := 1, maxElections := 1, maxRequests := 0, check := 13 }
+-- expect: pass
+-- cost: heavy
 #model_check compiled { pid := Fin 12, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 1, maxFailures := 1, maxElections := 1, maxRequests := 0, check := 13 }
+-- expect: violation w_second_migration_ended
+-- cost: heavy
 #model_check compiled { pid := Fin 22, rslot := Fin 1, skipOn := false, skipStage := gnone, extraRollback := false, guardAbortsSync := true, newerSyncSupersedes := true, excludedPendingAlive := false, maxMigrations := 2, maxFailures := 0, maxElections := 0, maxRequests := 0, check := 14 }
 
 end ScTabletMigration

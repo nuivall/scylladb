@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: auth/cache.cc, auth/cache.hh, service/raft/group0_state_machine.cc
+-- checked-against: 61d55c44f6a
+
 /-! # The auth cache's permission sets (auth/cache.cc)
 
 The permissions of one resource, cached per role on each shard, while
@@ -311,23 +314,31 @@ safety [fresh] ¬ reloading → cperm S R → (cval S R → eff R) ∧ (checkRef
 
 -- The code: SCYLLADB-4206 (five commands: create P and R, GRANT P TO R, GRANT
 -- the permission to P, REVOKE it).
+-- expect: violation fresh
 #model_check compiled { shard := Fin 2, role := Fin 3, fix := false, fixLdap := false, ldap := false, maxCmds := 5, snap := false, fixSnap := false, pruneOn := false, checkRefused := true }
 -- The candidate fix, without LDAP.
+-- expect: pass
 #model_check compiled { shard := Fin 2, role := Fin 3, fix := true, fixLdap := false, ldap := false, maxCmds := 5, snap := false, fixSnap := false, pruneOn := false, checkRefused := true }
 -- With LDAP's reload_all_permissions, on one shard with two roles (the race
 -- is within a shard and needs only the parent and its member; larger
 -- instances take more than the bench's 62 GB): the code, then the lookup
 -- fix alone.
+-- expect: violation fresh
 #model_check compiled { shard := Fin 1, role := Fin 2, fix := false, fixLdap := false, ldap := true, maxCmds := 5, snap := false, fixSnap := false, pruneOn := false, checkRefused := true }
+-- expect: pass
 #model_check compiled { shard := Fin 1, role := Fin 2, fix := true, fixLdap := false, ldap := true, maxCmds := 5, snap := false, fixSnap := false, pruneOn := false, checkRefused := true }
 -- Commands that may arrive in a snapshot (load_all()), one shard and two
 -- roles: the lookup fix alone, then with the load_all() fix too.
+-- expect: violation fresh
 #model_check compiled { shard := Fin 1, role := Fin 2, fix := true, fixLdap := false, ldap := false, maxCmds := 5, snap := true, fixSnap := false, pruneOn := false, checkRefused := true }
+-- expect: pass
 #model_check compiled { shard := Fin 1, role := Fin 2, fix := true, fixLdap := false, ldap := false, maxCmds := 5, snap := true, fixSnap := true, pruneOn := false, checkRefused := true }
 -- The snapshot race granting what the tables don't (a revoked superuser's
 -- member keeps its permissions).
+-- expect: violation fresh
 #model_check compiled { shard := Fin 1, role := Fin 2, fix := true, fixLdap := false, ldap := false, maxCmds := 5, snap := true, fixSnap := false, pruneOn := false, checkRefused := false }
 -- Dropped resources and prune(), with the lookup fix.
+-- expect: pass
 #model_check compiled { shard := Fin 1, role := Fin 2, fix := true, fixLdap := false, ldap := false, maxCmds := 5, snap := false, fixSnap := false, pruneOn := true, checkRefused := true }
 
 end AuthCache

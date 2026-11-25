@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: replica/logstor/
+-- checked-against: 61d55c44f6a
+
 /-! # Logstor on one shard (catalog #8, #9)
 
 ../logstor/logstor.tla action for action. Encoding changes, none of which
@@ -279,21 +282,29 @@ safety [w_crash_after_return] check = 3 → ¬ (crashed ∧ nm > 0 ∧ owned ka 
 #gen_spec
 
 -- MC_move.cfg: TLC finds Correct violated (6 states).
+-- expect: violation correct
 #model_check compiled { seg := Fin 3, wid := Fin 3, maxRecs := 2, maxWrites := 3, maxCrashes := 1, maxTruncates := 0, maxMoves := 1, maxCompactions := 1, truncateFlushes := true, check := 0 }
 -- MC_ties.cfg: TLC finds Correct violated (6 states).
+-- expect: violation correct
 #model_check compiled { seg := Fin 3, wid := Fin 2, maxRecs := 2, maxWrites := 2, maxCrashes := 1, maxTruncates := 0, maxMoves := 0, maxCompactions := 1, truncateFlushes := true, check := 0 }
 -- MC_ties_reconcile.cfg: TLC finds AgreesWithReconciliation violated (4 states).
+-- expect: violation agrees_with_reconciliation
 #model_check compiled { seg := Fin 3, wid := Fin 2, maxRecs := 2, maxWrites := 2, maxCrashes := 1, maxTruncates := 0, maxMoves := 0, maxCompactions := 1, truncateFlushes := true, check := 1 }
 -- MC_truncate.cfg: TLC finds Correct violated (5 states with one worker; 6
 -- with 8, whose search order doesn't guarantee the shortest trace).
+-- expect: violation correct
 #model_check compiled { seg := Fin 3, wid := Fin 2, maxRecs := 2, maxWrites := 2, maxCrashes := 1, maxTruncates := 1, maxMoves := 0, maxCompactions := 1, truncateFlushes := true, check := 0 }
 -- The witnesses: TLC finds each reachable (6 and 7 states).
+-- expect: violation w_crash_after_truncate
 #model_check compiled { seg := Fin 3, wid := Fin 2, maxRecs := 2, maxWrites := 2, maxCrashes := 1, maxTruncates := 1, maxMoves := 0, maxCompactions := 1, truncateFlushes := true, check := 2 }
+-- expect: violation w_crash_after_return
 #model_check compiled { seg := Fin 3, wid := Fin 3, maxRecs := 2, maxWrites := 3, maxCrashes := 1, maxTruncates := 0, maxMoves := 1, maxCompactions := 1, truncateFlushes := true, check := 3 }
 
 -- Every feature, no property (check := 9): TLC explores 21,659,782 distinct
 -- states at these bounds (Segs = {1, 2, 3}, MaxRecs = 2, MaxWrites = 3, one
 -- crash, TRUNCATE, move and compaction, TruncateFlushes = TRUE).
+-- expect: pass
+-- cost: heavy
 #model_check compiled { seg := Fin 3, wid := Fin 3, maxRecs := 2, maxWrites := 3, maxCrashes := 1, maxTruncates := 1, maxMoves := 1, maxCompactions := 1, truncateFlushes := true, check := 9 }
 
 end Logstor

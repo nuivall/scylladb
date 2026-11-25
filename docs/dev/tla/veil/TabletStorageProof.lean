@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: replica/table.cc, replica/compaction_group.hh, service/storage_service.cc, service/topology_coordinator.cc, compaction/compaction_manager.cc
+-- checked-against: 61d55c44f6a
+
 /-! # tablet_storage with both fixes: an inductive invariant (catalog #4, #6)
 
 TabletStorage.lean with the fixed configuration assumed (a failed
@@ -496,9 +499,11 @@ invariant [mig_loaded] tst = stream ∧ (tph = prespond ∨ tph = pdone) ∧ wri
 #gen_spec
 
 -- The strengthening holds on MC_fixed.cfg's bounds.
+-- expect: pass
 #model_check compiled { fid := Fin 24, maxWrites := 2, maxOps := 2, maxRestarts := 1, maxFails := 1, maxMigrations := 1, bypassFailDeletesInput := false, cloneUnsealed := true, attachAtomic := true, restartKeepsResponse := false, witness := 0 }
 
 -- For every instance and every execution.
+-- expect: pass
 #check_invariants
 
 end TabletStorageProof

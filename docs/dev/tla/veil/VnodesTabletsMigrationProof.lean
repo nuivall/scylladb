@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: service/storage_service.cc, service/topology_coordinator.cc, service/tablet_allocator.cc, db/system_keyspace.cc, main.cc
+-- checked-against: 61d55c44f6a
+
 /-! # The vnodes-to-tablets migration (catalog #7): proof attempt
 
 VnodesTabletsMigration.lean without the model checks, with the fix assumed
@@ -246,6 +249,7 @@ invariant [own_data] ¬ joiner → data N R X → vowner R = N
 #gen_spec
 
 -- With the fix (published modes): the properties hold for every instance and every execution.
+-- expect: pass
 #check_invariants
 
 end VnodesTabletsMigrationProof

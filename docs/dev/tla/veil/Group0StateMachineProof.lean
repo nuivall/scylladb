@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: service/raft/group0_state_machine.cc, service/raft/raft_group0_client.cc, db/schema_applier.cc, replica/database.cc
+-- checked-against: 61d55c44f6a
+
 /-! # The group 0 state machine, current code: an inductive invariant (catalog #1)
 
 Group0StateMachine.lean with the current code assumed (a failed change
@@ -287,9 +290,11 @@ invariant [pst_covers] effS X ∧ pidx P ∧ le X P → pst X
 #gen_spec
 
 -- The strengthening holds on MC_current_large.cfg's bounds.
+-- expect: pass
 #model_check compiled { sid := Fin 5, fixBreakMutexOnFailure := true, enableImmediately := true, modelGenericFailureAfterPersist := false, maxRemoteOps := 3, maxLocalOps := 2, maxFailures := 2, maxRestarts := 2, checkMem := true }
 
 -- For every instance and every execution.
+-- expect: pass
 #check_invariants
 
 end Group0StateMachineProof

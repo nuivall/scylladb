@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: locator/tablets.cc, replica/tablets.cc, tombstone_gc.cc, repair/repair.cc
+-- checked-against: 61d55c44f6a
+
 /-! # Tombstone GC in repair mode across a tablet merge (catalog #2): proof of the fix
 
 TombstoneGcRepair.lean with the fix assumed (a merge takes the earlier repair
@@ -221,9 +224,11 @@ invariant [newest_kept] wrote K T D ∧ (∀ y e, wrote K y e → le y T) ∧ (�
 #gen_spec
 
 -- The strengthening holds on MC_merge_min.cfg's bounds.
+-- expect: pass
 #model_check interpreted { tick := Fin 3, mergeMax := false, maxMerges := 1, maxWrites := 2, maxRepairs := 1, maxCompactions := 2 }
 
 -- For every instance and every execution.
+-- expect: pass
 #check_invariants
 
 end TombstoneGcRepairProof

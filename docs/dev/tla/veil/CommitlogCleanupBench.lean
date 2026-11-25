@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: db/commitlog/, db/system_keyspace.cc, repair/row_level.cc, replica/database.cc, tombstone_gc.cc
+-- checked-against: 61d55c44f6a
+
 /-! # Commitlog cleanup record, as TLC sees it (benchmark)
 
 ../commitlog_cleanup/commitlog_cleanup.tla action for action, with the
@@ -90,15 +93,27 @@ safety [no_lost_write] ¬ lost X
 #gen_spec
 
 -- MC_current.cfg and MC_fixed.cfg: TLC finds NoLostWrite violated, and passes with 70 states.
+-- expect: violation no_lost_write
 #model_check compiled { write := Fin 2, maxCrashes := 1, fixed := false }
+-- expect: pass
 #model_check compiled { write := Fin 2, maxCrashes := 1, fixed := true }
 
 -- MC_bench_{bug,fix}_{5,6,7}.cfg.
+-- expect: violation no_lost_write
 #model_check compiled { write := Fin 5, maxCrashes := 1, fixed := false }
+-- expect: pass
 #model_check compiled { write := Fin 5, maxCrashes := 1, fixed := true }
+-- expect: violation no_lost_write
+-- cost: heavy
 #model_check compiled { write := Fin 6, maxCrashes := 1, fixed := false }
+-- expect: pass
+-- cost: heavy
 #model_check compiled { write := Fin 6, maxCrashes := 1, fixed := true }
+-- expect: violation no_lost_write
+-- cost: heavy
 #model_check compiled { write := Fin 7, maxCrashes := 1, fixed := false }
+-- expect: pass
+-- cost: heavy
 #model_check compiled { write := Fin 7, maxCrashes := 1, fixed := true }
 
 end CommitlogCleanupBench

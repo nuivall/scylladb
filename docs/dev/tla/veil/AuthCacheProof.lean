@@ -6,6 +6,9 @@ SPDX-License-Identifier: LicenseRef-ScyllaDB-Source-Available-1.1
 module
 public import Veil
 
+-- models: auth/cache.cc, auth/cache.hh, service/raft/group0_state_machine.cc
+-- checked-against: 61d55c44f6a
+
 /-! # The auth cache's permission sets, with the candidate fix: an inductive invariant
 
 AuthCache.lean with `fix` and `fixSnap` assumed (a clear voids the lookups
@@ -287,9 +290,11 @@ invariant [ldap_stale_blocks] dst S R = lread ∧ ¬ dvoid S R ∧ ¬ (dval S R 
 #gen_spec
 
 -- The strengthening holds on the model-checked bounds.
+-- expect: pass
 #model_check compiled { shard := Fin 1, role := Fin 2, fix := true, fixLdap := false, ldap := true, maxCmds := 5, snap := true, fixSnap := true, pruneOn := true, checkRefused := true }
 
 -- For every instance and every execution.
+-- expect: pass
 #check_invariants
 
 end AuthCacheProof
