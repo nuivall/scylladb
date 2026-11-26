@@ -3035,6 +3035,197 @@ async def test_tablet_migration_rollback_from_sc_become_voter(manager: ScyllaClu
 
 
 @pytest.mark.skip_mode(mode="release", reason="error injections are not supported in release mode")
+@pytest.mark.xfail(strict=True, reason="the sync of sc_become_voter lands after replicas report sc_rollback synced")
+async def test_sc_rollback_sync_fences_sync_of_sc_become_voter(manager: ScyllaClusterManager):
+    """The sync of sc_rollback must not be judged converged on a replica while a sync of
+    sc_become_voter on the group's leader can still land its change afterwards.
+
+    Reproducer for an invariant violation that model checking found. The pending replica is
+    excluded at sc_become_voter, so the migration rolls back. The leader of the tablet's
+    group, which hasn't applied sc_rollback yet, still runs its handler of sc_become_voter's
+    sync. The other replicas apply sc_rollback, find the configuration it expects (the
+    change of sc_become_voter never landed), and report synced. Then the leader's old
+    handler proposes sc_become_voter's configuration: the pending replica a voter again, the
+    leaving one a non-voter. In the model, the pending replica then leads and a replica that
+    already reported keeps naming it after sc_remove_pending is published (I1).
+
+    That last part isn't reachable here: a node that applied the exclusion bans the
+    excluded one at the messaging layer, and every replica that reports has applied it.
+    So the test checks the step the model's argument rests on, which is observable:
+    the change of sc_become_voter landing after replicas reported sc_rollback synced.
+    The barrier at sc_rollback (removed by c59a1208f7e) prevents it: it waits for the
+    leader to apply sc_rollback, which cancels the old handler, before any handler of
+    sc_rollback's sync starts.
+
+    Roles, RF=3 on four nodes: `leader` (rack1) leads the tablet's group and is held back
+    in group 0; `coordinator` (rack2) is the topology coordinator; the replica moves from
+    `src` to `dst` (rack3).
+    """
+    cmdline = DEFAULT_CMDLINE + [
+        '--logger-log-level', 'raft_topology=debug',
+        '--logger-log-level', 'debug_error_injection=debug',
+    ]
+    servers = await manager.servers_add(4, cmdline=cmdline, property_file=[
+        {'dc': 'dc1', 'rack': 'rack1'},
+        {'dc': 'dc1', 'rack': 'rack2'},
+        {'dc': 'dc1', 'rack': 'rack3'},
+        {'dc': 'dc1', 'rack': 'rack3'},
+    ])
+    cql, hosts = await manager.get_ready_cql(servers)
+    host_ids = await gather_safely(*[manager.get_host_id(s.server_id) for s in servers])
+    await manager.disable_tablet_balancing()
+
+    def server_by_host_id(host_id):
+        for server, hid in zip(servers, host_ids):
+            if hid == host_id:
+                return server
+        raise RuntimeError(f"Can't find server for host_id {host_id}")
+
+    leader, coordinator = servers[0], servers[1]
+
+    async with new_test_keyspace(manager, "WITH replication = {'class': 'NetworkTopologyStrategy', 'replication_factor': 3} "
+                                         "AND tablets = {'initial': 1} AND consistency = 'global'") as ks:
+        async with new_test_table(manager, ks, "pk int PRIMARY KEY, c int") as table:
+            table_name = table.split('.')[-1]
+            group_id = await get_table_raft_group_id(manager, ks, table_name)
+
+            tablets = await get_all_tablet_replicas(manager, coordinator, ks, table_name)
+            assert len(tablets) == 1
+            tablet_token = tablets[0].last_token
+            original_replicas = tablets[0].replicas
+            replica_hosts = {h for h, _ in original_replicas}
+            assert host_ids[0] in replica_hosts and host_ids[1] in replica_hosts, original_replicas
+
+            for i in range(10):
+                await cql.run_async(f"INSERT INTO {table} (pk, c) VALUES ({i}, {i + 1})")
+
+            src_host_id, src_shard = next((h, s) for h, s in original_replicas if h in (host_ids[2], host_ids[3]))
+            dst_host_id = host_ids[3] if src_host_id == host_ids[2] else host_ids[2]
+            src_server, dst_server = server_by_host_id(src_host_id), server_by_host_id(dst_host_id)
+
+            # The coordinator mustn't be the node held back in group 0.
+            await ensure_raft_group_leader_on(manager, coordinator, None)
+            await ensure_raft_group_leader_on(manager, leader, group_id)
+            assert await get_topology_coordinator(manager) == host_ids[1]
+
+            async def stage():
+                tablet_info = await get_tablet_info(manager, coordinator, ks, table_name, tablet_token)
+                return tablet_info.stage if tablet_info is not None else None
+
+            async def stage_is(expected):
+                return True if await stage() == expected else None
+
+            # Park the migration in sc_snapshot_transfer, after sc_add_nonvoter's sync, so
+            # that the pause below catches the sync of sc_become_voter only.
+            dst_log = await manager.server_open_log(dst_server.server_id)
+            mark = await dst_log.mark()
+            await manager.api.enable_injection(dst_server.ip_addr, "sc_wait_for_snapshot_transfer", one_shot=True)
+            logger.info(f"Migrating replica from {src_host_id}:{src_shard} to {dst_host_id}:0")
+            move_task = asyncio.create_task(
+                manager.api.move_tablet(coordinator.ip_addr, ks, table_name,
+                                        src_host_id, src_shard, dst_host_id, 0, tablet_token))
+            await dst_log.wait_for("sc_wait_for_snapshot_transfer: waiting for message", from_mark=mark, timeout=60)
+
+            # Hold the leader's handler of sc_become_voter's sync before it proposes. Every
+            # retry of the sync supersedes the held handler and is held in turn, so the
+            # last one is never older than one retry.
+            leader_log = await manager.server_open_log(leader.server_id)
+            mark = await leader_log.mark()
+            await manager.api.enable_injection(leader.ip_addr, "sc_config_sync_pause_on_leader", one_shot=False)
+            await manager.api.message_injection(dst_server.ip_addr, "sc_wait_for_snapshot_transfer")
+            await leader_log.wait_for("sc_config_sync_pause_on_leader: waiting for message", from_mark=mark, timeout=60)
+            assert await stage() == "write_both_read_new", "expected the migration at sc_become_voter"
+
+            # The pending replica dies; the sync keeps failing fast on it and is retried
+            # about every second until it is excluded, then the coordinator rolls back.
+            logger.info(f"Stopping the pending replica {dst_host_id}")
+            await manager.server_stop(dst_server.server_id, convict=True)
+            await manager.server_not_sees_other_server(coordinator.ip_addr, dst_server.ip_addr)
+
+            coordinator_log = await manager.server_open_log(coordinator.server_id)
+            src_log = await manager.server_open_log(src_server.server_id)
+            report_logs = [(coordinator, coordinator_log, await coordinator_log.mark()),
+                           (src_server, src_log, await src_log.mark())]
+            reported_sc_rollback = r"Completed sync_raft_group_config for tablet .* at stage sc_rollback"
+
+            early_reporters = []
+            proposed_after_reports = False
+            try:
+                # From the exclusion on, the leader applies no group 0 command, so it keeps
+                # seeing sc_become_voter: its held handler isn't cancelled by the stage
+                # change, and the RPCs of sc_rollback's sync wait in its group 0 barrier,
+                # before they could supersede it.
+                await manager.api.enable_injection(leader.ip_addr, "group0_state_machine::block_apply", one_shot=False)
+                logger.info(f"Excluding the pending replica {dst_host_id}")
+                await manager.api.exclude_node(coordinator.ip_addr, [dst_host_id])
+                await wait_for(lambda: stage_is("sc_rollback"), time.time() + 30, label="sc_rollback")
+                await leader_log.wait_for("group0_state_machine::block_apply: waiting for message", from_mark=mark, timeout=10)
+
+                # Bounded: with a barrier at sc_rollback no handler of its sync starts while
+                # the leader is held back, and nothing is reported.
+                deadline = time.time() + 15
+                while time.time() < deadline and len(early_reporters) < len(report_logs):
+                    early_reporters = [s.server_id for s, log, m in report_logs
+                                       if await log.grep(reported_sc_rollback, from_mark=m)]
+                    await asyncio.sleep(0.5)
+                logger.info(f"Replicas that reported sc_rollback synced while the leader was held back: {early_reporters}")
+
+                # Let the leader's handler of sc_become_voter go on. The leader still sees
+                # sc_become_voter, so it proposes that stage's configuration, and with the
+                # leader and `coordinator` a majority of both the old and the new voters,
+                # the change commits although `dst` is down.
+                mark = await leader_log.mark()
+                await manager.api.disable_injection(leader.ip_addr, "sc_config_sync_pause_on_leader")
+                try:
+                    await leader_log.wait_for(
+                            r"Proposing a raft configuration change for tablet",
+                            r"Completed sync_raft_group_config for tablet .* at stage write_both_read_new",
+                            from_mark=mark, timeout=30)
+                    proposed_after_reports = True
+                except TimeoutError:
+                    logger.info("The held handler of sc_become_voter didn't land its change")
+                assert await stage() == "sc_rollback", "expected the migration to still be at sc_rollback"
+            finally:
+                await manager.api.disable_injection(leader.ip_addr, "sc_config_sync_pause_on_leader")
+                await manager.api.disable_injection(leader.ip_addr, "group0_state_machine::block_apply")
+
+            try:
+                await move_task
+            except Exception as exc:
+                logger.info("move_tablet failed while the migration rolled back as expected: %s", exc)
+
+            async def rollback_finished():
+                tablet_info = await get_tablet_info(manager, coordinator, ks, table_name, tablet_token)
+                return True if tablet_info is not None and tablet_info.stage is None else None
+            await wait_for(rollback_finished, time.time() + 180, label="rollback")
+
+            tablets = await get_all_tablet_replicas(manager, coordinator, ks, table_name)
+            assert tablets[0].replicas == original_replicas, \
+                f"Expected replicas to roll back to {original_replicas}, got {tablets[0].replicas}"
+            leader_host_id = await wait_for_leader(manager, coordinator, group_id)
+            assert leader_host_id in replica_hosts, f"leader {leader_host_id} is not a replica of {original_replicas}"
+            await cql.run_async(f"INSERT INTO {table} (pk, c) VALUES (100, 101)")
+            for i in list(range(10)) + [100]:
+                rows = await cql.run_async(f"SELECT * FROM {table} WHERE pk = {i}")
+                assert len(rows) == 1 and rows[0].c == (101 if i == 100 else i + 1), f"pk={i}: {rows}"
+
+            # Control for the detector of early reports: both replicas report sc_rollback
+            # synced eventually, with or without the barrier.
+            for srv, log, m in report_logs:
+                assert await log.grep(reported_sc_rollback, from_mark=m), \
+                    f"server {srv.server_id} never logged reporting sc_rollback synced; the pattern is wrong"
+
+            # Precondition: the old handler was still live when it was let go. Otherwise
+            # (e.g. it passed its 60s deadline) the test proves nothing either way.
+            assert proposed_after_reports, \
+                "the held sync of sc_become_voter didn't land its change; the test didn't reach the window"
+            assert not early_reporters, \
+                (f"servers {early_reporters} reported the configuration of sc_rollback synced, and afterwards "
+                 f"the leader's sync of sc_become_voter landed its change (pending replica a voter, leaving "
+                 f"replica a non-voter): a sync of sc_rollback with no barrier doesn't fence the older sync")
+
+
+@pytest.mark.skip_mode(mode="release", reason="error injections are not supported in release mode")
 async def test_leader_not_among_tablet_replicas(manager: ScyllaClusterManager):
     """A leader reported by the local raft server that isn't a tablet replica must not
     be treated as an internal error.
