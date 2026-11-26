@@ -2545,6 +2545,14 @@ future<> database::do_apply_many(const utils::chunked_vector<frozen_mutation>& m
         auto s = local_schema_registry().get(muts[i].schema_version());
         co_await apply_in_memory(muts[i], s, std::move(handles[i]), timeout, noop);
     }
+
+    // Test-only: fail once the mutations are visible, as a failure to apply one of the
+    // memtables would, with a plain exception. Fires once, for the keyspace in `ks_name`.
+    if (auto ks = utils::get_local_injector().inject_parameter<std::string_view>("database_apply_many_fail", "ks_name");
+            ks && local_schema_registry().get(muts[0].schema_version())->ks_name() == *ks) {
+        utils::get_local_injector().disable("database_apply_many_fail");
+        throw std::runtime_error("injected failure after database::do_apply_many() applied the mutations");
+    }
 }
 
 future<db::large_data_violation_type> database::do_apply(schema_ptr s, const frozen_mutation& m, tracing::trace_state_ptr tr_state, db::timeout_clock::time_point timeout, db::commitlog::force_sync sync, db::per_partition_rate_limit::info rate_limit_info, bool skip_large_data_guardrails) {

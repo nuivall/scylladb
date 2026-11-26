@@ -92,6 +92,36 @@ async def test_joining_node_stops_group0_on_schema_merge_failure(manager: Scylla
 
 
 @pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
+@pytest.mark.xfail(strict=True, reason="a schema apply that fails after its commitlog write is retried, and the joiner re-creates system_distributed")
+async def test_joining_node_stops_group0_on_schema_persist_failure(manager: ScyllaClusterManager) -> None:
+    """Like test_joining_node_stops_group0_on_schema_merge_failure, but the schema
+    merge of the snapshot transfer fails while the schema mutations are applied
+    (after the commitlog write, with the memtables updated), with an exception
+    other than schema_persisted_but_not_applied, e.g. a std::bad_alloc.
+
+    The persisted schema is then ahead of the in-memory one, as in SCYLLADB-5770,
+    but transfer_snapshot() breaks the read_apply mutex only for
+    schema_persisted_but_not_applied. If it doesn't stop group 0 here, the retried
+    transfer finds the schema already persisted, and the node re-creates
+    system_distributed with default replication.
+    """
+    servers, hosts, states = await start_cluster_with_nts_system_distributed(manager)
+    cql = manager.get_cql()
+
+    joiner = await manager.server_add(start=False, config={'error_injections_at_startup': [
+        {'name': 'database_apply_many_fail', 'ks_name': 'system_schema'},
+    ]})
+    try:
+        await asyncio.wait_for(manager.server_start(joiner.server_id), timeout=180)
+        logger.info("the joining node started")
+    except Exception as e:
+        logger.info("the joining node failed to start: %s", e)
+
+    for host, state in zip(hosts, states):
+        assert await get_system_distributed_state(cql, host) == state
+
+
+@pytest.mark.skip_mode(mode='release', reason='error injections are not supported in release mode')
 async def test_node_with_stopped_group0_fails_new_schema_requests_fast(manager: ScyllaClusterManager) -> None:
     """Verify that a node that failed to update its in-memory schema while
     applying a group 0 command stops group 0 and fails requests that use the
