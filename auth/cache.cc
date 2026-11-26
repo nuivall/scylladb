@@ -15,6 +15,7 @@
 #include "db/consistency_level_type.hh"
 #include "db/system_keyspace.hh"
 #include "schema/schema.hh"
+#include "utils/error_injection.hh"
 #include <iterator>
 #include <seastar/core/abort_source.hh>
 #include <seastar/coroutine/maybe_yield.hh>
@@ -221,6 +222,11 @@ future<> cache::load_all() {
         auto role = co_await fetch_role(name);
         if (role) {
             add_role(name, role);
+        }
+        auto& injector = utils::get_local_injector();
+        if (injector.inject_parameter("auth_cache_load_all_pause", "role") == std::string_view(name)) {
+            logger.info("load_all: replaced role {}, pausing", name);
+            co_await injector.inject("auth_cache_load_all_pause", utils::wait_for_message(std::chrono::minutes(2)));
         }
         co_return stop_iteration::no;
     };
